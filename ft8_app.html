@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>FT8 Hunter</title>
+<style>
+*{box-sizing:border-box;margin:0}body{font-family:system-ui,sans-serif;background:#0f1419;color:#e6e6e6;
+max-width:480px;margin:0 auto;padding:12px;min-height:100vh}
+h1{font-size:1.2rem;text-align:center;margin-bottom:8px}
+h2{font-size:.95rem;margin-bottom:6px}
+.card{background:#1a222c;border-radius:12px;padding:12px;margin-bottom:10px}
+.row{display:flex;gap:8px;align-items:center}
+button{flex:1;padding:14px;border:0;border-radius:10px;font-size:1rem;font-weight:700;color:#fff;background:#2a6cb6}
+button.on{background:#1f9d4d}button.warn{background:#8a2f2f}
+button.mini{flex:0;padding:4px 10px;font-size:.8rem}
+#target{font-size:1.4rem;font-weight:800;text-align:center;padding:8px}
+input{width:100%;padding:12px;border-radius:8px;border:1px solid #334;font-size:1rem;background:#0f1419;color:#fff;margin-top:6px}
+ul{list-style:none;padding:0}li{padding:8px;border-bottom:1px solid #26303c;font-size:.85rem;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.mono{font-family:monospace}.snr{font-weight:800;min-width:52px;text-align:right}
+.good{color:#2ecc71}.mid{color:#f1c40f}.bad{color:#e74c3c}
+.badge{font-size:.7rem;background:#2a6cb6;border-radius:6px;padding:2px 6px}
+.badge.me{background:#1f9d4d}.badge.wkd{background:#555}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#666;margin-right:6px}
+.dot.run{background:#2ecc71}.small{font-size:.8rem;color:#9ab}
+details summary{font-weight:700;padding:4px}
+</style></head><body>
+<h1>📻 FT8 Hunter</h1>
+<div class="card"><div class="row"><span id="dot" class="dot"></span><b id="st">…</b></div>
+<div class="row" style="margin-top:6px"><span id="udpdot" class="dot"></span><span class="small" id="udp">UDP …</span></div>
+<div id="target">no target</div>
+<div class="row" style="margin-top:6px"><span id="txdot" class="dot"></span><b id="tx">RX</b>
+<span class="small" id="dx"></span></div>
+<div style="background:#0f1419;border-radius:8px;height:14px;margin-top:8px;overflow:hidden">
+<div id="cbar" style="height:100%;width:0%;background:#2a6cb6"></div></div>
+<div class="small" id="ctxt" style="text-align:center;margin-top:2px">cycle</div>
+<div class="row"><button id="bS">Start</button><button id="bX" class="warn">Skip</button></div>
+<div class="row" style="margin-top:8px"><button id="bT" style="background:#5a4a8a">🔌 Smoke test</button></div></div>
+<div class="card"><h2>🎯 DX focus <span class="small" id="dxn"></span></h2><ul id="dxf"></ul>
+<div class="small" style="margin-top:6px">my TX</div><ul id="mytx"></ul></div>
+<div class="card"><h2>📢 CQ calls (strongest first)</h2><ul id="cq"></ul></div>
+<div class="card"><div class="row"><span class="small">seq hot: <b id="par">…</b></span><span class="small" id="idle"></span></div>
+<div class="small" id="callers"></div><div class="small" id="holds"></div></div>
+<div class="card"><details><summary>📡 All messages (<span id="mn">0</span>)</summary><ul id="msgs"></ul></details></div>
+<div class="card"><h2>💬 Answering / traffic</h2><ul id="ans"></ul></div>
+<div class="card"><h2>✍️ Manual call</h2><div class="row">
+<input id="mc" placeholder="CALL" autocapitalize="characters"><input id="mg" placeholder="GRID" style="max-width:110px" autocapitalize="characters"></div>
+<button id="bC" style="margin-top:8px">Call now</button></div>
+<div class="card"><h2>📝 Log</h2><ul id="log"></ul><div class="small" id="stats"></div></div>
+<div class="card"><details><summary>✅ Worked / ignored (<span id="wn">0</span>)</summary><ul id="wk"></ul></details></div>
+<div class="card"><details><summary>⚙️ Settings</summary>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1">CQ tries</span><input id="sCq" type="number" min="1" max="10" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1">Tail-end tries</span><input id="sTail" type="number" min="1" max="10" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1">Hold (min)</span><input id="sHold" type="number" min="1" max="60" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1">Listen every N idle</span><input id="sIdleN" type="number" min="1" max="20" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1">Listen secs</span><input id="sIdleS" type="number" min="15" max="300" step="15" style="max-width:90px;margin-top:0"></div>
+<button id="bSave" style="margin-top:8px">Save</button></details></div>
+<script>
+const $=id=>document.getElementById(id);
+async function api(p,b,m){const r=await fetch(p,{method:m||(b?'POST':'GET'),headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});return r.json()}
+function snrC(s){return s>=0?'good':s>=-12?'mid':'bad'}
+async function tick(){const s=await api('/api/state');
+fillSettings(s.config);
+$('dot').className='dot'+(s.running?' run':'');
+$('st').textContent=(s.running?'RUNNING':'STOPPED')+' · '+s.mycall+' '+s.mygrid;
+$('target').textContent=s.target?('🎯 '+s.target.call+' '+(s.target.grid||'')+' · '+(s.target.why||'')+' '+s.target.left+' left'):'no target';
+$('bS').textContent=s.running?'Stop':'Start';$('bS').className=s.running?'warn':'on';
+$('cq').innerHTML=s.cq.map(e=>`<li><span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span>
+<span class="mono"><b>${e.call}</b> ${e.grid||''}</span>
+<span class="small">${e.km!=null?e.km+'km':'?km'} ${e.t}</span>
+${e.worked?'<span class="badge wkd">wkd</span>':`<button class="mini" onclick="call('${e.call}','${e.grid||''}')">call</button>`}</li>`).join('')||'<li>— quiet —</li>';
+$('ans').innerHTML=s.answering.map(e=>`<li>${e.tome?'<span class="badge me">TO ME</span>':''}<span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="mono">${e.msg}</span></li>`).join('')||'<li>—</li>';
+$('log').innerHTML=s.log.map(l=>`<li>${l.t} ${l.msg}</li>`).join('');
+$('stats').textContent=`CQ heard ${s.stats.cq_heard} · calls ${s.stats.calls_made}`;
+window._tx=s.udp.transmitting;window._dx=s.udp.dxcall||'';
+$('dx').textContent=window._dx?('DX '+window._dx):'';
+const ago=s.udp.heard_ago;
+if(ago!=null&&ago<45){$('udpdot').className='dot run';$('udp').textContent=`🔗 WS linked (${ago}s ago, id=${s.udp.ws_id})${s.udp.dxcall?' · DX='+s.udp.dxcall:''}`}
+else{$('udpdot').className='dot';$('udp').textContent=`⚪ no WS UDP yet · port: ${s.udp.holder}`}
+$('wn').textContent=s.worked.length;$('wk').innerHTML=s.worked.map(c=>`<li class="mono">${c}</li>`).join('');
+$('dxn').textContent=s.target?('· '+s.target.call):'· no target';
+$('dxf').innerHTML=(s.dxfocus||[]).map(e=>`<li>${e.tome?'<span class="badge me">TO ME</span>':''}<span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="mono">${e.msg}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';
+$('mytx').innerHTML=(s.mytx||[]).map(e=>`<li><span class="badge me">TX</span><span class="mono">${e.msg}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';
+$('mn').textContent=(s.msgs||[]).length;
+$('par').textContent=(s.parity? s.parity.hot+' ('+s.parity.even+'/'+s.parity.odd+')':'…');
+$('idle').textContent=s.idle?('👂 listening '+s.idle+'s'):'';
+$('callers').textContent=(s.callers&&s.callers.length)?('📥 callers waiting: '+s.callers.join(', ')):'';
+$('holds').textContent=(s.holds&&Object.keys(s.holds).length)?('⏸ holds: '+Object.entries(s.holds).map(([c,sec])=>c+' '+Math.ceil(sec/60)+'m').join(', ')):'';
+$('msgs').innerHTML=(s.msgs||[]).map(e=>`<li>${e.tome?'<span class="badge me">ME</span>':''}${e.dx?'<span class="badge">DX</span>':''}<span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="mono">${e.msg}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';
+}
+async function call(c,g){await api('/api/call',{call:c,grid:g||''})}
+$('bS').onclick=async()=>{const s=await api('/api/state');await api(s.running?'/api/stop':'/api/start',{},'POST');tick()};
+$('bX').onclick=()=>api('/api/skip',{},'POST').then(tick);
+$('bT').onclick=async()=>{const r=await api('/api/smoke',{},'POST');
+alert(r.connected?('✅ WS answered ('+r.heard+' pkts, id='+r.ws_id+')'):('❌ no reply from WS. Port held by: '+r.holder));tick()};
+$('bC').onclick=()=>api('/api/call',{call:$('mc').value,grid:$('mg').value}).then(tick);
+let sLoaded=false;
+function fillSettings(c){if(sLoaded)return;sLoaded=true;
+$('sCq').value=c.cq_tries;$('sTail').value=c.tail_tries;$('sHold').value=c.hold_min;
+$('sIdleN').value=c.idle_every;$('sIdleS').value=c.idle_secs}
+$('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,hold_min:+$('sHold').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value},'POST');sLoaded=false;tick()};
+setInterval(tick,2000);tick();
+// 15s FT8 cycle bar + TX badge, updated locally every 200ms
+setInterval(()=>{const t=Date.now()/1000,pos=t%15,pct=pos/15*100;
+const b=$('cbar');if(b)b.style.width=pct+'%';
+const tx=window._tx;$('txdot').className='dot'+(tx?' run':'');
+const txEl=$('tx');if(txEl){txEl.textContent=tx?'🔴 TX':'🟢 RX';txEl.style.color=tx?'#ff6b6b':'#2ecc71'}
+const c=$('ctxt');if(c)c.textContent=`${pos.toFixed(1)}s / 15s · ${pos<12?'receiving':pos<13?'decoding':'TX window'}`},200);
+</script></body></html>
