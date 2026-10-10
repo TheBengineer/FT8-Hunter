@@ -254,14 +254,14 @@ def udp_listener():
                 try:           # TxMode, TxEnabled?, Transmitting?, ...
                     p = off + 8  # dialfreq u64
                     strs = []
-                    for _ in range(5):  # Mode, DXcall, Report, TxMode
+                    for _ in range(4):  # Mode, DXcall, Report, TxMode
                         ln = struct.unpack(">i", data[p:p+4])[0]; p += 4
                         if ln < 0 or ln > 64:
                             break
                         strs.append(data[p:p+ln].decode("utf-8", "errors")); p += ln
                     if len(strs) >= 2:
                         state["udp"]["dxcall"] = strs[1]
-                    if len(strs) == 5 and p + 2 <= len(data):
+                    if len(strs) == 4 and p + 2 <= len(data):
                         state["udp"]["tx_enabled"] = bool(data[p]); p += 1
                         state["udp"]["transmitting"] = bool(data[p]); p += 1
                         state["udp"]["tx_t"] = time.time()
@@ -328,7 +328,7 @@ def tail_alltxt():
             tm = TX_RE.match(line.strip())
             if tm:
                 state["mytx"].appendleft({"msg": tm.group(5).strip(),
-                    "t": time.strftime("%H:%M:%S")})
+                    "t": time.strftime("%H:%M:%S"), "seen": time.time()})
             continue
         tstr, snr, dt, audio, msg = m.group(1), int(m.group(2)), float(m.group(3)), int(m.group(4)), m.group(5).strip()
         if msg not in state["decparams"]:  # UDP feed has fuller params incl. mode
@@ -495,7 +495,7 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
 def arm_tx(only_if_off=False):
     """Click WS 'Enable Tx' via xdotool (no UDP message exists for it).
     Position computed from live window geometry (calibrated 2026-10-10;
-    re-calibrate if the WS layout/splitter moves: button frac ≈ (0.742, 0.428))."""
+    re-calibrate if the WS layout/splitter moves: button frac ≈ (0.737, 0.407))."""
     import subprocess
     xd = os.path.expanduser("~/xdotool/usr/bin/xdotool")
     lib = os.path.expanduser("~/xdotool/usr/lib/x86_64-linux-gnu")
@@ -514,9 +514,12 @@ def arm_tx(only_if_off=False):
             return "geometry parse failed"
         x, y = int(pos.group(1)), int(pos.group(2))
         w, h = int(geo.group(1)), int(geo.group(2))
-        bx, by = x + int(w * 0.742), y + int(h * 0.428)
-        if only_if_off and state["udp"].get("tx_enabled"):
-            return "already armed"
+        bx, by = x + int(w * 0.737), y + int(h * 0.407)
+        if only_if_off:
+            # suite's Status TxEnabled bit is unreliable; treat recent TX as armed
+            recent_tx = any(time.time() - m.get("seen", 0) < 90 for m in state["mytx"])
+            if state["udp"].get("tx_enabled") or recent_tx:
+                return "already armed"
         subprocess.run([xd, "windowraise", wid], env=env, timeout=10)
         subprocess.run([xd, "windowfocus", wid], env=env, timeout=10)
         time.sleep(1.0)
