@@ -254,14 +254,14 @@ def udp_listener():
                 try:           # TxMode, TxEnabled?, Transmitting?, ...
                     p = off + 8  # dialfreq u64
                     strs = []
-                    for _ in range(4):  # Mode, DXcall, Report, TxMode
+                    for _ in range(5):  # Mode, DXcall, Report, TxMode
                         ln = struct.unpack(">i", data[p:p+4])[0]; p += 4
                         if ln < 0 or ln > 64:
                             break
                         strs.append(data[p:p+ln].decode("utf-8", "errors")); p += ln
                     if len(strs) >= 2:
                         state["udp"]["dxcall"] = strs[1]
-                    if len(strs) == 4 and p + 2 <= len(data):
+                    if len(strs) == 5 and p + 2 <= len(data):
                         state["udp"]["tx_enabled"] = bool(data[p]); p += 1
                         state["udp"]["transmitting"] = bool(data[p]); p += 1
                         state["udp"]["tx_t"] = time.time()
@@ -492,6 +492,40 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
         state["answering"][msg] = {"msg": msg, "snr": snr, "tome": to_me,
             "from": parts[0] if parts else msg, "seen": now, "t": time.strftime("%H:%M:%S")}
 
+def arm_tx(only_if_off=False):
+    """Click WS 'Enable Tx' via xdotool (no UDP message exists for it).
+    Position computed from live window geometry (calibrated 2026-10-10;
+    re-calibrate if the WS layout/splitter moves: button frac ≈ (0.742, 0.428))."""
+    import subprocess
+    xd = os.path.expanduser("~/xdotool/usr/bin/xdotool")
+    lib = os.path.expanduser("~/xdotool/usr/lib/x86_64-linux-gnu")
+    env = dict(os.environ, LD_LIBRARY_PATH=lib + ":" + os.environ.get("LD_LIBRARY_PATH", ""))
+    try:
+        out = subprocess.run([xd, "search", "--onlyvisible", "--name", "Digital Mode Suite"],
+                             capture_output=True, text=True, env=env, timeout=10).stdout.split()
+        if not out:
+            return "WS window not found"
+        wid = out[0]
+        g = subprocess.run([xd, "getwindowgeometry", wid], capture_output=True,
+                           text=True, env=env, timeout=10).stdout
+        pos = re.search(r"Position:\s*(\d+),(\d+)", g)
+        geo = re.search(r"Geometry:\s*(\d+)x(\d+)", g)
+        if not pos or not geo:
+            return "geometry parse failed"
+        x, y = int(pos.group(1)), int(pos.group(2))
+        w, h = int(geo.group(1)), int(geo.group(2))
+        bx, by = x + int(w * 0.742), y + int(h * 0.428)
+        if only_if_off and state["udp"].get("tx_enabled"):
+            return "already armed"
+        subprocess.run([xd, "windowraise", wid], env=env, timeout=10)
+        subprocess.run([xd, "windowfocus", wid], env=env, timeout=10)
+        time.sleep(1.0)
+        subprocess.run([xd, "mousemove", str(bx), str(by), "click", "1"],
+                       env=env, timeout=10)
+        return f"clicked {bx},{by}"
+    except Exception as e:
+        return f"arm failed: {e}"
+
 class H(BaseHTTPRequestHandler):
     def _json(self, obj, code=200):
         b = json.dumps(obj).encode()
@@ -557,9 +591,12 @@ class H(BaseHTTPRequestHandler):
             state["target"] = None; ENG["callers"].clear()
             try:
                 CTX["tx"].sendto(pack_configure(state["ws_id"]), ws_dest())
-                log("CQ mode: stack reset, WS calling CQ (Enable Tx must be on)")
+                time.sleep(2)  # let Status report back before toggle check
+                log(f"CQ mode: stack reset + {arm_tx(only_if_off=True)}")
             except Exception as e:
                 log(f"CQ reset failed: {e}")
+        elif p == "/api/arm":
+            log(f"arm TX: {arm_tx()}")
         elif p == "/api/call" and body.get("call"):
             c = body["call"].upper(); g = body.get("grid", "").upper()
             # find the exact decode line for this call
