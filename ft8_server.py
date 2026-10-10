@@ -368,7 +368,11 @@ def engine_tick():
             state["target"] = None
         else:
             ENG["busy"] += 1
-            return  # WS auto-sequences the QSO; don't interfere
+            # re-arm every cycle until they reply (suite treats Reply as one-shot);
+            # once QSO progresses (resp), WS auto-sequences — don't touch it
+            if not t.get("resp") and t.get("msg"):
+                send_exact_reply(CTX["tx"], t["msg"])
+            return
     # drop stale/held callers, first-come-first-serve
     while ENG["callers"]:
         c, m = ENG["callers"][0]
@@ -417,7 +421,8 @@ def engine_tick():
 def acquire(call, grid, msg, tries, why):
     if not send_exact_reply(CTX["tx"], msg):
         return False
-    state["target"] = {"call": call, "grid": grid, "left": tries, "why": why}
+    state["target"] = {"call": call, "grid": grid, "left": tries, "why": why,
+                       "msg": msg, "resp": False}
     state["stats"]["calls_made"] += 1
     log(f"calling {call} {grid} ({why}, {tries} tries)")
     return True
@@ -460,6 +465,7 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                and not any(c == parts[0] for c, _ in ENG["callers"]):
                 if tgt == parts[0]:
                     state["target"]["left"] = 99  # QSO progressing; WS auto-sequences
+                    state["target"]["resp"] = True
                     log(f"reply: {msg}")
                 else:
                     ENG["callers"].append((parts[0], msg))
@@ -470,6 +476,7 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                         state["target"] = None
             elif tgt == parts[0]:
                 state["target"]["left"] = 99
+                state["target"]["resp"] = True
                 log(f"reply: {msg}")
         state["answering"][msg] = {"msg": msg, "snr": snr, "tome": to_me,
             "from": parts[0] if parts else msg, "seen": now, "t": time.strftime("%H:%M:%S")}
