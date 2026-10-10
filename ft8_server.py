@@ -39,6 +39,17 @@ def pack_reply(id_, t_ms, snr, dt, df, msg, mode="~"):
     pkt += pack_str(msg) + struct.pack(">B", 0) + struct.pack(">B", 0)
     return pkt
 
+def pack_configure(id_, dx_call=" ", dx_grid=" ", generate=True):
+    """Type 15 Configure: blank dx_call + generate=True resets WS message
+    stack to its default CQ (empty string is ignored upstream, so send a space).
+    Other fields = no-change sentinels."""
+    M = 0xFFFFFFFF
+    pkt = struct.pack(">II", 0xADBCCBDA, 2) + struct.pack(">I", 15) + pack_str(id_)
+    pkt += pack_str("") + struct.pack(">I", M) + pack_str("")
+    pkt += struct.pack(">B", 0) + struct.pack(">I", M) + struct.pack(">I", M)
+    pkt += pack_str(dx_call) + pack_str(dx_grid) + struct.pack(">B", 1 if generate else 0)
+    return pkt
+
 def pack_halt(id_):
     return struct.pack(">II", 0xADBCCBDA, 2) + struct.pack(">I", 8) + pack_str(id_)
 
@@ -290,7 +301,7 @@ def tail_alltxt():
     seen, cycle = CTX["seen"], CTX["cycle"]
     tx = CTX["tx"]
     p = None
-    for cand in ("~/.local/share/WSJT-X/ALL.TXT", "~/.local/share/WS/ALL.TXT"):
+    for cand in ("~/.local/share/WS/ALL.TXT", "~/.local/share/WSJT-X/ALL.TXT"):
         cand = os.path.expanduser(cand)
         if os.path.exists(cand):
             p = cand; break
@@ -540,6 +551,15 @@ class H(BaseHTTPRequestHandler):
                 halt_ws()
                 ENG["holds"][state["target"]["call"]] = time.time() + state["config"].get("hold_min", 10) * 60
             state["target"] = None; log("target skipped + held")
+        elif p == "/api/cq":
+            # reset WS stack to default CQ + stop hunting so WS calls CQ on its own
+            halt_ws()
+            state["target"] = None; ENG["callers"].clear()
+            try:
+                CTX["tx"].sendto(pack_configure(state["ws_id"]), ws_dest())
+                log("CQ mode: stack reset, WS calling CQ (Enable Tx must be on)")
+            except Exception as e:
+                log(f"CQ reset failed: {e}")
         elif p == "/api/call" and body.get("call"):
             c = body["call"].upper(); g = body.get("grid", "").upper()
             # find the exact decode line for this call
