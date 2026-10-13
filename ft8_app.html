@@ -56,6 +56,7 @@ details summary{font-weight:700;padding:4px}
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Listen every N idle</span><input id="sIdleN" type="number" min="1" max="20" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Listen secs</span><input id="sIdleS" type="number" min="15" max="300" step="15" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Activations first (POTA/SOTA/WWFF/IOTA/BOTA/LOTA)</span><input id="sSpec" type="checkbox" style="width:auto;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1">Min SNR to call (dB)</span><input id="sMinSnr" type="number" min="-30" max="10" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Call CQ when nothing to answer</span><input id="sCallCq" type="checkbox" style="width:auto;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">CQ run secs (then listen)</span><input id="sCqSecs" type="number" min="30" max="600" step="15" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Auto Tx offset (ws-hunter build)</span><input id="sAutoDf" type="checkbox" style="width:auto;margin-top:0"></div>
@@ -69,7 +70,7 @@ async function tick(){const s=await api('/api/state');
 fillSettings(s.config);
 $('dot').className='dot'+(s.running?' run':'');
 $('st').textContent=(s.running?'RUNNING':'STOPPED')+' · '+s.mycall+' '+s.mygrid;
-$('target').textContent=s.target?('🎯 '+s.target.call+' '+(s.target.grid||'')+' · '+(s.target.why||'')+' '+s.target.left+' left'):(s.cq_calling?('📣 calling CQ · '+s.cq_calling+'s'):'no target');
+$('target').textContent=s.target?('🎯 '+s.target.call+' '+(s.target.grid||'')+' · '+(s.target.why||'')+' · '+(s.target.resp?'in QSO':Math.ceil(s.target.left/2)+' tries left')):(s.cq_calling?('📣 calling CQ · '+s.cq_calling+'s'):'no target');
 $('bS').textContent=s.running?'Stop':'Start';$('bS').className=s.running?'warn':'on';
 $('cq').innerHTML=s.cq.map(e=>`<li><span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span>
 ${e.tag?`<span class="badge${e.special?' act':''}">${e.tag}</span>`:''}<span class="mono"><b>${e.call}</b> ${e.grid||''}</span>
@@ -108,8 +109,8 @@ function fillSettings(c){if(sLoaded)return;sLoaded=true;
 $('sCq').value=c.cq_tries;$('sTail').value=c.tail_tries;$('sHold').value=c.hold_min;
 $('sIdleN').value=c.idle_every;$('sIdleS').value=c.idle_secs;$('sSpec').checked=c.special_first!==false;
 $('sCallCq').checked=c.call_cq!==false;$('sCqSecs').value=c.cq_secs;
-$('sAutoDf').checked=c.auto_df!==false;$('sQrm').checked=c.qrm_detect!==false}
-$('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,hold_min:+$('sHold').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value,special_first:$('sSpec').checked,call_cq:$('sCallCq').checked,cq_secs:+$('sCqSecs').value,auto_df:$('sAutoDf').checked,qrm_detect:$('sQrm').checked},'POST');sLoaded=false;tick()};
+$('sAutoDf').checked=c.auto_df!==false;$('sQrm').checked=c.qrm_detect!==false;$('sMinSnr').value=c.min_snr}
+$('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,hold_min:+$('sHold').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value,special_first:$('sSpec').checked,call_cq:$('sCallCq').checked,cq_secs:+$('sCqSecs').value,auto_df:$('sAutoDf').checked,qrm_detect:$('sQrm').checked,min_snr:+$('sMinSnr').value},'POST');sLoaded=false;tick()};
 setInterval(tick,2000);tick();
 // 15s FT8 cycle bar + TX badge, updated locally every 200ms
 setInterval(()=>{const t=Date.now()/1000,pos=t%15,pct=pos/15*100;

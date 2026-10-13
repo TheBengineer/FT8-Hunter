@@ -19,7 +19,7 @@ state = {
                "idle_every": 4, "idle_secs": 60, "special_first": True,
                "call_cq": True, "cq_secs": 120,
                "auto_df": True, "df_lo": 300, "df_hi": 2700,
-               "qrm_detect": True, "qrm_backoff_min": 5},
+               "qrm_detect": True, "qrm_backoff_min": 5, "min_snr": -20},
     "stats": {"cq_heard": 0, "calls_made": 0},
 }
 # "CQ [TAG] CALL [GRID]"; TAG is DX, TEST, an activity (POTA...) or a
@@ -158,6 +158,51 @@ def km(a, b):
     h = math.sin((la2-la1)/2)**2 + math.cos(la1)*math.cos(la2)*math.sin((lo2-lo1)/2)**2
     return round(2 * 6371 * math.asin(math.sqrt(h)))
 
+CTY = {"exact": {}, "prefix": {}}  # call/prefix -> (country, continent)
+CTY_PATHS = ("~/ws-hunter-app/share/ws/cty.dat", "~/ws/usr/share/ws/cty.dat",
+             "~/ws-wide/usr/share/ws/cty.dat", "/usr/share/wsjtx/cty.dat")
+
+def load_cty():
+    """Parse the country file WS ships (AD1C cty.dat format)."""
+    for p in map(os.path.expanduser, CTY_PATHS):
+        if not os.path.exists(p):
+            continue
+        for chunk in open(p, errors="ignore").read().split(";"):
+            head, _, body = chunk.strip().partition("\n")
+            f = [x.strip() for x in head.split(":")]
+            if len(f) < 8:
+                continue
+            for tok in body.replace("\n", "").split(","):
+                m = re.match(r"\s*(=?)([A-Z0-9/]+)", tok)
+                if not m:
+                    continue
+                c = re.search(r"\{(\w\w)\}", tok)  # per-prefix continent override
+                (CTY["exact"] if m.group(1) else CTY["prefix"])[m.group(2)] = (f[0], c.group(1) if c else f[3])
+        log(f"country file: {p} ({len(CTY['prefix'])} prefixes)")
+        return
+
+def dxcc(call):
+    """(country, continent) for a call, or None. 'VE3/K1ABC' is looked up as VE3."""
+    c = call.strip("<>").upper()
+    if c in CTY["exact"]:
+        return CTY["exact"][c]
+    parts, base = c.split("/"), base_call(c)
+    key = parts[0] if base in parts and parts.index(base) > 0 else base
+    for n in range(len(key), 0, -1):
+        if key[:n] in CTY["prefix"]:
+            return CTY["prefix"][key[:n]]
+    return None
+
+def dx_ok(e):
+    """CQ DX is for stations on another continent; answering from the same
+    one is a classic faux pas. Unknown calls fall back to distance."""
+    if e.get("tag") != "DX":
+        return True
+    them, me = dxcc(e["call"]), dxcc(state["mycall"])
+    if them and me:
+        return them[1] != me[1]
+    return (e.get("km") or 0) > 3000
+
 def load_worked():
     """Only TODAY's contacts count (UTC date, as ADIF records qso_date).
     Returns (set, {path: mtime})."""
@@ -185,6 +230,7 @@ def load_worked():
 
 def watcher():
     state["worked"], state["adi_mtime"] = load_worked()
+    load_cty()
     tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     CTX.update(tx=tx, myll=grid_to_latlon(state["mygrid"]) if state["mygrid"] else None)
     threading.Thread(target=udp_listener, daemon=True).start()
@@ -214,7 +260,9 @@ ENG = {"holds": {}, "callers": deque(maxlen=20), "parity": {0: 0, 1: 0},
        "occ": deque(maxlen=800),  # recent decodes {t, par, df}: who is where
        "spec": {},                # parity -> latest ws-hunter spectrum summary
        "noise_hist": deque(maxlen=40),  # per-period noise estimates (dB)
-       "qrm_until": 0, "qrm_n": 0, "qrm_why": ""}
+       "qrm_until": 0, "qrm_n": 0, "qrm_why": "",
+       "active": {},    # base call -> last time heard sending to someone (0 = signed off)
+       "calls_to": {}}  # base call -> {caller base call: last time}: their pileup
 
 state["ws_id"] = "WSJT-X"   # learned from WS broadcasts when heard
 state["ws_addr"] = None    # (ip, ephemeral port) WSJT-X listens on — learned from its packets
@@ -436,6 +484,11 @@ def prune(now):
             d.pop(k, None)
     for c in [c for c, until in list(ENG["holds"].items()) if until <= now]:
         ENG["holds"].pop(c, None)
+    for c in [c for c, ts in list(ENG["active"].items()) if now - ts > 600]:
+        ENG["active"].pop(c, None)
+    for c, callers in list(ENG["calls_to"].items()):
+        if all(now - ts > 60 for ts in list(callers.values())):
+            ENG["calls_to"].pop(c, None)
 
 FT8_BW, GUARD = 50, 15  # FT8 signal width above its DF; clearance each side (Hz)
 
@@ -582,9 +635,13 @@ def engine_tick():
         return  # listen-only rest (stations calling us are still answered above)
     # CQ callers: activations first (if enabled), then strongest; fall through
     # to the next if one can't be answered. Region-directed CQs are skipped.
+    # A CQ older than ~2 cycles, or followed by them sending to someone else,
+    # means they are busy now; calling anyway just adds QRM.
     cands = [e for e in list(state["cq"].values())
-             if e.get("tag", "") in ANSWERABLE and not is_worked(e["call"])
-             and not on_hold(e["call"]) and now - e["seen"] < 60]
+             if e.get("tag", "") in ANSWERABLE and dx_ok(e)
+             and not is_worked(e["call"]) and not on_hold(e["call"])
+             and now - e["seen"] < 35 and not in_qso(e)
+             and e["snr"] >= cfg.get("min_snr", -20)]
     cands.sort(key=cq_rank)
     for e in cands:
         if e.get("msg") and acquire(e["call"], e["grid"], e["msg"],
@@ -594,19 +651,23 @@ def engine_tick():
             return
     if now < ENG["cq_until"]:
         return  # our own CQ keeps running; WS repeats it each period
-    # no CQ: tail-end strongest traffic (overheard non-CQ), try twice.
-    # A Reply to "A B ..." makes WS call B, the sender, so B is the target.
+    # no CQ: tail-end a station signing off, never one mid-QSO. A Reply to
+    # "A B ..." makes WS call B, the sender. RR73/RRR usually comes from the
+    # station running the frequency, who is about to be free; prefer those.
     best = None
     for m in list(state["msgs"]):
-        if now - m.get("seen", 0) >= 90:
+        if now - m.get("seen", 0) >= 30:
             continue
-        to, frm, _ = addressing(m["msg"])
+        to, frm, rest = addressing(m["msg"])
         if not frm or "." in frm or is_me(to) or is_me(frm):
             continue
-        if is_worked(frm) or on_hold(frm):
+        if not rest or rest[-1] not in SIGNOFF:
             continue
-        if best is None or m["snr"] > best[0]["snr"]:
-            best = (m, frm)
+        if is_worked(frm) or on_hold(frm) or m["snr"] < cfg.get("min_snr", -20):
+            continue
+        key = (rest[-1] == "73", -m["snr"])
+        if best is None or key < best[2]:
+            best = (m, frm, key)
     if best and acquire(best[1], "", best[0]["msg"], tries=cfg.get("tail_tries", 2), why="tail-end"):
         ENG["busy"] += 1
         return
@@ -650,9 +711,25 @@ def start_cq(secs):
     ENG["cq_until"] = time.time() + secs
     log(f"calling CQ for {secs}s ({how})")
 
+def pileup(call, now=None):
+    """Stations heard calling `call` in the last 30 s (not counting us)."""
+    now = now or time.time()
+    return sum(1 for c, ts in list(ENG["calls_to"].get(base_call(call), {}).items())
+               if now - ts < 30 and not is_me(c))
+
+def in_qso(e):
+    """They have sent to someone since their last CQ."""
+    return ENG["active"].get(base_call(e["call"]), 0) > e["seen"]
+
+def cq_score(e, now=None):
+    """Chance of a contact: their SNR, less 3 dB per station already calling
+    them, plus 3 if heard in the last cycle (still on frequency)."""
+    now = now or time.time()
+    return e["snr"] - 3 * pileup(e["call"], now) + (3 if now - e["seen"] < 16 else 0)
+
 def cq_rank(e):
     special = state["config"].get("special_first", True) and e.get("special", False)
-    return (not special, -e["snr"], e["km"] is None, e["km"] or 0)
+    return (not special, -cq_score(e), e["km"] is None, e["km"] or 0)
 
 def acquire(call, grid, msg, tries, why):
     p = state["decparams"].get(msg)
@@ -660,7 +737,8 @@ def acquire(call, grid, msg, tries, why):
         tune_tx(1 - parity(p["t_ms"]))  # we answer in the other period
     if not send_exact_reply(CTX["tx"], msg):
         return False
-    state["target"] = {"call": call, "grid": grid, "left": tries, "why": why,
+    # `left` counts 15 s cycles; we transmit in every other one
+    state["target"] = {"call": call, "grid": grid, "left": tries * 2, "why": why,
                        "msg": msg, "resp": False}
     ENG["cq_until"] = 0  # a Reply replaces our CQ in WS
     state["stats"]["calls_made"] += 1
@@ -701,10 +779,22 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                 "seen": now, "t": time.strftime("%H:%M:%S"),
                 "hold": on_hold(call),
                 "mode": state["decparams"].get(msg, {}).get("mode", "?")}
+            ENG["active"][base_call(call)] = 0  # calling CQ again: free
             state["stats"]["cq_heard"] += 1
             return  # selection happens in engine_tick (priority order)
+        signoff = bool(rest) and rest[-1] in SIGNOFF
+        if frm and "." not in frm and not is_me(frm):
+            fb = base_call(frm)
+            ENG["active"][fb] = 0 if signoff else now
+            if to and not signoff:
+                ENG["calls_to"].setdefault(base_call(to), {})[fb] = now
+            if t and same_call(frm, tgt) and not to_me and not t.get("resp"):
+                # they picked someone else: stop calling now (no hold; we will
+                # see their next CQ or sign-off)
+                halt_ws()
+                log(f"{tgt} is working {to}; standing by")
+                state["target"] = None
         if to_me and frm and "." not in frm:
-            signoff = bool(rest) and rest[-1] in SIGNOFF
             if t and same_call(frm, tgt):
                 # our target answered; WS auto-sequences from here. After their
                 # sign-off we only owe a 73, so release the target soon after.

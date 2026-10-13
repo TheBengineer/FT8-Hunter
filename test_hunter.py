@@ -34,6 +34,7 @@ def fresh():
     ENG["callers"].clear(); ENG["holds"].clear()
     ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0)
     ENG["occ"].clear(); ENG["spec"].clear(); ENG["noise_hist"].clear(); st["udp"].pop("tx_df", None)
+    ENG["active"].clear(); ENG["calls_to"].clear()
     CTX["tx"].sent.clear()
 
 def ps(s):
@@ -133,6 +134,37 @@ st["config"]["call_cq"] = False
 fresh(); ns["engine_tick"]()
 check("call_cq off -> no CQ", not ENG["cq_until"] and not CTX["tx"].sent)
 st["udp"]["revision"] = ""
+
+# --- politeness / success strategies
+ns["load_cty"]()
+fresh(); dec("CQ K9XYZ EN52", snr=5); ns["engine_tick"]()
+check("tries count transmissions (3 tries = 6 cycles)", st["target"]["left"] == 6)
+CTX["tx"].sent.clear(); dec("N0OTH K9XYZ -12")
+check("target answers someone else -> stop calling, no hold",
+      st["target"] is None and HALT in CTX["tx"].sent and not ns["on_hold"]("K9XYZ"))
+fresh(); dec("CQ K9XYZ EN52", snr=5); dec("N0OTH K9XYZ -12"); ns["engine_tick"]()
+check("station in a QSO since its CQ is skipped", st["target"] is None)
+dec("CQ K9XYZ EN52", snr=5); ns["engine_tick"]()
+check("...and called again once it CQs again", st["target"] and st["target"]["call"] == "K9XYZ")
+fresh(); dec("CQ OLD1ABC EN52", snr=5); st["cq"]["OLD1ABC"]["seen"] -= 40; ns["engine_tick"]()
+check("CQ older than 35 s skipped", st["target"] is None)
+fresh(); dec("CQ W9WEAK EN52", snr=-24); ns["engine_tick"]()
+check("CQ below min SNR skipped", st["target"] is None)
+fresh(); dec("JA1AAA VK2BBB -10", snr=8); ns["engine_tick"]()
+check("no tail-ending a QSO in progress", st["target"] is None)
+fresh(); dec("A1AA B1BB 73", snr=10); dec("C1CC D1DD RR73", snr=-10); ns["engine_tick"]()
+check("tail-end prefers RR73 (runner about to be free)", st["target"]["call"] == "D1DD")
+fresh(); dec("CQ DX W5ABC EM12", snr=10); ns["engine_tick"]()
+check("CQ DX from same continent (NA) not answered", st["target"] is None)
+dec("CQ DX DL1ABC JO62", snr=-10); ns["engine_tick"]()
+check("CQ DX from another continent answered", st["target"]["call"] == "DL1ABC")
+check("country lookup handles prefix/ and hashed calls",
+      ns["dxcc"]("VE3/K1ABC")[0] == "Canada" and ns["dxcc"]("<KR4MZM/AG>")[1] == "NA")
+fresh(); dec("CQ K1PILE FN42", snr=0); dec("CQ K2QUIET FN42", snr=-6)
+for c in ("N1AA", "N2BB", "N3CC"):
+    dec(f"K1PILE {c} FN42")
+ns["engine_tick"]()
+check("3-deep pileup ranks below a quieter clear CQ", st["target"]["call"] == "K2QUIET")
 
 # --- frequency picker
 fresh()

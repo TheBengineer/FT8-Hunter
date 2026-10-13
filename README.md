@@ -6,14 +6,54 @@ possible without being rude on the band.**
 Each cycle it does the first of these that applies:
 
 1. Answer a station calling you.
-2. Pounce on an activator (CQ POTA / SOTA / WWFF / IOTA / BOTA / LOTA), strongest first.
-3. Answer any other CQ, strongest first (CQs directed at a region are skipped).
+2. Pounce on an activator (CQ POTA / SOTA / WWFF / IOTA / BOTA / LOTA).
+3. Answer any other CQ.
 4. Tail-end a station signing off.
 5. Call CQ for a while, then stop and listen.
 
-To stay polite it limits retries, holds off stations that don't answer, never
-abandons a QSO in progress, transmits on a clear offset instead of on top of the
-station it calls, and backs off when someone else (SSB, CW…) is using the frequency.
+CQs are ranked by chance of a contact: SNR, minus 3 dB for each station already
+calling them, plus 3 if heard last cycle.
+
+To stay polite it limits retries (counted in transmissions), holds off stations that
+don't answer, stops the moment its target picks someone else, never abandons a QSO
+in progress, only tail-ends sign-offs, skips stations already in a QSO, answers
+`CQ DX` only from another continent, transmits on a clear offset instead of on top
+of the station it calls, and backs off when someone else (SSB, CW…) is using the
+frequency.
+
+```mermaid
+flowchart TD
+    tick([Every 15 s cycle]) --> tgt{Calling or<br/>working a target?}
+    tgt -- yes --> fin{Logged, signed off,<br/>or out of tries?}
+    fin -- no --> keep[Keep going: re-send the Reply<br/>until they answer] --> wait([next cycle])
+    fin -- yes --> rel[Release target<br/>hold it if it never answered] --> wait
+    tgt -- no --> qrm{Someone else on<br/>frequency? *}
+    qrm -- yes --> wait
+    qrm -- no --> caller{Station<br/>calling me?}
+    caller -- yes --> ans[Answer it]
+    caller -- no --> rest{Listen pause?}
+    rest -- yes --> wait
+    rest -- no --> act{Activator CQ<br/>worth answering?}
+    act -- yes --> pounce[Pounce on the best]
+    act -- no --> cq{Other CQ<br/>worth answering?}
+    cq -- yes --> reply[Answer the best]
+    cq -- no --> mine{Our CQ run<br/>still going?}
+    mine -- yes --> wait
+    mine -- no --> tail{Station signing off?<br/>RR73 / RRR / 73}
+    tail -- yes --> tailend[Tail-end it]
+    tail -- no --> over{Our CQ run<br/>just ended?}
+    over -- yes --> listen[Stop TX, listen<br/>idle_secs] --> wait
+    over -- no --> callcq[Call CQ for cq_secs]
+    ans & pounce & reply & tailend & callcq --> tune[Before TX: Hold Tx Freq +<br/>move to a clear offset *] --> wait
+```
+
+"Worth answering" means: heard in the last 35 s, not already worked today or on
+hold, not in a QSO with someone since that CQ, at or above the minimum SNR, not a
+CQ aimed at a region, and for `CQ DX` on another continent. Between cycles, each
+decode can also end a target early: if it answers someone else the hunter stops
+calling, and a new caller replaces a target that hasn't answered yet.
+
+\* needs the [ws-hunter](#ws-build-with-hunter-controls) build of WS.
 
 ## Run
 
