@@ -17,21 +17,23 @@ class FakeSock:
     def sendto(self, data, addr): self.sent.append(struct.unpack(">I", data[8:12])[0])
 
 
-REPLY, HALT, CONFIGURE, SET_TX_ENABLED = 4, 8, 15, 26
+REPLY, HALT, CONFIGURE = 4, 8, 15
+SET_TX_PERIOD, SET_TX_DF, SET_HOLD, SET_TX_ENABLED = 19, 24, 25, 26
 ok = True
 def check(name, cond):
     global ok
     ok &= bool(cond)
     print(("PASS " if cond else "FAIL ") + name)
 
-def dec(msg, snr=-5):
-    ns["set_decparams"](msg, {"t_ms": 0, "snr": snr, "dt": 0.1, "df": 1500, "mode": "~"})
+def dec(msg, snr=-5, df=1500, t_ms=0):
+    ns["set_decparams"](msg, {"t_ms": t_ms, "snr": snr, "dt": 0.1, "df": df, "mode": "~"})
     ns["handle_decode"](msg, snr, CTX["tx"], None, {}, [0], 15000)
 
 def fresh():
     st["target"] = None; st["cq"].clear(); st["msgs"].clear(); st["worked"] = set()
     ENG["callers"].clear(); ENG["holds"].clear()
-    ENG.update(idle_until=0, cq_until=0, idle_n=0)
+    ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0)
+    ENG["occ"].clear(); ENG["spec"].clear(); ENG["noise_hist"].clear(); st["udp"].pop("tx_df", None)
     CTX["tx"].sent.clear()
 
 def ps(s):
@@ -114,7 +116,10 @@ check("nothing to answer -> calls CQ (halt, configure, stock click)",
       ENG["cq_until"] > time.time() and CTX["tx"].sent[:2] == [HALT, CONFIGURE])
 st["udp"]["revision"] = "260926-hunter"
 fresh(); ns["engine_tick"]()
-check("ws-hunter build -> Enable Tx over UDP", CTX["tx"].sent == [HALT, CONFIGURE, SET_TX_ENABLED])
+s = CTX["tx"].sent
+check("ws-hunter build -> period, hold, offset, then CQ + Enable Tx over UDP",
+      s[0] == HALT and s[1] == SET_TX_PERIOD and SET_HOLD in s and SET_TX_DF in s
+      and s[-2:] == [CONFIGURE, SET_TX_ENABLED])
 dec("JA1AAA VK2BBB RR73"); ns["engine_tick"]()
 check("tail-end traffic does not interrupt our CQ", st["target"] is None and ENG["cq_until"])
 dec("CQ POTA K4PRK EM85"); ns["engine_tick"]()
@@ -127,6 +132,64 @@ check("CQ run over -> halt and listen", CTX["tx"].sent == [HALT] and ENG["idle_u
 st["config"]["call_cq"] = False
 fresh(); ns["engine_tick"]()
 check("call_cq off -> no CQ", not ENG["cq_until"] and not CTX["tx"].sent)
+st["udp"]["revision"] = ""
+
+# --- frequency picker
+fresh()
+pick = ns["pick_tx_df"]
+f = pick(1)
+check("empty band -> mid-band offset", f is not None and 1400 <= f <= 1500)
+for i, df in enumerate(range(300, 2700, 80)):  # crowd the odd period except one hole
+    if not 1800 <= df < 2000:
+        dec(f"W{i}AA K{i}BB -10", df=df, t_ms=15000)
+f = pick(1)
+check("picks the only clear gap (1800-2000)", f is not None and 1800 <= f and f + 50 <= 2000)
+check("even period unaffected by odd-period crowd", 1400 <= pick(0) <= 1500)
+check("keeps current offset while clear", pick(1, current=1850) == 1850)
+check("moves off an occupied current offset", pick(1, current=700) != 700)
+for i, df in enumerate(range(1800, 2000, 40)):
+    dec(f"W{i}CC K{i}DD -10", df=df, t_ms=15000)
+check("fully crowded period -> no pick", pick(1) is None)
+
+# answering a station on the even period moves us to a clear odd offset
+fresh(); st["udp"]["revision"] = "260926-hunter"; st["udp"]["tx_df"] = 1500
+dec("K1CQ W2BUSY -05", df=1480, t_ms=15000)       # odd period traffic on our offset
+dec("CQ K4PRK EM85", snr=-3, df=900, t_ms=0)       # even-period CQ: we answer on odd
+ns["engine_tick"]()
+s = CTX["tx"].sent
+check("answer: hold + offset change before the Reply",
+      s.index(SET_HOLD) < s.index(REPLY) and s.index(SET_TX_DF) < s.index(REPLY))
+fresh(); st["udp"]["revision"] = ""; st["udp"]["tx_df"] = 1500
+dec("CQ K4PRK EM85", snr=-3, df=900, t_ms=0); ns["engine_tick"]()
+check("stock WS: no control messages, suggestion only",
+      CTX["tx"].sent == [REPLY] and ENG["suggest"]["par"] == 1)
+
+# --- spectrum + someone else on frequency
+def spectrum(levels, t_ms=15000, floor=-20.0, step=0.25):
+    body = struct.pack(">IIII", t_ms, 15000, 0, 10) + struct.pack(">dd", floor, step)
+    body += struct.pack(">I", len(levels)) + bytes(levels)
+    return struct.pack(">III", 0xADBCCBDA, 2, 27) + ps("WS") + body
+def handle(pkt):
+    ns["handle_spectrum"](pkt, 12 + 4 + 2)
+quiet = [20] * 300                                  # flat noise
+one_ft8 = quiet[:]; one_ft8[150:155] = [80] * 5     # one 50 Hz signal at 1500 Hz
+fresh(); handle(spectrum(one_ft8))
+check("spectrum marks hot bins", ENG["spec"][1]["hot"] == [1500, 1510, 1520, 1530, 1540])
+f = pick(1, current=1510)
+check("undecoded signal in spectrum moves the pick", f != 1510)
+ssb = quiet[:]; ssb[30:280] = [90] * 250            # 300-2800 Hz voice signal fills the passband
+fresh()
+for _ in range(4): handle(spectrum(quiet))           # normal band first: learns the noise floor
+handle(spectrum(ssb)); check("one wide cycle alone: no backoff", ENG["qrm_until"] == 0)
+handle(spectrum(ssb))
+check("two wide cycles -> back off", ENG["qrm_until"] > time.time())
+ENG["cq_until"] = 0; dec("CQ K4PRK EM85", snr=-3); ns["engine_tick"]()
+check("no new calls during backoff", st["target"] is None)
+fresh(); dec("K1AA K2BB -10", df=1000, t_ms=15000); dec("K3CC K4DD -10", df=1100, t_ms=15000)
+busy_ft8 = quiet[:]
+for i in range(95, 125): busy_ft8[i] = 90           # 1000-1250 Hz: explained by decodes
+handle(spectrum(busy_ft8)); handle(spectrum(busy_ft8))
+check("wide energy explained by FT8 decodes: no backoff", ENG["qrm_until"] == 0)
 st["udp"]["revision"] = ""
 
 # --- real UDP packets through udp_listener

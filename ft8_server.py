@@ -17,7 +17,9 @@ state = {
     "config": {"max_cycles": 3, "cooldown": 2, "cq_only": True,
                "cq_tries": 3, "tail_tries": 2, "hold_min": 10,
                "idle_every": 4, "idle_secs": 60, "special_first": True,
-               "call_cq": True, "cq_secs": 120},
+               "call_cq": True, "cq_secs": 120,
+               "auto_df": True, "df_lo": 300, "df_hi": 2700,
+               "qrm_detect": True, "qrm_backoff_min": 5},
     "stats": {"cq_heard": 0, "calls_made": 0},
 }
 # "CQ [TAG] CALL [GRID]"; TAG is DX, TEST, an activity (POTA...) or a
@@ -92,10 +94,14 @@ def pack_halt(id_):
 def pack_replay(id_):
     return struct.pack(">II", 0xADBCCBDA, 2) + struct.pack(">I", 7) + pack_str(id_)
 
-SET_TX_ENABLED = 26  # ws-hunter build only (see TheBengineer/ws-hunter)
+# ws-hunter build only (see TheBengineer/ws-hunter, Network/NetworkMessage.hpp)
+SET_TX_PERIOD, SET_TX_DF, SET_HOLD_TX_FREQ, SET_TX_ENABLED, SPECTRUM = 19, 24, 25, 26, 27
 def pack_set_bool(mtype, id_, value):
     """ws-hunter station-control message carrying one bool."""
     return struct.pack(">III", 0xADBCCBDA, 2, mtype) + pack_str(id_) + struct.pack(">B", 1 if value else 0)
+
+def pack_set_u32(mtype, id_, value):
+    return struct.pack(">III", 0xADBCCBDA, 2, mtype) + pack_str(id_) + struct.pack(">I", value)
 
 def has_ws_hunter():
     """True when WS reports the ws-hunter build in its Heartbeat revision."""
@@ -204,7 +210,11 @@ CTX = {"tx": None, "myll": None, "seen": {}, "cycle": [0]}
 # idle_until ts (listen-only rest), busy_cycles (consecutive cycles with a target)
 ENG = {"holds": {}, "callers": deque(maxlen=20), "parity": {0: 0, 1: 0},
        "idle_until": 0, "busy": 0, "idle_n": 0,
-       "cq_until": 0}  # calling our own CQ until this time (0 = not calling)
+       "cq_until": 0,  # calling our own CQ until this time (0 = not calling)
+       "occ": deque(maxlen=800),  # recent decodes {t, par, df}: who is where
+       "spec": {},                # parity -> latest ws-hunter spectrum summary
+       "noise_hist": deque(maxlen=40),  # per-period noise estimates (dB)
+       "qrm_until": 0, "qrm_n": 0, "qrm_why": ""}
 
 state["ws_id"] = "WSJT-X"   # learned from WS broadcasts when heard
 state["ws_addr"] = None    # (ip, ephemeral port) WSJT-X listens on — learned from its packets
@@ -306,8 +316,15 @@ def udp_listener():
                         state["udp"]["tx_enabled"] = bool(data[p]); p += 1
                         state["udp"]["transmitting"] = bool(data[p]); p += 1
                         state["udp"]["tx_t"] = time.time()
+                        if p + 9 <= len(data):  # Decoding bool, Rx DF u32, Tx DF u32
+                            state["udp"]["rx_df"], state["udp"]["tx_df"] = struct.unpack(">II", data[p+1:p+9])
                 except Exception as e:
                     log_err("Status", e)
+            if mtype == SPECTRUM:
+                try:
+                    handle_spectrum(data, off)
+                except Exception as e:
+                    log_err("Spectrum", e)
             if mtype == 2 and CTX["tx"] is not None:  # live Decode: exact params!
                 try:
                     p = off + 1  # New flag (off already past type+id)
@@ -339,6 +356,7 @@ def set_decparams(msg, params):
     d = state["decparams"]
     d.pop(msg, None)
     d[msg] = params
+    ENG["occ"].append({"t": time.time(), "par": parity(params["t_ms"]), "df": params["df"]})
     if len(d) > 500:
         state["decparams"] = dict(list(d.items())[-300:])
 
@@ -419,6 +437,98 @@ def prune(now):
     for c in [c for c, until in list(ENG["holds"].items()) if until <= now]:
         ENG["holds"].pop(c, None)
 
+FT8_BW, GUARD = 50, 15  # FT8 signal width above its DF; clearance each side (Hz)
+
+def parity(t_ms):
+    """0 = even (first) 15 s period of the minute, 1 = odd."""
+    return int(t_ms // 1000 // 15) % 2
+
+def occupied(par, now):
+    """Occupied audio intervals [lo, hi) on one T/R parity: recent decodes plus,
+    on the ws-hunter build, spectrum bins well above the noise floor."""
+    iv = [(o["df"] - GUARD, o["df"] + FT8_BW + GUARD) for o in list(ENG["occ"])
+          if o["par"] == par and now - o["t"] < 120]
+    sp = ENG["spec"].get(par)
+    if sp and now - sp["t"] < 120:
+        iv += [(f - GUARD, f + sp["bin"] + GUARD) for f in sp["hot"]]
+    return iv
+
+def pick_tx_df(par, current=None):
+    """Clearest Tx offset on parity `par`: the spot furthest from any occupied
+    interval (and the band edges). Keeps `current` while it stays clear."""
+    cfg = state["config"]
+    lo, hi = cfg.get("df_lo", 300), cfg.get("df_hi", 2700)
+    iv = occupied(par, time.time())
+    def room(f):  # Hz of clearance around [f, f + FT8_BW]; negative = overlap
+        d = min(f - lo, hi - (f + FT8_BW))
+        for a, b in iv:
+            if f + FT8_BW > a and f < b:
+                return -1
+            d = min(d, a - (f + FT8_BW) if a >= f + FT8_BW else f - b)
+        return d
+    if current and room(current) >= 0:
+        return current
+    best = max(range(lo, hi - FT8_BW + 1, 10), key=lambda f: (room(f), -abs(f - (current or 1500))))
+    return best if room(best) >= 0 else None
+
+def tune_tx(par):
+    """Before transmitting on parity `par`: hold Tx freq (so a Reply can't drag
+    us onto the DX) and move to a clear offset. Needs the ws-hunter build;
+    on stock WS the pick is only shown in the UI."""
+    cur = state["udp"].get("tx_df")
+    f = pick_tx_df(par, cur)
+    ENG["suggest"] = {"par": par, "df": f}
+    if not (has_ws_hunter() and state["config"].get("auto_df", True)):
+        return
+    tx, wid = CTX["tx"], state["ws_id"]
+    tx.sendto(pack_set_bool(SET_HOLD_TX_FREQ, wid, True), ws_dest())
+    if f and f != cur:
+        tx.sendto(pack_set_u32(SET_TX_DF, wid, f), ws_dest())
+        log(f"Tx offset {cur} -> {f} Hz ({'even' if par == 0 else 'odd'})")
+
+def handle_spectrum(data, off):
+    """ws-hunter SpectrumSummary: period QTime ms, T/R ms, start Hz, bin Hz,
+    floor dB, step dB, levels. Marks hot bins, and flags wide undecoded
+    energy (SSB, CW/RTTY clusters...) as someone else using the frequency."""
+    t_ms, tr_ms, start, bin_hz = struct.unpack(">IIII", data[off:off+16])
+    floor, step = struct.unpack(">dd", data[off+16:off+32])
+    n = struct.unpack(">I", data[off+32:off+36])[0]
+    levels = data[off+36:off+36+n]
+    db = [floor + v * step for v in levels]
+    freqs = [start + i * bin_hz for i in range(len(db))]
+    band = sorted(d for f, d in zip(freqs, db) if 200 <= f < 2800)
+    if not band:
+        return
+    # Noise floor from history, not this period alone: a voice signal can
+    # fill the whole passband, so this period's own floor would be the signal.
+    ENG["noise_hist"].append(band[len(band) // 10])
+    hist = sorted(ENG["noise_hist"])
+    noise = hist[len(hist) // 4]
+    hot = [f for f, d in zip(freqs, db) if d > noise + 8]
+    now, par = time.time(), int(t_ms // max(tr_ms, 1)) % 2
+    ENG["spec"][par] = {"t": now, "bin": bin_hz, "hot": hot, "noise": noise}
+    if not state["config"].get("qrm_detect", True):
+        return
+    # undecoded wide energy: strong bins no FT8 decode explains, in one run
+    dec_iv = [(o["df"] - GUARD, o["df"] + FT8_BW + GUARD) for o in list(ENG["occ"])
+              if o["par"] == par and now - o["t"] < 30]
+    run = best = 0
+    for f, d in zip(freqs, db):
+        strong = d > noise + 12 and not any(a <= f < b for a, b in dec_iv)
+        run = run + bin_hz if strong else 0
+        best = max(best, run)
+    if best >= 300:
+        ENG["qrm_n"] += 1
+        if ENG["qrm_n"] >= 2 and now >= ENG["qrm_until"]:
+            mins = state["config"].get("qrm_backoff_min", 5)
+            ENG["qrm_until"] = now + mins * 60
+            ENG["qrm_why"] = f"{best} Hz of undecoded signal"
+            log(f"non-FT8 activity on frequency ({best} Hz wide) — no new calls for {mins}m")
+            if ENG["cq_until"]:
+                ENG["cq_until"] = 0; halt_ws()
+    else:
+        ENG["qrm_n"] = 0
+
 def engine_tick():
     """Called once per 15s FT8 cycle. Priority: callers-to-me > CQ > traffic."""
     now = time.time()
@@ -455,6 +565,8 @@ def engine_tick():
             if not t.get("resp") and t.get("msg"):
                 send_exact_reply(CTX["tx"], t["msg"])
             return
+    if now < ENG["qrm_until"]:
+        return  # someone else is using the frequency: start nothing new
     # drop stale/held callers, first-come-first-serve
     while ENG["callers"]:
         c, m = ENG["callers"][0]
@@ -519,6 +631,13 @@ def start_cq(secs):
     Enable Tx is known to be off: on stock WS the fallback is a toggle click."""
     halt_ws()
     try:
+        # CQ on whichever period has fewer stations heard recently
+        now = time.time()
+        busy = [sum(1 for o in list(ENG["occ"]) if o["par"] == p and now - o["t"] < 120) for p in (0, 1)]
+        par = 0 if busy[0] <= busy[1] else 1
+        if has_ws_hunter():
+            CTX["tx"].sendto(pack_set_bool(SET_TX_PERIOD, state["ws_id"], par == 0), ws_dest())
+        tune_tx(par)
         CTX["tx"].sendto(pack_configure(state["ws_id"]), ws_dest())
         if has_ws_hunter():
             CTX["tx"].sendto(pack_set_bool(SET_TX_ENABLED, state["ws_id"], True), ws_dest())
@@ -536,6 +655,9 @@ def cq_rank(e):
     return (not special, -e["snr"], e["km"] is None, e["km"] or 0)
 
 def acquire(call, grid, msg, tries, why):
+    p = state["decparams"].get(msg)
+    if p:
+        tune_tx(1 - parity(p["t_ms"]))  # we answer in the other period
     if not send_exact_reply(CTX["tx"], msg):
         return False
     state["target"] = {"call": call, "grid": grid, "left": tries, "why": why,
@@ -678,6 +800,8 @@ class H(BaseHTTPRequestHandler):
                            "hot": ("even" if par[0] >= par[1] else "odd")},
                 "idle": max(0, round(ENG["idle_until"] - time.time())),
                 "cq_calling": max(0, round(ENG["cq_until"] - time.time())),
+                "qrm": {"secs": max(0, round(ENG["qrm_until"] - time.time())), "why": ENG["qrm_why"]},
+                "txdf": {"current": u.get("tx_df"), **ENG.get("suggest", {})},
                 "log": list(state["log"]), "config": state["config"], "stats": state["stats"],
                 "udp": {"holder": u["holder"], "ws_id": state["ws_id"],
                         "revision": u.get("revision", ""), "ws_hunter": has_ws_hunter(),
