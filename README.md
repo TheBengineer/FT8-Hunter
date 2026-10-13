@@ -65,7 +65,8 @@ the steps it passed marked "no". Each CQ shows why it is or isn't being called
 (on hold, in QSO, pileup size, stale, weak, region/DX-only), and calls on hold
 are underlined wherever they appear. The worked / ignored list shows today's
 contacts and the stations that never answered, with time, band and mode. On a desktop the cards spread into two or
-three columns.
+three columns; move cards with the arrows or by dragging, and each stays in the
+column you put it in.
 
 ## Run
 

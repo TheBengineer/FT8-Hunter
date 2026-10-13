@@ -6,12 +6,15 @@
 *{box-sizing:border-box;margin:0}body{font-family:system-ui,sans-serif;background:#0f1419;color:#e6e6e6;
 margin:0 auto;padding:12px;min-height:100vh}
 /* phone: one stack; desktop: cards flow into 2 then 3 columns, masonry-style */
-.cards{max-width:480px;margin:0 auto;columns:1;column-gap:10px}
-@media (min-width:900px){.cards{columns:2;max-width:980px}}
-@media (min-width:1350px){.cards{columns:3;max-width:1500px}}
+/* phone: one stack; desktop: 2 then 3 columns. Each card stays in the column
+   you put it in (saved per layout), whatever the other cards' heights. */
+.cards{max-width:480px;margin:0 auto;display:flex;gap:10px;align-items:stretch}
+.col{flex:1;min-width:0;min-height:80px;padding-bottom:40px}
+@media (min-width:900px){.cards{max-width:980px}}
+@media (min-width:1350px){.cards{max-width:1500px}}
 h1{font-size:1.2rem;text-align:center;margin-bottom:8px}
 h2{font-size:.95rem;margin-bottom:6px}
-.card{background:#1a222c;border-radius:12px;padding:12px;margin-bottom:10px;break-inside:avoid;display:inline-block;width:100%}
+.card{background:#1a222c;border-radius:12px;padding:12px;margin-bottom:10px;width:100%}
 .row{display:flex;gap:8px;align-items:center}
 button{flex:1;padding:14px;border:0;border-radius:10px;font-size:1rem;font-weight:700;color:#fff;background:#2a6cb6}
 button.on{background:#1f9d4d}button.warn{background:#8a2f2f}
@@ -44,7 +47,9 @@ details summary{font-weight:700;padding:4px}
 .card{position:relative}
 .mv{position:absolute;top:4px;right:4px;display:flex;gap:2px}
 .mv span{padding:3px 5px;color:#556;cursor:pointer;user-select:none;font-size:.85rem;line-height:1;border-radius:4px}
-.mv span:hover{color:#cde;background:#26303c}.mv .grip{cursor:grab;touch-action:none}.card.dragging{outline:2px dashed #2a6cb6;opacity:.7}.card.dragging .grip{cursor:grabbing}
+.mv span:hover{color:#cde;background:#26303c}.one .mv .lr{display:none}
+.card>h2,.card>details>summary,.card>.row:first-child{padding-right:110px}.one .card>h2,.one .card>details>summary,.one .card>.row:first-child{padding-right:70px}
+.col.over{outline:1px dashed #334;border-radius:12px}.mv .grip{cursor:grab;touch-action:none}.card.dragging{outline:2px dashed #2a6cb6;opacity:.7}.card.dragging .grip{cursor:grabbing}
 </style></head><body>
 <h1>📻 FT8 Hunter</h1>
 <main class="cards">
@@ -203,30 +208,49 @@ const txEl=$('tx');if(txEl){txEl.textContent=tx?'🔴 TX':'🟢 RX';txEl.style.c
 const c=$('ctxt');if(c)c.textContent=`${window._mode||'FT8'} · ${pos.toFixed(1)}s / ${per}s · ${pos<per*0.8?'receiving':pos<per*0.87?'decoding':'TX window'}`},200);
 </script>
 <script>
-// Card order: ▲ / ▼ move a card one place, or drag the ⠿ grip (mouse or
-// touch). Saved per browser.
+// Card layout: ▲ / ▼ move a card within its column, ◀ / ▶ to the next column,
+// or drag the ⠿ grip (mouse or touch) anywhere. Each column count (1, 2, 3)
+// keeps its own layout, saved per browser.
 (()=>{
-const box=document.querySelector('.cards'),KEY='cardOrder';
-const cards=()=>[...box.querySelectorAll(':scope>.card')];
-const def=cards().map(c=>c.dataset.id);
-function apply(order){const by=Object.fromEntries(cards().map(c=>[c.dataset.id,c]));
- [...order.filter(id=>by[id]),...def.filter(id=>!order.includes(id))].forEach(id=>box.appendChild(by[id]))}
-function save(){try{localStorage.setItem(KEY,JSON.stringify(cards().map(c=>c.dataset.id)))}catch(e){}}
-try{const o=JSON.parse(localStorage.getItem(KEY)||'null');if(Array.isArray(o))apply(o)}catch(e){}
-document.getElementById('bLayout').onclick=()=>{apply(def);try{localStorage.removeItem(KEY)}catch(e){}};
-let drag=null;
+const box=document.querySelector('.cards'),KEY='cardCols';
+const all=[...box.querySelectorAll(':scope>.card')],by=Object.fromEntries(all.map(c=>[c.dataset.id,c]));
+const DEF={1:[all.map(c=>c.dataset.id)],
+ 2:[['status','flow','dx','manual'],['cq','seq','ans','msgs','log','worked','settings']],
+ 3:[['status','flow','dx'],['cq','seq','ans','msgs'],['manual','log','worked','settings']]};
+let saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||'{}')||{}}catch(e){}
+const ncols=()=>innerWidth>=1350?3:innerWidth>=900?2:1;
+let n=0;
+function layout(k){  // saved layout for k columns, with unknown cards dropped and new ones added
+ const L=(Array.isArray(saved[k])&&saved[k].length===k?saved[k]:DEF[k]).map(c=>c.filter(id=>by[id]));
+ const seen=new Set(L.flat());all.forEach(c=>{if(!seen.has(c.dataset.id))L[k-1].push(c.dataset.id)});
+ const once=new Set();return L.map(c=>c.filter(id=>!once.has(id)&&once.add(id)))}
+function build(){n=ncols();box.classList.toggle('one',n===1);
+ const cols=layout(n).map(ids=>{const d=document.createElement('div');d.className='col';ids.forEach(id=>d.appendChild(by[id]));return d});
+ box.replaceChildren(...cols)}
+function save(){saved[n]=[...box.children].map(col=>[...col.children].map(c=>c.dataset.id));
+ try{localStorage.setItem(KEY,JSON.stringify(saved))}catch(e){}}
+build();addEventListener('resize',()=>{if(ncols()!==n)build()});
+document.getElementById('bLayout').onclick=()=>{saved={};try{localStorage.removeItem(KEY);localStorage.removeItem('cardOrder')}catch(e){};build()};
 const btn=(cls,txt,title)=>{const b=document.createElement('span');b.className=cls;b.textContent=txt;b.title=title;return b};
-cards().forEach(c=>{const mv=document.createElement('div');mv.className='mv';
- const up=btn('up','▲','Move up'),dn=btn('dn','▼','Move down'),g=btn('grip','⠿','Drag to reorder');
- mv.append(up,dn,g);c.appendChild(mv);
- up.onclick=()=>{const p=c.previousElementSibling;if(p){box.insertBefore(c,p);save()}};
- dn.onclick=()=>{const n=c.nextElementSibling;if(n){box.insertBefore(n,c);save()}};
- g.addEventListener('pointerdown',e=>{e.preventDefault();drag=c;c.classList.add("dragging");try{g.setPointerCapture(e.pointerId)}catch(_){}});
+function side(c,d){const col=c.parentElement,to=col[d<0?'previousElementSibling':'nextElementSibling'];if(!to)return;
+ const i=[...col.children].indexOf(c);to.insertBefore(c,to.children[i]||null);save()}
+let drag=null;
+all.forEach(c=>{const mv=document.createElement('div');mv.className='mv';
+ const l=btn('lr','◀','Move to the column on the left'),up=btn('up','▲','Move up'),dn=btn('dn','▼','Move down'),
+  r=btn('lr','▶','Move to the column on the right'),g=btn('grip','⠿','Drag to move');
+ mv.append(l,up,dn,r,g);c.appendChild(mv);
+ up.onclick=()=>{const p=c.previousElementSibling;if(p){c.parentElement.insertBefore(c,p);save()}};
+ dn.onclick=()=>{const x=c.nextElementSibling;if(x){c.parentElement.insertBefore(x,c);save()}};
+ l.onclick=()=>side(c,-1);r.onclick=()=>side(c,1);
+ g.addEventListener('pointerdown',e=>{e.preventDefault();drag=c;c.classList.add('dragging');try{g.setPointerCapture(e.pointerId)}catch(_){}});
  g.addEventListener('pointermove',e=>{if(drag!==c)return;
-  const el=document.elementFromPoint(e.clientX,e.clientY),t=el&&el.closest('.cards>.card');
-  if(!t||t===c)return;const r=t.getBoundingClientRect();
-  box.insertBefore(c,e.clientY<r.top+r.height/2?t:t.nextSibling)});
- const end=()=>{if(drag!==c)return;drag=null;c.classList.remove('dragging');save()};
+  const el=document.elementFromPoint(e.clientX,e.clientY);if(!el)return;
+  const t=el.closest('.col>.card'),col=el.closest('.cards>.col');
+  box.querySelectorAll('.col').forEach(x=>x.classList.toggle('over',x===col));
+  if(t&&t!==c){const rr=t.getBoundingClientRect();t.parentElement.insertBefore(c,e.clientY<rr.top+rr.height/2?t:t.nextSibling)}
+  else if(!t&&col&&col.lastElementChild!==c)col.appendChild(c)});  // empty space below a column's cards
+ const end=()=>{if(drag!==c)return;drag=null;c.classList.remove('dragging');
+  box.querySelectorAll('.col').forEach(x=>x.classList.remove('over'));save()};
  g.addEventListener('pointerup',end);g.addEventListener('pointercancel',end)});
 })();
 </script></body></html>
