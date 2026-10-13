@@ -260,6 +260,9 @@ ENG = {"holds": {}, "callers": deque(maxlen=20), "parity": {0: 0, 1: 0},
        "occ": deque(maxlen=800),  # recent decodes {t, par, df}: who is where
        "spec": {},                # parity -> latest ws-hunter spectrum summary
        "noise_hist": deque(maxlen=40),  # per-period noise estimates (dB)
+       "spec_pending": deque(maxlen=20),  # spectra waiting for their decodes
+       "spec_log": deque(maxlen=20),      # evaluated spectra, for /api/debug/spectrum
+       "qrm_first": None,
        "qrm_until": 0, "qrm_n": 0, "qrm_why": "",
        "active": {},    # base call -> last time heard sending to someone (0 = signed off)
        "calls_to": {}}  # base call -> {caller base call: last time}: their pileup
@@ -425,7 +428,8 @@ def set_decparams(msg, params):
     d = state["decparams"]
     d.pop(msg, None)
     d[msg] = params
-    ENG["occ"].append({"t": time.time(), "par": parity(params["t_ms"]), "df": params["df"]})
+    ENG["occ"].append({"t": time.time(), "tm": params["t_ms"], "par": parity(params["t_ms"]),
+                       "df": params["df"]})
     if len(d) > 500:
         state["decparams"] = dict(list(d.items())[-300:])
 
@@ -548,7 +552,7 @@ def set_mode(new):
     for k in ("cq", "answering", "decparams"):
         state[k].clear()
     state["msgs"].clear()
-    for k in ("callers", "occ", "noise_hist"):
+    for k in ("callers", "occ", "noise_hist", "spec_pending"):
         ENG[k].clear()
     for k in ("spec", "active", "calls_to"):
         ENG[k].clear()
@@ -600,8 +604,8 @@ def tune_tx(par):
 
 def handle_spectrum(data, off):
     """ws-hunter SpectrumSummary: period QTime ms, T/R ms, start Hz, bin Hz,
-    floor dB, step dB, levels. Marks hot bins, and flags wide undecoded
-    energy (SSB, CW/RTTY clusters...) as someone else using the frequency."""
+    floor dB, step dB, levels. Marks hot bins for the offset picker right
+    away; the busy-frequency check waits for that period's decodes."""
     t_ms, tr_ms, start, bin_hz = struct.unpack(">IIII", data[off:off+16])
     floor, step = struct.unpack(">dd", data[off+16:off+32])
     n = struct.unpack(">I", data[off+32:off+36])[0]
@@ -619,27 +623,48 @@ def handle_spectrum(data, off):
     hot = [f for f, d in zip(freqs, db) if d > noise + 8]
     now, par = time.time(), int(t_ms // max(tr_ms, 1)) % 2
     ENG["spec"][par] = {"t": now, "bin": bin_hz, "hot": hot, "noise": noise}
-    if not state["config"].get("qrm_detect", True):
-        return
-    # undecoded wide energy: strong bins no FT8 decode explains, in one run
-    dec_iv = [(o["df"] - GUARD, o["df"] + bw() + GUARD) for o in list(ENG["occ"])
-              if o["par"] == par and now - o["t"] < cyc(2)]
-    run = best = 0
-    for f, d in zip(freqs, db):
-        strong = d > noise + 12 and not any(a <= f < b for a, b in dec_iv)
-        run = run + bin_hz if strong else 0
-        best = max(best, run)
-    if best >= 300:
+    ENG["spec_pending"].append({"t": now, "t_ms": t_ms, "tr_ms": tr_ms, "par": par, "bin": bin_hz,
+                                "freqs": freqs, "db": db, "noise": noise,
+                                "warm": len(ENG["noise_hist"]) >= 8})
+    check_qrm(now)
+
+def check_qrm(now=None):
+    """Busy-frequency check for spectra whose decodes are in by now (decoding
+    finishes after the period ends): strong bins that no decode from that
+    period, or the same-parity period before it, explains. A run of 400 Hz
+    or more, persisting ~25 s, means someone else (SSB, RTTY...) is there."""
+    now = now or time.time()
+    settle = max(period(), 5)
+    while ENG["spec_pending"] and now - ENG["spec_pending"][0]["t"] >= settle:
+        sp = ENG["spec_pending"].popleft()
+        tr = sp["tr_ms"]
+        dec_iv = [(o["df"] - GUARD, o["df"] + bw() + GUARD) for o in list(ENG["occ"])
+                  if 0 <= (sp["t_ms"] - o.get("tm", -1)) % 86400000 <= 2 * tr
+                  and o["par"] == sp["par"]]
+        run = best = 0
+        for f, d in zip(sp["freqs"], sp["db"]):
+            strong = d > sp["noise"] + 12 and not any(a <= f < b for a, b in dec_iv)
+            run = run + sp["bin"] if strong else 0
+            best = max(best, run)
+        ENG["spec_log"].append({"t_ms": sp["t_ms"], "par": sp["par"], "noise": round(sp["noise"], 1),
+                                "warm": sp["warm"], "explained": len(dec_iv), "wide_hz": best,
+                                "db": [round(d, 1) for d in sp["db"]]})
+        if not (state["config"].get("qrm_detect", True) and sp["warm"]):
+            continue
+        if best < 400:
+            ENG["qrm_n"], ENG["qrm_first"] = 0, None
+            continue
         ENG["qrm_n"] += 1
-        if ENG["qrm_n"] >= 2 and now >= ENG["qrm_until"]:
+        if ENG["qrm_first"] is None:
+            ENG["qrm_first"] = sp["t_ms"]
+        span = (sp["t_ms"] - ENG["qrm_first"]) % 86400000
+        if ENG["qrm_n"] >= 2 and span >= 25000 and now >= ENG["qrm_until"]:
             mins = state["config"].get("qrm_backoff_min", 5)
             ENG["qrm_until"] = now + mins * 60
             ENG["qrm_why"] = f"{best} Hz of undecoded signal"
             log(f"non-FT8 activity on frequency ({best} Hz wide) — no new calls for {mins}m")
             if ENG["cq_until"]:
                 ENG["cq_until"] = 0; halt_ws()
-    else:
-        ENG["qrm_n"] = 0
 
 def fresh_callers(now=None):
     """Queued callers still worth answering, oldest first. Drops anyone worked,
@@ -728,6 +753,7 @@ def engine_tick():
             how = ("signing off" if t.get("done") else "in QSO") if t.get("resp") \
                 else f"calling, {(t['left'] + 1) // 2} tries left"
             return at("target", f"{t['call']}: {how}")
+    check_qrm(now)  # spectra wait for their decodes; we may transmit meanwhile
     if now < ENG["qrm_until"]:
         return at("qrm", ENG["qrm_why"])  # someone else is using the frequency
     # stations calling us, first-come-first-serve, working through all of them
@@ -975,6 +1001,9 @@ class H(BaseHTTPRequestHandler):
                 self.wfile.write(b); return
             except FileNotFoundError:
                 self.send_error(404); return
+        if self.path == "/api/debug/spectrum":
+            return self._json({"noise_hist": [round(x, 1) for x in list(ENG["noise_hist"])],
+                               "spectra": list(ENG["spec_log"])})
         if self.path == "/api/state":
             # snapshot shared structures first: the UDP/engine threads mutate them
             now = time.time()

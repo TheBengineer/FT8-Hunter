@@ -34,6 +34,7 @@ def fresh():
     ENG["callers"].clear(); ENG["holds"].clear()
     ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0)
     ENG["occ"].clear(); ENG["spec"].clear(); ENG["noise_hist"].clear(); st["udp"].pop("tx_df", None)
+    ENG["spec_pending"].clear(); ENG["qrm_first"] = None
     ENG["active"].clear(); ENG["calls_to"].clear()
     CTX["tx"].sent.clear()
 
@@ -231,12 +232,14 @@ check("stock WS: no control messages, suggestion only",
       CTX["tx"].sent == [REPLY] and ENG["suggest"]["par"] == 1)
 
 # --- spectrum + someone else on frequency
-def spectrum(levels, t_ms=15000, floor=-20.0, step=0.25):
-    body = struct.pack(">IIII", t_ms, 15000, 0, 10) + struct.pack(">dd", floor, step)
+def spectrum(levels, t_ms=15000, floor=-20.0, step=0.25, tr=15000):
+    body = struct.pack(">IIII", t_ms, tr, 0, 10) + struct.pack(">dd", floor, step)
     body += struct.pack(">I", len(levels)) + bytes(levels)
     return struct.pack(">III", 0xADBCCBDA, 2, 27) + ps("WS") + body
 def handle(pkt):
     ns["handle_spectrum"](pkt, 12 + 4 + 2)
+def settle():  # pretend the decodes for every pending spectrum are in
+    ns["check_qrm"](time.time() + 100)
 quiet = [20] * 300                                  # flat noise
 one_ft8 = quiet[:]; one_ft8[150:155] = [80] * 5     # one 50 Hz signal at 1500 Hz
 fresh(); handle(spectrum(one_ft8))
@@ -245,17 +248,32 @@ f = pick(1, current=1510)
 check("undecoded signal in spectrum moves the pick", f != 1510)
 ssb = quiet[:]; ssb[30:280] = [90] * 250            # 300-2800 Hz voice signal fills the passband
 fresh()
-for _ in range(4): handle(spectrum(quiet))           # normal band first: learns the noise floor
-handle(spectrum(ssb)); check("one wide cycle alone: no backoff", ENG["qrm_until"] == 0)
-handle(spectrum(ssb))
-check("two wide cycles -> back off", ENG["qrm_until"] > time.time())
+for i in range(2): handle(spectrum(ssb, t_ms=i * 15000))
+settle(); check("no verdict before the noise floor is learned", ENG["qrm_until"] == 0)
+fresh()
+for i in range(8): handle(spectrum(quiet, t_ms=i * 15000))   # normal band: learn the floor
+handle(spectrum(ssb, t_ms=120000)); handle(spectrum(ssb, t_ms=135000))
+settle(); check("15 s of wide signal: not yet", ENG["qrm_until"] == 0)
+handle(spectrum(ssb, t_ms=150000))
+check("verdict waits for the period's decodes", ENG["qrm_until"] == 0)
+settle(); check("30 s of wide undecoded signal -> back off", ENG["qrm_until"] > time.time())
 ENG["cq_until"] = 0; dec("CQ K4PRK EM85", snr=-3); ns["engine_tick"]()
 check("no new calls during backoff", st["target"] is None)
-fresh(); dec("K1AA K2BB -10", df=1000, t_ms=15000); dec("K3CC K4DD -10", df=1100, t_ms=15000)
-busy_ft8 = quiet[:]
-for i in range(95, 125): busy_ft8[i] = 90           # 1000-1250 Hz: explained by decodes
-handle(spectrum(busy_ft8)); handle(spectrum(busy_ft8))
-check("wide energy explained by FT8 decodes: no backoff", ENG["qrm_until"] == 0)
+# regression: busy FT2 band right after a mode change, decodes arriving after
+# the spectrum, was flagged as "2160 Hz of undecoded signal"
+fresh(); st["udp"]["mode"] = "FT2"
+for i in range(8): handle(spectrum(quiet, t_ms=i * 3750, tr=3750))
+busy_ft2 = quiet[:]
+dfs = list(range(400, 2600, 180))
+for df in dfs:
+    for b in range(df // 10, (df + 167) // 10): busy_ft2[b] = 90
+for i in range(8, 20):
+    tm = i * 3750
+    handle(spectrum(busy_ft2, t_ms=tm, tr=3750))
+    for k, df in enumerate(dfs):                     # decodes for that period arrive afterwards
+        dec(f"W{k}AA K{k}BB -10", df=df, t_ms=tm)
+settle(); check("busy FT2 band whose decodes arrive late: no backoff", ENG["qrm_until"] == 0)
+st["udp"]["mode"] = "FT8"
 st["udp"]["revision"] = ""
 
 # --- real UDP packets through udp_listener
