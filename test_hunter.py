@@ -125,9 +125,44 @@ fresh(); dec("JA1AAA VK2BBB RR73", snr=3); ns["engine_tick"]()
 check("tail-end targets sender VK2BBB", st["target"] and st["target"]["call"] == "VK2BBB")
 
 # --- worked checks
-st["worked"] = {"N0CALL"}
+st["worked"] = {("N0CALL", None, None)}
 check("worked check ignores /P suffix", ns["is_worked"]("N0CALL/P"))
 check("own call counts as worked", ns["is_worked"]("<KR4MZM/AG>"))
+
+# --- contacts and holds count per band and mode
+fresh(); st["udp"].update(band="20m", mode="FT8")
+ns["add_worked"]("W9XYZ")
+check("worked on 20m FT8", ns["is_worked"]("W9XYZ"))
+st["udp"]["mode"] = "FT4"
+check("same station not worked yet on 20m FT4", not ns["is_worked"]("W9XYZ"))
+st["udp"].update(band="40m", mode="FT8")
+check("same station not worked yet on 40m FT8", not ns["is_worked"]("W9XYZ"))
+ns["hold"]("W9XYZ")
+check("hold on 40m FT8", ns["on_hold"]("W9XYZ"))
+st["udp"]["mode"] = "FT4"
+check("hold doesn't carry to 40m FT4", not ns["on_hold"]("W9XYZ"))
+st["udp"].update(band="20m", mode="FT8")
+check("hold doesn't carry to 20m FT8", not ns["on_hold"]("W9XYZ"))
+dec("CQ W9XYZ EN52"); st["udp"]["band"] = "40m"; dec("CQ W9XYZ EN52")
+check("CQ from a station held on this band/mode is skipped",
+      ns["cq_skip"](st["cq"]["W9XYZ"], time.time()) == "on hold")
+import tempfile, datetime
+home = tempfile.mkdtemp(dir=os.environ.get("TMPDIR"))
+os.makedirs(os.path.join(home, ".local/share/WS"))
+today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
+with open(os.path.join(home, ".local/share/WS/wsjtx_log.adi"), "w") as f:
+    f.write(f"<call:5>K1ABC <qso_date:8>{today} <band:3>20m <mode:3>FT8 <eor>"
+            f"<call:5>K2ABC <qso_date:8>{today} <freq:9>7.075500 <mode:4>MFSK <submode:3>FT4 <eor>"
+            f"<call:5>K3ABC <qso_date:8>19990101 <band:3>20m <mode:3>FT8 <eor>")
+old_home = os.environ["HOME"]; os.environ["HOME"] = home
+w, _ = ns["load_worked"](); os.environ["HOME"] = old_home
+check("ADIF: band, freq and FT4 submode read; old days ignored",
+      w == {("K1ABC", "20m", "FT8"), ("K2ABC", "40m", "FT4")})
+st["worked"] = w; st["udp"].update(band="20m", mode="FT4")
+check("ADIF 20m FT8 contact doesn't block 20m FT4", not ns["is_worked"]("K1ABC"))
+st["udp"]["mode"] = "FT8"
+check("ADIF 20m FT8 contact blocks 20m FT8", ns["is_worked"]("K1ABC"))
+fresh(); st["udp"]["band"] = None
 
 # --- activation priority
 fresh()
@@ -323,7 +358,13 @@ for spec, extra in ((1, b""), (2, struct.pack(">i", -18000))):
     fresh(); st["target"] = {"call": "W1AW", "left": 99}
     send(5, struct.pack(">qIB", 2461327, 52_000_000, spec) + extra + ps("W1AW") + ps("FN31"))
     check(f"QSO Logged (timespec {spec}) marks worked + clears target",
-          "W1AW" in st["worked"] and st["target"] is None)
+          ns["is_worked"]("W1AW") and st["target"] is None)
+fresh(); st["udp"].update(band="20m", mode="FT8")
+send(5, struct.pack(">qIB", 2461327, 52_000_000, 1) + ps("K7ABC") + ps("DN31")
+     + struct.pack(">Q", 7074000) + ps("FT4"))
+check("QSO Logged records its own band and mode (40m FT4)",
+      ("K7ABC", "40m", "FT4") in st["worked"] and not ns["is_worked"]("K7ABC"))
+st["udp"]["band"] = None
 
 # --- FT4 / FT2: everything follows the mode WS reports in Status
 def status(mode_name, tx_df=1500):

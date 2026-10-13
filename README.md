@@ -50,7 +50,8 @@ flowchart TD
 ```
 
 "Worth answering" means: heard in the last two periods, not already worked today or on
-hold, not in a QSO with someone since that CQ, at or above the minimum SNR, not a
+hold on this band and mode (a station worked on 20m FT8 can still be worked on 20m
+FT4 or 40m FT8, and a hold on one doesn't apply to the others), not in a QSO with someone since that CQ, at or above the minimum SNR, not a
 CQ aimed at a region, and for `CQ DX` on another continent. Between cycles, each
 decode can also end a target early: if it answers someone else the hunter stops
 calling, and a new caller replaces a target that hasn't answered yet. A station

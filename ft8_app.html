@@ -67,7 +67,7 @@ details summary{font-weight:700;padding:4px}
 <input id="mc" placeholder="CALL" autocapitalize="characters"><input id="mg" placeholder="GRID" style="max-width:110px" autocapitalize="characters"></div>
 <button id="bC" style="margin-top:8px">Call now</button></div>
 <div class="card"><h2>📝 Log</h2><ul id="log"></ul><div class="small" id="stats"></div></div>
-<div class="card"><details><summary>✅ Worked / ignored (<span id="wn">0</span>)</summary><ul id="wk"></ul></details></div>
+<div class="card"><details><summary>✅ Worked on <span id="wslot">this band</span> (<span id="wn">0</span>)</summary><ul id="wk"></ul></details></div>
 <div class="card"><details><summary>⚙️ Settings</summary>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">CQ tries</span><input id="sCq" type="number" min="1" max="10" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Tail-end tries</span><input id="sTail" type="number" min="1" max="10" style="max-width:90px;margin-top:0"></div>
@@ -141,7 +141,7 @@ const q=s.qrm||{};$('qrm').style.display=q.secs?'block':'none';if(q.secs)$('qrm'
 const ago=s.udp.heard_ago;
 if(ago!=null&&ago<45){$('udpdot').className='dot run';$('udp').textContent=`🔗 WS linked (${ago}s ago, id=${s.udp.ws_id}${s.udp.ws_hunter?' · ws-hunter':''})${s.udp.dxcall?' · DX='+s.udp.dxcall:''}`}
 else{$('udpdot').className='dot';$('udp').textContent=`⚪ no WS UDP yet · port: ${s.udp.holder}`}
-$('wn').textContent=s.worked.length;$('wk').innerHTML=s.worked.map(c=>`<li class="mono">${c}</li>`).join('');
+$('wn').textContent=s.worked.length;$('wslot').textContent=`${s.band||'this band'} ${s.mode||''}`;$('wk').innerHTML=s.worked.map(c=>`<li class="mono">${c}</li>`).join('');
 $('dxn').textContent=s.target?('· '+s.target.call):'· no target';
 $('dxf').innerHTML=(s.dxfocus||[]).map(e=>`<li>${e.tome?'<span class="badge me">TO ME</span>':''}<span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="mono">${mark(e.msg)}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';
 $('mytx').innerHTML=(s.mytx||[]).map(e=>`<li><span class="badge me">TX</span><span class="mono">${e.msg}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';

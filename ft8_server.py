@@ -204,8 +204,9 @@ def dx_ok(e):
     return (e.get("km") or 0) > 3000
 
 def load_worked():
-    """Only TODAY's contacts count (UTC date, as ADIF records qso_date).
-    Returns (set, {path: mtime})."""
+    """Only TODAY's contacts count (UTC date, as ADIF records qso_date), each
+    as (call, band, mode) so a station can be worked again on another band or
+    mode. Returns (set, {path: mtime})."""
     import datetime
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
     paths = [os.path.expanduser("~/.local/share/WS/wsjtx_log.adi"),
@@ -223,8 +224,15 @@ def load_worked():
             if md and md.group(1) != today:
                 continue
             mc = re.search(r"<call:\d+>([A-Za-z0-9/]+)", rec)
-            if mc:
-                w.add(mc.group(1).upper())
+            if not mc:
+                continue
+            mb = re.search(r"<band:\d+>(\w+)", rec, re.I)
+            mf = re.search(r"<freq:\d+>([\d.]+)", rec, re.I)
+            # WSJT-X logs FT4 as MODE MFSK, SUBMODE FT4
+            mm = (re.search(r"<submode:\d+>(\w+)", rec, re.I)
+                  or re.search(r"<mode:\d+>(\w+)", rec, re.I))
+            band_ = mb.group(1).lower() if mb else band_of(float(mf.group(1)) * 1e6) if mf else None
+            w.add((mc.group(1).upper(), band_, mm.group(1).upper() if mm else None))
         log(f"worked today: {len(w)} total ({p})")
     return w, mtimes
 
@@ -362,8 +370,17 @@ def udp_listener():
                         q5 += 4
                     ln = struct.unpack(">i", data[q5:q5+4])[0]; q5 += 4
                     dxcall = data[q5:q5+max(ln, 0)].decode("utf-8", "errors").strip().upper()
+                    q5 += max(ln, 0)
+                    lband = lmode = None
+                    try:  # DX grid, Tx frequency (dial Hz), Mode
+                        ln = struct.unpack(">i", data[q5:q5+4])[0]; q5 += 4 + max(ln, 0)
+                        lband = band_of(struct.unpack(">Q", data[q5:q5+8])[0]); q5 += 8
+                        ln = struct.unpack(">i", data[q5:q5+4])[0]; q5 += 4
+                        lmode = data[q5:q5+max(ln, 0)].decode("utf-8", "errors").strip().upper() or None
+                    except struct.error:
+                        pass  # short packet: assume the current band and mode
                     if dxcall:
-                        state["worked"].add(dxcall)
+                        add_worked(dxcall, lband, lmode)
                         t = state["target"]
                         if t and same_call(t["call"], dxcall):
                             log(f"logged QSO with {dxcall} — nice!")
@@ -374,6 +391,7 @@ def udp_listener():
                     log_err("QSO Logged parse", e)
             if mtype == 1:  # Status body: DialFreq u64, Mode, DXcall, Report,
                 try:           # TxMode, TxEnabled?, Transmitting?, ...
+                    set_band(band_of(struct.unpack(">Q", data[off:off+8])[0]))
                     p = off + 8  # dialfreq u64
                     strs = []
                     for _ in range(4):  # Mode, DXcall, Report, TxMode
@@ -493,18 +511,45 @@ def halt_ws():
     except Exception:
         pass
 
+# Contacts and holds count per band and mode: a station worked (or ignoring
+# us) on 20m FT8 can still be worked on 20m FT4 or 40m FT8.
+BANDS = [("160m", 1.8, 2.0), ("80m", 3.5, 4.0), ("60m", 5.06, 5.45), ("40m", 7.0, 7.3),
+         ("30m", 10.1, 10.15), ("20m", 14.0, 14.35), ("17m", 18.068, 18.168),
+         ("15m", 21.0, 21.45), ("12m", 24.89, 24.99), ("10m", 28.0, 29.7),
+         ("6m", 50.0, 54.0), ("4m", 70.0, 71.0), ("2m", 144.0, 148.0), ("70cm", 420.0, 450.0)]
+
+def band_of(hz):
+    mhz = hz / 1e6
+    return next((b for b, lo, hi in BANDS if lo <= mhz <= hi), None)
+
+def band():
+    return state["udp"].get("band")
+
+def slot_key(call):
+    return (base_call(call), band(), mode())
+
 def on_hold(call):
-    return ENG["holds"].get(base_call(call), 0) > time.time()
+    return ENG["holds"].get(slot_key(call), 0) > time.time()
 
 def hold(call):
-    """Hold a call for hold_min minutes; returns the minutes."""
+    """Hold a call for hold_min minutes on this band and mode; returns the minutes."""
     mins = state["config"].get("hold_min", 10)
-    ENG["holds"][base_call(call)] = time.time() + mins * 60
+    ENG["holds"][slot_key(call)] = time.time() + mins * 60
     return mins
 
+def unhold(call):
+    ENG["holds"].pop(slot_key(call), None)
+
+def add_worked(call, band_=None, mode_=None):
+    state["worked"].add((call.upper(), band_ or band(), mode_ or mode()))
+
 def is_worked(call):
-    b = base_call(call)
-    return is_me(call) or any(base_call(w) == b for w in list(state["worked"]))
+    """Worked today on this band and mode. A log entry missing its band or
+    mode (or no band known yet) matches any."""
+    b, cb, cm = base_call(call), band(), mode()
+    return is_me(call) or any(base_call(w) == b and (not wb or not cb or wb == cb)
+                              and (not wm or wm == cm)
+                              for w, wb, wm in list(state["worked"]))
 
 def prune(now):
     """Drop stale entries so long sessions don't grow without bound."""
@@ -549,6 +594,21 @@ def set_mode(new):
     state["udp"]["mode"] = new
     if old is None or old == new:
         return
+    new_slot()
+    log(f"mode {old} -> {new}: {period()} s periods")
+
+def set_band(new):
+    """WS moved to another band: same reset as a mode change."""
+    old = state["udp"].get("band")
+    state["udp"]["band"] = new
+    if old is None or old == new or new is None:
+        return
+    new_slot()
+    log(f"band {old} -> {new}")
+
+def new_slot():
+    """Decodes, CQs and occupancy from the old band/mode no longer apply.
+    Holds and contacts are kept: they are per band and mode already."""
     if state["target"]:
         halt_ws()
     state["target"] = None
@@ -560,7 +620,6 @@ def set_mode(new):
     for k in ("spec", "active", "calls_to"):
         ENG[k].clear()
     ENG["cq_until"] = 0
-    log(f"mode {old} -> {new}: {period()} s periods")
 
 def occupied(par, now):
     """Occupied audio intervals [lo, hi) on one T/R parity: recent decodes plus,
@@ -767,7 +826,7 @@ def engine_tick():
             if not (t.get("done") and waiting):
                 halt_ws()  # with a caller waiting, the next Reply takes over TX instead
             if t.get("done"):
-                state["worked"].add(t["call"])
+                add_worked(t["call"])
                 log(f"QSO with {t['call']} complete")
             else:
                 log(f"timeout, holding {t['call']} {hold(t['call'])}m")
@@ -976,7 +1035,7 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                 # hold and work them next.
                 late = on_hold(frm)
                 if late:
-                    ENG["holds"].pop(base_call(frm), None)
+                    unhold(frm)
                 # someone calling us: queue first-come-first-serve; a repeat call
                 # keeps their place but refreshes the message we will answer
                 q = next((c for c in list(ENG["callers"]) if same_call(c["call"], frm)), None)
@@ -1059,7 +1118,7 @@ class H(BaseHTTPRequestHandler):
             for e in cq:
                 e["worked"] = is_worked(e["call"])
                 e["skip"] = cq_skip(e, now)
-                e["hold_s"] = max(0, round(ENG["holds"].get(base_call(e["call"]), 0) - now))
+                e["hold_s"] = max(0, round(ENG["holds"].get(slot_key(e["call"]), 0) - now))
                 e["pileup"] = pileup(e["call"], now)
                 e["score"] = round(cq_score(e, now))
             cq.sort(key=cq_rank)
@@ -1069,12 +1128,14 @@ class H(BaseHTTPRequestHandler):
             dxf = [m for m in all_msgs if m.get("dx")][:15]
             u = state["udp"]
             u["holder"] = udp_holder(udp_port)
-            holds = {c: max(0, round(until - time.time())) for c, until in list(ENG["holds"].items())
-                     if until > time.time()}
+            here = (band(), mode())  # only this band and mode's holds and contacts apply
+            holds = {k[0]: max(0, round(until - now)) for k, until in list(ENG["holds"].items())
+                     if until > now and k[1:] == here}
+            worked = sorted({c for c, b, m in list(state["worked"]) if is_worked(c)})
             par = ENG["parity"]
             return self._json({"running": state["running"], "mycall": state["mycall"],
                 "mygrid": state["mygrid"], "target": state["target"], "cq": cq[:40],
-                "answering": ans[:30], "worked": sorted(list(state["worked"])),
+                "answering": ans[:30], "worked": worked, "band": band(),
                 "msgs": msgs, "mytx": list(state["mytx"])[:15], "dxfocus": dxf,
                 "holds": holds, "callers": [c["call"] for c in list(ENG["callers"])],
                 "parity": {"even": par[0], "odd": par[1],
