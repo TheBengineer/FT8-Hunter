@@ -68,7 +68,7 @@ details summary{font-weight:700;padding:4px}
 <div class="row" style="margin-top:8px"><button id="bWake" class="mini" style="flex:1;padding:8px;background:#3a4552">📱 Keep screen awake: off</button></div></div>
 <div class="card" data-id="globe"><h2>🌍 Globe <span class="small" id="gsum"></span></h2>
 <canvas id="globe" style="width:100%;aspect-ratio:1;display:block;touch-action:none;cursor:grab"></canvas>
-<div class="small" style="margin-top:4px"><span style="color:#ff7a3d">━ target</span> · <span style="color:#2ecc71">━ worked</span> · <span style="color:#7fa8ff99">━ traffic</span> · drag to turn</div></div>
+<div class="small" style="margin-top:4px"><span style="color:#ff7a3d">━ target</span> · <span style="color:#2ecc71">━ worked</span> · <span style="color:#7fa8ff99">━ traffic</span> · drag to turn; it drifts back to you</div></div>
 <div class="card" data-id="flow"><h2>🧭 Decision flow <span class="small" id="stepage"></span></h2><div class="flow" id="flow"></div>
 <div class="small" style="margin-top:6px">Checked top to bottom each period; the first “yes” wins.</div></div>
 <div class="card" data-id="dx"><h2>🎯 DX focus <span class="small" id="dxn"></span></h2><ul id="dxf"></ul>
@@ -264,7 +264,8 @@ all.forEach(c=>{const mv=document.createElement('div');mv.className='mv';
 // from world-atlas (TopoJSON); without the internet it's a plain sphere.
 (()=>{
 const cv=document.getElementById('globe'),ctx=cv.getContext('2d'),D=Math.PI/180;
-let G={worked:[],traffic:[]},coast=[],lon0=0,lat0=20,drag=null,last=0,spin=true;
+let G={worked:[],traffic:[]},coast=[],lon0=0,lat0=20,drag=null,last=0,spin=true,home=null;
+const SWING=50,SWING_S=120;  // sway ±50° either side of home, once every 2 minutes
 fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json').then(r=>r.json()).then(t=>{
  const [sx,sy]=t.transform.scale,[tx,ty]=t.transform.translate;   // delta-decode quantized arcs
  coast=t.arcs.map(a=>{let x=0,y=0;return a.map(([dx,dy])=>{x+=dx;y+=dy;return vec(y*sy+ty,x*sx+tx)})})}).catch(()=>{});
@@ -288,7 +289,9 @@ function comet(pts,f,R,cx,cy,col){if(!pts.length)return;const v=pts[Math.floor(f
 let cache={};const arcs=(k,a,b)=>cache[k]||(cache[k]=arcPts(a,b));
 function draw(ts){requestAnimationFrame(draw);
  if(document.hidden||ts-last<33||!cv.offsetWidth)return;   // ~30 fps, idle when not visible
- const dt=Math.min(100,ts-last);last=ts;if(spin&&!drag)lon0=(lon0-dt*0.006)%360;
+ const dt=Math.min(100,ts-last);last=ts;if(spin&&!drag&&home){  // sway around home; after a drag, glide back to the sway
+  const tl=home[1]+SWING*Math.sin(2*Math.PI*ts/1000/SWING_S),tla=Math.max(-50,Math.min(50,home[0]));
+  const k=Math.min(1,dt/1200),d=((tl-lon0)%360+540)%360-180;lon0+=d*k;lat0+=(tla-lat0)*k}
  const dpr=devicePixelRatio||1,W=cv.offsetWidth*dpr;if(cv.width!==W){cv.width=cv.height=W}
  const cx=W/2,cy=W/2,R=W*0.36;ctx.clearRect(0,0,W,W);
  const g=ctx.createRadialGradient(cx-R*.3,cy-R*.3,R*.1,cx,cy,R);g.addColorStop(0,'#1d3550');g.addColorStop(1,'#0b1622');
@@ -307,7 +310,7 @@ function draw(ts){requestAnimationFrame(draw);
 requestAnimationFrame(draw);
 async function poll(){try{const r=await fetch('/api/globe');G=await r.json();
  if(Object.keys(cache).length>800)cache={};
- if(!poll.homed&&G.me){lon0=G.me[1];lat0=Math.max(-50,Math.min(50,G.me[0]));poll.homed=true}
+ if(G.me){if(!home){lon0=G.me[1];lat0=Math.max(-50,Math.min(50,G.me[0]))}home=G.me}
  document.getElementById('gsum').textContent=`· ${G.worked.length} worked · ${G.traffic.length} live`+(G.target?` · → ${G.target.call}`:'')}catch(e){}}
 poll();setInterval(poll,5000);
 cv.addEventListener('pointerdown',e=>{drag={x:e.clientX,y:e.clientY,lon:lon0,lat:lat0};spin=false;cv.setPointerCapture(e.pointerId);cv.style.cursor='grabbing'});
