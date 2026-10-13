@@ -73,7 +73,7 @@ fresh()
 dec("CQ K9XYZ EN52", snr=5); ns["engine_tick"]()
 t2 = st["target"]; dec("<KR4MZM/AG> K9XYZ -03")
 dec("KR4MZM DL1ABC JO62")
-check("caller queued", [c for c, _ in ENG["callers"]] == ["DL1ABC"])
+check("caller queued", [c["call"] for c in ENG["callers"]] == ["DL1ABC"])
 check("in-progress QSO not dropped for caller", st["target"] is t2)
 fresh(); dec("CQ K9XYZ EN52", snr=5); ns["engine_tick"]()
 dec("KR4MZM DL1ABC JO62")
@@ -81,6 +81,27 @@ check("unanswered target dropped for caller", st["target"] is None)
 fresh(); ENG["idle_until"] = time.time() + 60
 dec("KR4MZM DL1ABC JO62"); ns["engine_tick"]()
 check("caller answered during a listen rest", st["target"] and st["target"]["call"] == "DL1ABC")
+
+# --- several stations answer our CQ: work them all, in order
+fresh(); st["config"]["call_cq"] = False
+dec("KR4MZM/AG W1AA FN42", snr=-5); dec("KR4MZM/AG W2BB FN31", snr=0); dec("KR4MZM/AG W3CC EM73", snr=-12)
+check("all three callers queued in order", [c["call"] for c in ENG["callers"]] == ["W1AA", "W2BB", "W3CC"])
+dec("KR4MZM/AG W2BB FN31", snr=2)
+check("repeat call keeps its place", [c["call"] for c in ENG["callers"]] == ["W1AA", "W2BB", "W3CC"])
+ns["engine_tick"]()
+check("first caller answered", st["target"]["call"] == "W1AA" and "2 more waiting" in ENG["step"]["detail"])
+dec("KR4MZM/AG W1AA R-08")                       # their R-report: QSO under way
+ns["on_my_tx"]("W1AA KR4MZM/AG RR73")             # we send RR73 (from ALL.TXT)
+check("our RR73 marks the QSO done", st["target"]["done"] and st["target"]["left"] == 2)
+dec("KR4MZM/AG W1AA R-08")                       # they repeat: didn't copy our RR73
+check("their repeat keeps the QSO open", st["target"]["left"] == 99)
+ns["on_my_tx"]("W1AA KR4MZM/AG RR73")
+CTX["tx"].sent.clear(); ns["engine_tick"](); ns["engine_tick"]()
+check("done -> next caller answered without a Halt",
+      st["target"]["call"] == "W2BB" and HALT not in CTX["tx"].sent and ns["is_worked"]("W1AA"))
+ENG["callers"][0]["t"] -= 200                     # W3CC gave up long ago
+st["target"]["left"] = 1; ns["engine_tick"]()     # W2BB times out
+check("caller not heard for 6 periods is dropped", not ENG["callers"] and st["target"] is None)
 
 # --- tail-end targets the sender
 fresh(); dec("JA1AAA VK2BBB RR73", snr=3); ns["engine_tick"]()

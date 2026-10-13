@@ -252,7 +252,7 @@ def cycle_ticker():
             log(f"tick err: {e}")
 
 CTX = {"tx": None, "myll": None, "seen": {}, "cycle": [0]}
-# Targeting engine: holds {call: until_ts}, callers queue [(call,msg)], parity {0:n,1:n},
+# Targeting engine: holds {call: until_ts}, callers queue [{call, msg, t}], parity {0:n,1:n},
 # idle_until ts (listen-only rest), busy_cycles (consecutive cycles with a target)
 ENG = {"holds": {}, "callers": deque(maxlen=20), "parity": {0: 0, 1: 0},
        "idle_until": 0, "busy": 0, "idle_n": 0,
@@ -465,6 +465,7 @@ def tail_alltxt():
                 if tm:  # our own transmissions only appear here
                     state["mytx"].appendleft({"msg": tm.group(5).strip(),
                         "t": time.strftime("%H:%M:%S"), "seen": time.time()})
+                    on_my_tx(tm.group(5).strip())
                 continue
             # Decodes are a backup feed only: while UDP decodes flow, the same
             # decode would otherwise be handled twice.
@@ -640,6 +641,25 @@ def handle_spectrum(data, off):
     else:
         ENG["qrm_n"] = 0
 
+def fresh_callers(now=None):
+    """Queued callers still worth answering, oldest first. Drops anyone worked,
+    held, or not heard for 6 periods (they have given up)."""
+    now = now or time.time()
+    for c in list(ENG["callers"]):
+        if is_worked(c["call"]) or on_hold(c["call"]) or now - c["t"] > cyc(6):
+            ENG["callers"].remove(c)
+    return list(ENG["callers"])
+
+def on_my_tx(msg):
+    """Our own transmission (from ALL.TXT). Once we send RR73/73 to the target
+    the QSO is complete on our side: release it two periods later unless they
+    repeat (didn't copy), so the next caller is not kept waiting."""
+    t = state["target"]
+    to, frm, rest = addressing(msg)
+    if t and rest and rest[-1] in ("RR73", "73") and same_call(to, t["call"]):
+        t["done"] = True
+        t["left"] = min(t["left"], 2)
+
 def at(step, detail=""):
     """Record where the engine stopped this period (shown live in the UI's
     decision flow). Steps follow engine_tick's order; see STEPS in the UI."""
@@ -690,7 +710,9 @@ def engine_tick():
     if t:
         t["left"] -= 1
         if t["left"] <= 0:
-            halt_ws()
+            waiting = fresh_callers(now)
+            if not (t.get("done") and waiting):
+                halt_ws()  # with a caller waiting, the next Reply takes over TX instead
             if t.get("done"):
                 state["worked"].add(t["call"])
                 log(f"QSO with {t['call']} complete")
@@ -708,17 +730,15 @@ def engine_tick():
             return at("target", f"{t['call']}: {how}")
     if now < ENG["qrm_until"]:
         return at("qrm", ENG["qrm_why"])  # someone else is using the frequency
-    # drop stale/held callers, first-come-first-serve
-    while ENG["callers"]:
-        c, m = ENG["callers"][0]
-        if on_hold(c) or is_worked(c):
-            ENG["callers"].popleft(); continue
-        break
-    if ENG["callers"]:
-        c, m = ENG["callers"].popleft()
-        if acquire(c, "", m, tries=cfg.get("cq_tries", 3), why="called us"):
+    # stations calling us, first-come-first-serve, working through all of them
+    waiting = fresh_callers(now)
+    while waiting:
+        c = waiting.pop(0)
+        ENG["callers"].remove(c)
+        if acquire(c["call"], "", c["msg"], tries=cfg.get("cq_tries", 3), why="called us"):
             ENG["busy"] += 1
-            return at("caller", c)
+            more = f" ({len(waiting)} more waiting)" if waiting else ""
+            return at("caller", c["call"] + more)
     if now < ENG["idle_until"]:
         # listen-only rest (stations calling us are still answered above)
         return at("listen", f"{round(ENG['idle_until'] - now)} s left")
@@ -887,15 +907,19 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                 t["done"] = t.get("done") or signoff
                 t["left"] = 2 if signoff else 99
                 log(f"reply: {msg}")
-            elif state["running"] and not signoff and not is_worked(frm) and not on_hold(frm) \
-                    and not any(same_call(c, frm) for c, _ in list(ENG["callers"])):
-                # someone calling us: queue first-come-first-serve
-                ENG["callers"].append((frm, msg))
-                log(f"caller queued: {msg}")
-                if t and not t.get("resp"):  # never abandon a QSO in progress
-                    halt_ws()
-                    log(f"dropping {tgt} for caller {frm}")
-                    state["target"] = None
+            elif state["running"] and not signoff and not is_worked(frm) and not on_hold(frm):
+                # someone calling us: queue first-come-first-serve; a repeat call
+                # keeps their place but refreshes the message we will answer
+                q = next((c for c in list(ENG["callers"]) if same_call(c["call"], frm)), None)
+                if q:
+                    q.update(msg=msg, t=now)
+                else:
+                    ENG["callers"].append({"call": frm, "msg": msg, "t": now})
+                    log(f"caller queued: {msg}")
+                    if t and not t.get("resp"):  # never abandon a QSO in progress
+                        halt_ws()
+                        log(f"dropping {tgt} for caller {frm}")
+                        state["target"] = None
         state["answering"][msg] = {"msg": msg, "snr": snr, "tome": to_me,
             "from": frm or msg, "seen": now, "t": time.strftime("%H:%M:%S")}
 
@@ -975,7 +999,7 @@ class H(BaseHTTPRequestHandler):
                 "mygrid": state["mygrid"], "target": state["target"], "cq": cq[:40],
                 "answering": ans[:30], "worked": sorted(list(state["worked"])),
                 "msgs": msgs, "mytx": list(state["mytx"])[:15], "dxfocus": dxf,
-                "holds": holds, "callers": [c for c, _ in list(ENG["callers"])],
+                "holds": holds, "callers": [c["call"] for c in list(ENG["callers"])],
                 "parity": {"even": par[0], "odd": par[1],
                            "hot": ("even" if par[0] >= par[1] else "odd")},
                 "idle": max(0, round(ENG["idle_until"] - time.time())),

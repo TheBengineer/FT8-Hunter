@@ -6,7 +6,8 @@ is in; all timing rules scale with the mode's period.
 
 Each T/R period (15 s FT8, 7.5 s FT4, 3.75 s FT2) it does the first of these that applies:
 
-1. Answer a station calling you.
+1. Answer stations calling you — when several answer your CQ it works them all,
+   in the order they called, moving to the next as soon as you send RR73.
 2. Pounce on an activator (CQ POTA / SOTA / WWFF / IOTA / BOTA / LOTA).
 3. Answer any other CQ.
 4. Tail-end a station signing off.
