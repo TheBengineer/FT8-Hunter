@@ -38,10 +38,15 @@ li.skip{opacity:.55}li.tgt{background:#1d3a2a;border-radius:8px}
 .dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#666;margin-right:6px}
 .dot.run{background:#2ecc71}.small{font-size:.8rem;color:#9ab}
 details summary{font-weight:700;padding:4px}
+/* drag a card by its grip to reorder; the order is remembered in this browser */
+.card{position:relative}
+.mv{position:absolute;top:4px;right:4px;display:flex;gap:2px}
+.mv span{padding:3px 5px;color:#556;cursor:pointer;user-select:none;font-size:.85rem;line-height:1;border-radius:4px}
+.mv span:hover{color:#cde;background:#26303c}.mv .grip{cursor:grab;touch-action:none}.card.dragging{outline:2px dashed #2a6cb6;opacity:.7}.card.dragging .grip{cursor:grabbing}
 </style></head><body>
 <h1>📻 FT8 Hunter</h1>
 <main class="cards">
-<div class="card"><div class="row"><span id="dot" class="dot"></span><b id="st">…</b></div>
+<div class="card" data-id="status"><div class="row"><span id="dot" class="dot"></span><b id="st">…</b></div>
 <div class="row" style="margin-top:6px"><span id="udpdot" class="dot"></span><span class="small" id="udp">UDP …</span></div>
 <div id="target">no target</div>
 <div class="row" style="margin-top:6px"><span id="txdot" class="dot"></span><b id="tx">RX</b>
@@ -53,22 +58,22 @@ details summary{font-weight:700;padding:4px}
 <div class="row"><button id="bS">Start</button><button id="bX" class="warn">Skip</button></div>
 <div class="row" style="margin-top:8px"><button id="bCQ" style="background:#1f9d4d">🔴 ARM TX</button></div>
 <div class="row" style="margin-top:8px"><button id="bT" style="background:#5a4a8a">🔌 Smoke test</button></div></div>
-<div class="card"><h2>🧭 Decision flow <span class="small" id="stepage"></span></h2><div class="flow" id="flow"></div>
+<div class="card" data-id="flow"><h2>🧭 Decision flow <span class="small" id="stepage"></span></h2><div class="flow" id="flow"></div>
 <div class="small" style="margin-top:6px">Checked top to bottom each period; the first “yes” wins.</div></div>
-<div class="card"><h2>🎯 DX focus <span class="small" id="dxn"></span></h2><ul id="dxf"></ul>
+<div class="card" data-id="dx"><h2>🎯 DX focus <span class="small" id="dxn"></span></h2><ul id="dxf"></ul>
 <div class="small" style="margin-top:6px">my TX</div><ul id="mytx"></ul>
 <div class="small" id="holds" style="margin-top:6px"></div></div>
-<div class="card"><h2>📢 CQ calls (activations first, then best chance)</h2><ul id="cq"></ul></div>
-<div class="card"><div class="row"><span class="small">seq hot: <b id="par">…</b></span><span class="small" id="idle"></span></div>
+<div class="card" data-id="cq"><h2>📢 CQ calls (activations first, then best chance)</h2><ul id="cq"></ul></div>
+<div class="card" data-id="seq"><div class="row"><span class="small">seq hot: <b id="par">…</b></span><span class="small" id="idle"></span></div>
 <div class="small" id="callers"></div></div>
-<div class="card"><details><summary>📡 All messages (<span id="mn">0</span>)</summary><ul id="msgs"></ul></details></div>
-<div class="card"><h2>💬 Answering / traffic</h2><ul id="ans"></ul></div>
-<div class="card"><h2>✍️ Manual call</h2><div class="row">
+<div class="card" data-id="msgs"><details><summary>📡 All messages (<span id="mn">0</span>)</summary><ul id="msgs"></ul></details></div>
+<div class="card" data-id="ans"><h2>💬 Answering / traffic</h2><ul id="ans"></ul></div>
+<div class="card" data-id="manual"><h2>✍️ Manual call</h2><div class="row">
 <input id="mc" placeholder="CALL" autocapitalize="characters"><input id="mg" placeholder="GRID" style="max-width:110px" autocapitalize="characters"></div>
 <button id="bC" style="margin-top:8px">Call now</button></div>
-<div class="card"><h2>📝 Log</h2><ul id="log"></ul><div class="small" id="stats"></div></div>
-<div class="card"><details><summary>✅ Worked / ignored today (<span id="wn">0</span> on <span id="wslot">this band</span>)</summary><ul id="wk"></ul></details></div>
-<div class="card"><details><summary>⚙️ Settings</summary>
+<div class="card" data-id="log"><h2>📝 Log</h2><ul id="log"></ul><div class="small" id="stats"></div></div>
+<div class="card" data-id="worked"><details><summary>✅ Worked / ignored today (<span id="wn">0</span> on <span id="wslot">this band</span>)</summary><ul id="wk"></ul></details></div>
+<div class="card" data-id="settings"><details><summary>⚙️ Settings</summary>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">CQ tries</span><input id="sCq" type="number" min="1" max="10" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Tail-end tries</span><input id="sTail" type="number" min="1" max="10" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Hold (min)</span><input id="sHold" type="number" min="1" max="60" style="max-width:90px;margin-top:0"></div>
@@ -80,7 +85,8 @@ details summary{font-weight:700;padding:4px}
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">CQ run secs (then listen)</span><input id="sCqSecs" type="number" min="30" max="600" step="15" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Auto Tx offset (ws-hunter build)</span><input id="sAutoDf" type="checkbox" style="width:auto;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Back off when non-FT8 signals appear</span><input id="sQrm" type="checkbox" style="width:auto;margin-top:0"></div>
-<button id="bSave" style="margin-top:8px">Save</button></details></div>
+<button id="bSave" style="margin-top:8px">Save</button>
+<button id="bLayout" class="mini" style="margin-top:8px;background:#3a4552">Reset card order</button></details></div>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -177,4 +183,32 @@ const b=$('cbar');if(b)b.style.width=pct+'%';
 const tx=window._tx;$('txdot').className='dot'+(tx?' run':'');
 const txEl=$('tx');if(txEl){txEl.textContent=tx?'🔴 TX':'🟢 RX';txEl.style.color=tx?'#ff6b6b':'#2ecc71'}
 const c=$('ctxt');if(c)c.textContent=`${window._mode||'FT8'} · ${pos.toFixed(1)}s / ${per}s · ${pos<per*0.8?'receiving':pos<per*0.87?'decoding':'TX window'}`},200);
+</script>
+<script>
+// Card order: ▲ / ▼ move a card one place, or drag the ⠿ grip (mouse or
+// touch). Saved per browser.
+(()=>{
+const box=document.querySelector('.cards'),KEY='cardOrder';
+const cards=()=>[...box.querySelectorAll(':scope>.card')];
+const def=cards().map(c=>c.dataset.id);
+function apply(order){const by=Object.fromEntries(cards().map(c=>[c.dataset.id,c]));
+ [...order.filter(id=>by[id]),...def.filter(id=>!order.includes(id))].forEach(id=>box.appendChild(by[id]))}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(cards().map(c=>c.dataset.id)))}catch(e){}}
+try{const o=JSON.parse(localStorage.getItem(KEY)||'null');if(Array.isArray(o))apply(o)}catch(e){}
+document.getElementById('bLayout').onclick=()=>{apply(def);try{localStorage.removeItem(KEY)}catch(e){}};
+let drag=null;
+const btn=(cls,txt,title)=>{const b=document.createElement('span');b.className=cls;b.textContent=txt;b.title=title;return b};
+cards().forEach(c=>{const mv=document.createElement('div');mv.className='mv';
+ const up=btn('up','▲','Move up'),dn=btn('dn','▼','Move down'),g=btn('grip','⠿','Drag to reorder');
+ mv.append(up,dn,g);c.appendChild(mv);
+ up.onclick=()=>{const p=c.previousElementSibling;if(p){box.insertBefore(c,p);save()}};
+ dn.onclick=()=>{const n=c.nextElementSibling;if(n){box.insertBefore(n,c);save()}};
+ g.addEventListener('pointerdown',e=>{e.preventDefault();drag=c;c.classList.add("dragging");try{g.setPointerCapture(e.pointerId)}catch(_){}});
+ g.addEventListener('pointermove',e=>{if(drag!==c)return;
+  const el=document.elementFromPoint(e.clientX,e.clientY),t=el&&el.closest('.cards>.card');
+  if(!t||t===c)return;const r=t.getBoundingClientRect();
+  box.insertBefore(c,e.clientY<r.top+r.height/2?t:t.nextSibling)});
+ const end=()=>{if(drag!==c)return;drag=null;c.classList.remove('dragging');save()};
+ g.addEventListener('pointerup',end);g.addEventListener('pointercancel',end)});
+})();
 </script></body></html>
