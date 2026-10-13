@@ -64,7 +64,8 @@ details summary{font-weight:700;padding:4px}
 <div class="small" id="ctxt" style="text-align:center;margin-top:2px">cycle</div>
 <div class="row"><button id="bS">Start</button><button id="bX" class="warn">Skip</button></div>
 <div class="row" style="margin-top:8px"><button id="bCQ" style="background:#1f9d4d">🔴 ARM TX</button></div>
-<div class="row" style="margin-top:8px"><button id="bT" style="background:#5a4a8a">🔌 Smoke test</button></div></div>
+<div class="row" style="margin-top:8px"><button id="bT" style="background:#5a4a8a">🔌 Smoke test</button></div>
+<div class="row" style="margin-top:8px"><button id="bWake" class="mini" style="flex:1;padding:8px;background:#3a4552">📱 Keep screen awake: off</button></div></div>
 <div class="card" data-id="globe"><h2>🌍 Globe <span class="small" id="gsum"></span></h2>
 <canvas id="globe" style="width:100%;aspect-ratio:1;display:block;touch-action:none;cursor:grab"></canvas>
 <div class="small" style="margin-top:4px"><span style="color:#ff7a3d">━ target</span> · <span style="color:#2ecc71">━ worked</span> · <span style="color:#7fa8ff99">━ traffic</span> · drag to turn</div></div>
@@ -314,5 +315,24 @@ cv.addEventListener('pointermove',e=>{if(!drag)return;const k=180/cv.offsetWidth
  lon0=drag.lon-(e.clientX-drag.x)*k;lat0=Math.max(-80,Math.min(80,drag.lat+(e.clientY-drag.y)*k))});
 const up=()=>{if(!drag)return;drag=null;cv.style.cursor='grab';setTimeout(()=>{spin=true},4000)};
 cv.addEventListener('pointerup',up);cv.addEventListener('pointercancel',up);
+})();
+</script>
+<script src="/nosleep.js"></script>
+<script>
+// Keep the phone's screen on. NoSleep uses the Wake Lock API where the browser
+// allows it (HTTPS or localhost) and otherwise a tiny muted looping video, which
+// also works over plain http on the LAN. Browsers only allow it from a tap, so
+// a saved "on" (or one the phone dropped) comes back at the next tap.
+(()=>{
+const b=document.getElementById('bWake');if(!window.NoSleep){b.style.display='none';return}
+const ns=new NoSleep();let want=false;
+try{want=localStorage.getItem('keepAwake')==='1'}catch(e){}
+const show=()=>{b.textContent='📱 Keep screen awake: '+(ns.isEnabled?'on':want?'tap anywhere':'off');b.style.background=ns.isEnabled?'#1f9d4d':'#3a4552'};
+async function on(){try{await ns.enable()}catch(e){}show()}
+b.onclick=async e=>{e.stopPropagation();want=!ns.isEnabled;try{localStorage.setItem('keepAwake',want?'1':'0')}catch(_){}
+ if(want)await on();else{ns.disable();show()}};
+document.addEventListener('pointerup',e=>{if(want&&!ns.isEnabled&&e.target!==b)on()});  // any tap re-arms it
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&want&&!ns.isEnabled)on()});  // a lock drops when the tab hides
+show();
 })();
 </script></body></html>

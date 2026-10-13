@@ -1164,6 +1164,11 @@ class H(BaseHTTPRequestHandler):
                 self.wfile.write(b); return
             except FileNotFoundError:
                 self.send_error(404); return
+        if self.path == "/nosleep.js":  # NoSleep.js (MIT), vendored: phones on the LAN may be offline
+            b = open(os.path.join(os.path.dirname(__file__), "nosleep.min.js"), "rb").read()
+            self.send_response(200); self.send_header("Content-Type", "text/javascript")
+            self.send_header("Content-Length", str(len(b))); self.end_headers()
+            self.wfile.write(b); return
         if self.path == "/api/globe":
             return self._json(globe())
         if self.path == "/api/debug/spectrum":
