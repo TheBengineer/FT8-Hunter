@@ -16,14 +16,50 @@ state = {
     "msgs": deque(maxlen=80), "mytx": deque(maxlen=20),
     "config": {"max_cycles": 3, "cooldown": 2, "cq_only": True,
                "cq_tries": 3, "tail_tries": 2, "hold_min": 10,
-               "idle_every": 4, "idle_secs": 60},
+               "idle_every": 4, "idle_secs": 60, "special_first": True,
+               "call_cq": True, "cq_secs": 120},
     "stats": {"cq_heard": 0, "calls_made": 0},
 }
-CQ_RE = re.compile(r"^CQ\s+(?:DX\s+|TEST\s+)?(?:POTA\s+)?([A-Z0-9/]*\d[A-Z0-9/]*)(?:\s+([A-Z]{2}\d{2}(?:\d{2})?))?", re.I)
+# "CQ [TAG] CALL [GRID]"; TAG is DX, TEST, an activity (POTA...) or a
+# directed region (NA, EU...). Calls always contain a digit; tags never do.
+CQ_RE = re.compile(r"^CQ\s+(?:([A-Z]{1,4})\s+)?([A-Z0-9/]*\d[A-Z0-9/]*)(?:\s+([A-Z]{2}\d{2}(?:\d{2})?))?", re.I)
+# portable activations: worth pouncing on first (parks, summits, flora &
+# fauna, islands, beaches, lighthouses)
+SPECIAL = {"POTA", "SOTA", "WWFF", "IOTA", "BOTA", "LOTA"}
+ANSWERABLE = {"", "DX", "TEST"} | SPECIAL  # other tags are directed at a region
+SIGNOFF = {"RR73", "73", "RRR"}
 udp_port = 2237
 
 def log(msg):
     state["log"].appendleft({"t": time.strftime("%H:%M:%S"), "msg": msg})
+
+_logged_errs = set()
+def log_err(where, e):
+    """Log each distinct parse error once instead of swallowing it."""
+    key = f"{where}: {type(e).__name__}: {e}"
+    if key not in _logged_errs:
+        _logged_errs.add(key); log(key)
+
+def base_call(tok):
+    """'<KR4MZM/AG>' -> 'KR4MZM', 'VE3/K1ABC' -> 'K1ABC': strip hash brackets
+    and any portable prefix/suffix, keeping the longest part with a digit."""
+    t = tok.strip("<>").upper()
+    parts = [p for p in t.split("/") if p] or [t]
+    return max(parts, key=lambda p: (any(c.isdigit() for c in p), len(p)))
+
+def same_call(a, b):
+    return bool(a) and bool(b) and base_call(a) == base_call(b)
+
+def is_me(tok):
+    return same_call(tok, state["mycall"])
+
+def addressing(msg):
+    """Standard FT8 message 'TO FROM ...' -> (to, from, rest); the station
+    being called comes FIRST. Hash brackets are stripped."""
+    parts = msg.upper().split()
+    if len(parts) < 2 or parts[0] in ("CQ", "QRZ", "DE"):
+        return "", "", parts
+    return parts[0].strip("<>"), parts[1].strip("<>"), parts[2:]
 
 def pack_str(s):
     b = s.encode(); return struct.pack(">i", len(b)) + b
@@ -55,6 +91,15 @@ def pack_halt(id_):
 
 def pack_replay(id_):
     return struct.pack(">II", 0xADBCCBDA, 2) + struct.pack(">I", 7) + pack_str(id_)
+
+SET_TX_ENABLED = 26  # ws-hunter build only (see TheBengineer/ws-hunter)
+def pack_set_bool(mtype, id_, value):
+    """ws-hunter station-control message carrying one bool."""
+    return struct.pack(">III", 0xADBCCBDA, 2, mtype) + pack_str(id_) + struct.pack(">B", 1 if value else 0)
+
+def has_ws_hunter():
+    """True when WS reports the ws-hunter build in its Heartbeat revision."""
+    return "hunter" in state["udp"].get("revision", "")
 
 def alltxt_time_ms(tstr):
     # "261009_221230" -> ms since midnight (decode times fall on whole seconds)
@@ -91,26 +136,6 @@ def udp_holder(port=2237):
             pass
     return ",".join(sorted(holders)) if holders else "unknown"
 
-def parse_decode(data):
-    """Return (snr:int, message:str) for type-2 Decode, else None."""
-    try:
-        if struct.unpack(">II", data[:8]) != (0xADBCCBDA, 2): return None
-        off = 8
-        idlen = struct.unpack(">i", data[off:off+4])[0]; off += 4 + max(idlen, 0)
-        if struct.unpack(">I", data[off:off+4])[0] != 2: return None
-        off += 4 + 1  # type + New flag
-        off += 4      # Time ms
-        snr = struct.unpack(">i", data[off:off+4])[0]; off += 4
-        off += 8 + 4  # DeltaTime + DeltaFreq
-        strs, p = [], off
-        for _ in range(3):
-            ln = struct.unpack(">i", data[p:p+4])[0]; p += 4
-            if ln < 0 or ln > 100: break
-            strs.append(data[p:p+ln].decode("utf-8", "errors")); p += ln
-        return (snr, (strs[1] if len(strs) > 1 else strs[0]).strip())
-    except Exception:
-        return None
-
 def grid_to_latlon(g):
     g = g.upper()
     if len(g) < 4: return None
@@ -128,9 +153,10 @@ def km(a, b):
     return round(2 * 6371 * math.asin(math.sqrt(h)))
 
 def load_worked():
-    """Only TODAY's contacts count (local date). Returns (set, {path: mtime})."""
+    """Only TODAY's contacts count (UTC date, as ADIF records qso_date).
+    Returns (set, {path: mtime})."""
     import datetime
-    today = datetime.date.today().strftime("%Y%m%d")
+    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
     paths = [os.path.expanduser("~/.local/share/WS/wsjtx_log.adi"),
              os.path.expanduser("~/.local/share/WSJT-X/wsjtx_log.adi"),
              os.path.expanduser("~/.wsjtx/wsjtx_log.adi")]
@@ -177,7 +203,8 @@ CTX = {"tx": None, "myll": None, "seen": {}, "cycle": [0]}
 # Targeting engine: holds {call: until_ts}, callers queue [(call,msg)], parity {0:n,1:n},
 # idle_until ts (listen-only rest), busy_cycles (consecutive cycles with a target)
 ENG = {"holds": {}, "callers": deque(maxlen=20), "parity": {0: 0, 1: 0},
-       "idle_until": 0, "busy": 0, "idle_n": 0}
+       "idle_until": 0, "busy": 0, "idle_n": 0,
+       "cq_until": 0}  # calling our own CQ until this time (0 = not calling)
 
 state["ws_id"] = "WSJT-X"   # learned from WS broadcasts when heard
 state["ws_addr"] = None    # (ip, ephemeral port) WSJT-X listens on — learned from its packets
@@ -225,6 +252,18 @@ def udp_listener():
             # Replies go to WSJT-X's EPHEMERAL port (it never binds 2237 itself)
             if mtype in (0, 1, 2, 5, 10, 12):
                 state["ws_addr"] = (addr[0], addr[1])
+            if mtype == 0:  # Heartbeat: max schema u32, version, revision
+                try:
+                    p = off + 4
+                    vs = []
+                    for _ in range(2):
+                        ln = struct.unpack(">i", data[p:p+4])[0]; p += 4
+                        vs.append(data[p:p+max(ln, 0)].decode("utf-8", "errors")); p += max(ln, 0)
+                    if vs[1] != state["udp"].get("revision"):
+                        state["udp"]["version"], state["udp"]["revision"] = vs
+                        log(f"WS {vs[0]} {vs[1]}" + (" (ws-hunter controls)" if has_ws_hunter() else ""))
+                except Exception as e:
+                    log_err("Heartbeat", e)
             if "WS" in wid.upper() or "JT" in wid.upper():
                 state["ws_id"] = wid
             state["udp"]["last_rx"] = time.time()
@@ -234,22 +273,24 @@ def udp_listener():
                 state["udp"]["last_rx"] = time.time()
             if mtype == 5:  # QSO Logged: contact done -> worked + release target
                 try:
-                    strs5, q5 = [], off
-                    while q5 + 4 <= len(data):
-                        ln = struct.unpack(">i", data[q5:q5+4])[0]; q5 += 4
-                        if ln < 0 or ln > 200 or q5 + ln > len(data):
-                            break
-                        strs5.append(data[q5:q5+ln].decode("utf-8", "errors")); q5 += ln
-                    blob = " ".join(strs5).upper()
-                    for cand in re.findall(r"[A-Z0-9/]*\d[A-Z0-9/]*", blob):
-                        if len(cand) >= 3 and cand != state["mycall"]:
-                            state["worked"].add(cand)
-                            if (state["target"] or {}).get("call") == cand:
-                                log(f"logged QSO with {cand} — nice!")
-                                state["target"] = None
-                            break
-                except Exception:
-                    pass
+                    # Date&Time Off is a QDateTime: qint64 Julian day, quint32 ms,
+                    # quint8 timespec (+ qint32 offset when timespec == 2)
+                    q5 = off + 8 + 4
+                    spec = data[q5]; q5 += 1
+                    if spec == 2:
+                        q5 += 4
+                    ln = struct.unpack(">i", data[q5:q5+4])[0]; q5 += 4
+                    dxcall = data[q5:q5+max(ln, 0)].decode("utf-8", "errors").strip().upper()
+                    if dxcall:
+                        state["worked"].add(dxcall)
+                        t = state["target"]
+                        if t and same_call(t["call"], dxcall):
+                            log(f"logged QSO with {dxcall} — nice!")
+                            state["target"] = None
+                        else:
+                            log(f"logged QSO with {dxcall}")
+                except Exception as e:
+                    log_err("QSO Logged parse", e)
             if mtype == 1:  # Status body: DialFreq u64, Mode, DXcall, Report,
                 try:           # TxMode, TxEnabled?, Transmitting?, ...
                     p = off + 8  # dialfreq u64
@@ -265,8 +306,8 @@ def udp_listener():
                         state["udp"]["tx_enabled"] = bool(data[p]); p += 1
                         state["udp"]["transmitting"] = bool(data[p]); p += 1
                         state["udp"]["tx_t"] = time.time()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log_err("Status", e)
             if mtype == 2 and CTX["tx"] is not None:  # live Decode: exact params!
                 try:
                     p = off + 1  # New flag (off already past type+id)
@@ -282,16 +323,24 @@ def udp_listener():
                         strs2.append(data[q:q+ln].decode("utf-8", "errors")); q += ln
                     if len(strs2) == 2:
                         dmode, dmsg = strs2
-                        state["decparams"][dmsg] = {"t_ms": t_ms, "snr": dsnr,
-                            "dt": ddt, "df": ddf, "mode": dmode}
-                        if len(state["decparams"]) > 500:
-                            state["decparams"] = dict(list(state["decparams"].items())[-300:])
+                        set_decparams(dmsg, {"t_ms": t_ms, "snr": dsnr,
+                            "dt": ddt, "df": ddf, "mode": dmode})
+                        state["udp"]["last_decode"] = time.time()
                         handle_decode(dmsg, dsnr, CTX["tx"], CTX["myll"],
                                       CTX["seen"], CTX["cycle"], t_ms)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    log_err("Decode", e)
+        except Exception as e:
+            log_err("UDP packet", e)
+
+def set_decparams(msg, params):
+    """Latest exact decode params per message. Re-inserting moves the entry to
+    the end, so trimming drops the stalest messages, not active CQs."""
+    d = state["decparams"]
+    d.pop(msg, None)
+    d[msg] = params
+    if len(d) > 500:
+        state["decparams"] = dict(list(d.items())[-300:])
 
 ALL_RE = re.compile(r"^(\d{6}_\d{6})\s+[\d.]+\s+Rx\s+\S+\s+([+-]?\d+)\s+([\d.]+)\s+(\d+)\s+(.*\S)\s*$")
 TX_RE = re.compile(r"^(\d{6}_\d{6})\s+[\d.]+\s+Tx\s+\S+\s+([+-]?\d+)\s+([\d.]+)\s+(\d+)\s+(.*\S)\s*$")
@@ -313,29 +362,32 @@ def tail_alltxt():
         fh.seek(0, 2)
     except FileNotFoundError:
         log("ALL.TXT not found"); return
-    FT = 15  # one FT8 cycle
-    next_tick = (int(time.time()) // FT + 1) * FT
+    buf = ""
     while True:
-        line = fh.readline()
-        if not line:
-            time.sleep(1)
-            now = time.time()
-            if now >= next_tick:
-                next_tick += FT
+        chunk = fh.readline()
+        if not chunk:
+            time.sleep(1); continue
+        buf += chunk
+        if not buf.endswith("\n"):
+            continue  # WS is mid-write; wait for the rest of the line
+        line, buf = buf.strip(), ""
+        try:
+            m = ALL_RE.match(line)
+            if not m:
+                tm = TX_RE.match(line)
+                if tm:  # our own transmissions only appear here
+                    state["mytx"].appendleft({"msg": tm.group(5).strip(),
+                        "t": time.strftime("%H:%M:%S"), "seen": time.time()})
                 continue
-        m = ALL_RE.match(line.strip())
-        if not m:
-            tm = TX_RE.match(line.strip())
-            if tm:
-                state["mytx"].appendleft({"msg": tm.group(5).strip(),
-                    "t": time.strftime("%H:%M:%S"), "seen": time.time()})
-            continue
-        tstr, snr, dt, audio, msg = m.group(1), int(m.group(2)), float(m.group(3)), int(m.group(4)), m.group(5).strip()
-        if msg not in state["decparams"]:  # UDP feed has fuller params incl. mode
-            state["decparams"][msg] = {"t_ms": alltxt_time_ms(tstr), "snr": snr, "dt": dt, "df": audio}
-        if len(state["decparams"]) > 500:
-            state["decparams"] = dict(list(state["decparams"].items())[-300:])
-        handle_decode(msg, snr, tx, myll, seen, cycle)
+            # Decodes are a backup feed only: while UDP decodes flow, the same
+            # decode would otherwise be handled twice.
+            if time.time() - state["udp"].get("last_decode", 0) < 30:
+                continue
+            tstr, snr, dt, audio, msg = m.group(1), int(m.group(2)), float(m.group(3)), int(m.group(4)), m.group(5).strip()
+            set_decparams(msg, {"t_ms": alltxt_time_ms(tstr), "snr": snr, "dt": dt, "df": audio})
+            handle_decode(msg, snr, tx, myll, seen, cycle)
+        except Exception as e:
+            log_err("ALL.TXT", e)
 
 def ws_dest():
     return state["ws_addr"] or ("127.0.0.1", udp_port)
@@ -347,11 +399,25 @@ def halt_ws():
         pass
 
 def on_hold(call):
-    return ENG["holds"].get(call.upper(), 0) > time.time()
+    return ENG["holds"].get(base_call(call), 0) > time.time()
+
+def hold(call):
+    """Hold a call for hold_min minutes; returns the minutes."""
+    mins = state["config"].get("hold_min", 10)
+    ENG["holds"][base_call(call)] = time.time() + mins * 60
+    return mins
 
 def is_worked(call):
-    w = state["worked"]
-    return call in w or call.split("/")[0] in w or call == state["mycall"]
+    b = base_call(call)
+    return is_me(call) or any(base_call(w) == b for w in list(state["worked"]))
+
+def prune(now):
+    """Drop stale entries so long sessions don't grow without bound."""
+    for d in (state["cq"], state["answering"]):
+        for k in [k for k, e in list(d.items()) if now - e["seen"] > 600]:
+            d.pop(k, None)
+    for c in [c for c, until in list(ENG["holds"].items()) if until <= now]:
+        ENG["holds"].pop(c, None)
 
 def engine_tick():
     """Called once per 15s FT8 cycle. Priority: callers-to-me > CQ > traffic."""
@@ -362,20 +428,25 @@ def engine_tick():
             if os.path.exists(p) and os.path.getmtime(p) != mt:
                 state["worked"], state["adi_mtime"] = load_worked()
                 break
-    except Exception:
-        pass
+    except Exception as e:
+        log_err("ADIF reload", e)
+    prune(now)
     if not state["running"]:
         return
-    if now < ENG["idle_until"]:
-        return  # listen-only rest
     t = state["target"]
     cfg = state["config"]
+    if t and is_worked(t["call"]):  # logged (seen in ADIF) without a QSO Logged packet
+        log(f"{t['call']} is in the log, releasing target")
+        state["target"] = t = None
     if t:
         t["left"] -= 1
         if t["left"] <= 0:
             halt_ws()
-            ENG["holds"][t["call"]] = now + cfg.get("hold_min", 10) * 60
-            log(f"timeout, holding {t['call']} {cfg.get('hold_min', 10)}m")
+            if t.get("done"):
+                state["worked"].add(t["call"])
+                log(f"QSO with {t['call']} complete")
+            else:
+                log(f"timeout, holding {t['call']} {hold(t['call'])}m")
             state["target"] = None
         else:
             ENG["busy"] += 1
@@ -392,48 +463,84 @@ def engine_tick():
         break
     if ENG["callers"]:
         c, m = ENG["callers"].popleft()
-        acquire(c, "", m, tries=99, why="called us")
-        ENG["busy"] += 1
-        return
-    # CQ callers, strongest first
-    cands = [e for e in state["cq"].values()
-             if not is_worked(e["call"])
-             and not on_hold(e["call"]) and now - e["seen"] < 60]
-    cands.sort(key=lambda e: (-e["snr"], e["km"] is None, e["km"] or 0))
-    if cands:
-        e = cands[0]
-        msg = next((m for m in state["decparams"]
-                    if re.match(rf"^CQ\s+(?:DX\s+|TEST\s+)?{re.escape(e['call'])}\b", m, re.I)), None)
-        if msg and acquire(e["call"], e["grid"], msg, tries=cfg.get("cq_tries", 3), why="CQ"):
+        if acquire(c, "", m, tries=cfg.get("cq_tries", 3), why="called us"):
             ENG["busy"] += 1
             return
-    # no CQ: tail-end strongest traffic (overheard non-CQ), try twice
-    heard = [m for m in state["msgs"]
-             if not m["msg"].upper().startswith("CQ") and now - m.get("seen", 0) < 90]
-    best, bestcall = None, None
-    for m in heard:
-        parts = m["msg"].upper().split()
-        if len(parts) < 2 or state["mycall"] in parts or "/" in parts[0]:
+    if now < ENG["idle_until"]:
+        return  # listen-only rest (stations calling us are still answered above)
+    # CQ callers: activations first (if enabled), then strongest; fall through
+    # to the next if one can't be answered. Region-directed CQs are skipped.
+    cands = [e for e in list(state["cq"].values())
+             if e.get("tag", "") in ANSWERABLE and not is_worked(e["call"])
+             and not on_hold(e["call"]) and now - e["seen"] < 60]
+    cands.sort(key=cq_rank)
+    for e in cands:
+        if e.get("msg") and acquire(e["call"], e["grid"], e["msg"],
+                                    tries=cfg.get("cq_tries", 3),
+                                    why=e["tag"] if e.get("special") else "CQ"):
+            ENG["busy"] += 1
+            return
+    if now < ENG["cq_until"]:
+        return  # our own CQ keeps running; WS repeats it each period
+    # no CQ: tail-end strongest traffic (overheard non-CQ), try twice.
+    # A Reply to "A B ..." makes WS call B, the sender, so B is the target.
+    best = None
+    for m in list(state["msgs"]):
+        if now - m.get("seen", 0) >= 90:
             continue
-        if is_worked(parts[0]) or on_hold(parts[0]):
+        to, frm, _ = addressing(m["msg"])
+        if not frm or "." in frm or is_me(to) or is_me(frm):
             continue
-        if best is None or m["snr"] > best["snr"]:
-            best, bestcall = m, parts[0]
-    if best and acquire(bestcall, "", best["msg"], tries=cfg.get("tail_tries", 2), why="tail-end"):
+        if is_worked(frm) or on_hold(frm):
+            continue
+        if best is None or m["snr"] > best[0]["snr"]:
+            best = (m, frm)
+    if best and acquire(best[1], "", best[0]["msg"], tries=cfg.get("tail_tries", 2), why="tail-end"):
         ENG["busy"] += 1
+        return
+    ENG["busy"] = 0
+    if ENG["cq_until"]:  # our CQ run just ended: stop and listen before the next
+        ENG["cq_until"] = 0
+        halt_ws()
+        ENG["idle_until"] = now + cfg.get("idle_secs", 60)
+        log(f"CQ run over, listening {cfg.get('idle_secs', 60)}s")
+        return
+    if cfg.get("call_cq", True):  # last resort: call CQ ourselves
+        start_cq(cfg.get("cq_secs", 120))
         return
     # spare cycle: every idle_every idle cycles, rest to catch the off sequence
     ENG["idle_n"] += 1
-    ENG["busy"] = 0
     if ENG["idle_n"] % max(1, cfg.get("idle_every", 4)) == 0:
         ENG["idle_until"] = now + cfg.get("idle_secs", 60)
         log(f"listening {cfg.get('idle_secs', 60)}s (off-sequence watch)")
+
+def start_cq(secs):
+    """Reset WS's message stack to its default CQ and enable Tx. Halt first so
+    Enable Tx is known to be off: on stock WS the fallback is a toggle click."""
+    halt_ws()
+    try:
+        CTX["tx"].sendto(pack_configure(state["ws_id"]), ws_dest())
+        if has_ws_hunter():
+            CTX["tx"].sendto(pack_set_bool(SET_TX_ENABLED, state["ws_id"], True), ws_dest())
+            how = "Enable Tx via UDP"
+        else:
+            time.sleep(1.0)  # let WS act on Halt + Configure before clicking
+            how = arm_tx()
+    except Exception as e:
+        log(f"CQ start failed: {e}"); return
+    ENG["cq_until"] = time.time() + secs
+    log(f"calling CQ for {secs}s ({how})")
+
+def cq_rank(e):
+    special = state["config"].get("special_first", True) and e.get("special", False)
+    return (not special, -e["snr"], e["km"] is None, e["km"] or 0)
 
 def acquire(call, grid, msg, tries, why):
     if not send_exact_reply(CTX["tx"], msg):
         return False
     state["target"] = {"call": call, "grid": grid, "left": tries, "why": why,
                        "msg": msg, "resp": False}
+    ENG["cq_until"] = 0  # a Reply replaces our CQ in WS
     state["stats"]["calls_made"] += 1
     log(f"calling {call} {grid} ({why}, {tries} tries)")
     return True
@@ -451,46 +558,49 @@ def send_exact_reply(tx, msg):
 
 def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
         now = time.time()
-        tgt = (state["target"] or {}).get("call", "")
-        parts = msg.upper().split()
-        to_me = state["mycall"] in parts
+        t = state["target"]  # local ref: the engine thread may clear state["target"]
+        tgt = (t or {}).get("call", "")
+        to, frm, rest = addressing(msg)
+        to_me = is_me(to)
         # even/odd sequence: decode time falls just after the 15s TX slot
         if t_ms is not None:
             ENG["parity"][int((t_ms // 1000 // 15) % 2)] += 1
         state["msgs"].appendleft({"msg": msg, "snr": snr, "t": time.strftime("%H:%M:%S"),
-            "seen": now, "tome": to_me, "dx": bool(tgt) and tgt in parts})
+            "seen": now, "tome": to_me,
+            "dx": bool(tgt) and (same_call(to, tgt) or same_call(frm, tgt))})
         m = CQ_RE.match(msg)
         if m:
-            call, grid = m.group(1).upper(), (m.group(2) or "").upper()
+            tag = (m.group(1) or "").upper()
+            call, grid = m.group(2).upper(), (m.group(3) or "").upper()
             dist = km(myll, grid_to_latlon(grid)) if grid else None
             state["cq"][call] = {"call": call, "grid": grid, "snr": snr,
-                "km": dist, "worked": call in state["worked"] or call == state["mycall"],
+                "tag": tag, "special": tag in SPECIAL,
+                "km": dist, "worked": is_worked(call), "msg": msg,
                 "seen": now, "t": time.strftime("%H:%M:%S"),
                 "hold": on_hold(call),
                 "mode": state["decparams"].get(msg, {}).get("mode", "?")}
             state["stats"]["cq_heard"] += 1
             return  # selection happens in engine_tick (priority order)
-        # someone calling us? queue first-come-first-serve (preempts everything)
-        if to_me and state["running"] and parts and parts[0] != state["mycall"]:
-            if not is_worked(parts[0]) and not on_hold(parts[0]) \
-               and not any(c == parts[0] for c, _ in ENG["callers"]):
-                if tgt == parts[0]:
-                    state["target"]["left"] = 99  # QSO progressing; WS auto-sequences
-                    state["target"]["resp"] = True
-                    log(f"reply: {msg}")
-                else:
-                    ENG["callers"].append((parts[0], msg))
-                    log(f"caller queued: {msg}")
-                    if tgt:  # drop current target, answer the caller now
-                        halt_ws()
-                        log(f"dropping {tgt} for caller {parts[0]}")
-                        state["target"] = None
-            elif tgt == parts[0]:
-                state["target"]["left"] = 99
-                state["target"]["resp"] = True
+        if to_me and frm and "." not in frm:
+            signoff = bool(rest) and rest[-1] in SIGNOFF
+            if t and same_call(frm, tgt):
+                # our target answered; WS auto-sequences from here. After their
+                # sign-off we only owe a 73, so release the target soon after.
+                t["resp"] = True
+                t["done"] = t.get("done") or signoff
+                t["left"] = 2 if signoff else 99
                 log(f"reply: {msg}")
+            elif state["running"] and not signoff and not is_worked(frm) and not on_hold(frm) \
+                    and not any(same_call(c, frm) for c, _ in list(ENG["callers"])):
+                # someone calling us: queue first-come-first-serve
+                ENG["callers"].append((frm, msg))
+                log(f"caller queued: {msg}")
+                if t and not t.get("resp"):  # never abandon a QSO in progress
+                    halt_ws()
+                    log(f"dropping {tgt} for caller {frm}")
+                    state["target"] = None
         state["answering"][msg] = {"msg": msg, "snr": snr, "tome": to_me,
-            "from": parts[0] if parts else msg, "seen": now, "t": time.strftime("%H:%M:%S")}
+            "from": frm or msg, "seen": now, "t": time.strftime("%H:%M:%S")}
 
 def arm_tx(only_if_off=False):
     """Click WS 'Enable Tx' via xdotool (no UDP message exists for it).
@@ -545,29 +655,32 @@ class H(BaseHTTPRequestHandler):
             except FileNotFoundError:
                 self.send_error(404); return
         if self.path == "/api/state":
-            for e in state["cq"].values():
+            # snapshot shared structures first: the UDP/engine threads mutate them
+            cq = list(state["cq"].values())
+            for e in cq:
                 e["worked"] = is_worked(e["call"])
-            cq = sorted(state["cq"].values(), key=lambda e: (-e["snr"], e["km"] is None, e["km"] or 0))
-            ans = sorted(state["answering"].values(), key=lambda e: (not e["tome"], -e["seen"]))
-            tgt = (state["target"] or {}).get("call", "")
-            msgs = list(state["msgs"])[:30]
-            dxf = [m for m in state["msgs"] if tgt and tgt in m["msg"].upper().split()][:15]
+            cq.sort(key=cq_rank)
+            ans = sorted(list(state["answering"].values()), key=lambda e: (not e["tome"], -e["seen"]))
+            all_msgs = list(state["msgs"])
+            msgs = all_msgs[:30]
+            dxf = [m for m in all_msgs if m.get("dx")][:15]
             u = state["udp"]
             u["holder"] = udp_holder(udp_port)
-            holds = {c: max(0, round(until - time.time())) for c, until in ENG["holds"].items()
+            holds = {c: max(0, round(until - time.time())) for c, until in list(ENG["holds"].items())
                      if until > time.time()}
             par = ENG["parity"]
-            tot = (par[0] + par[1]) or 1
             return self._json({"running": state["running"], "mycall": state["mycall"],
                 "mygrid": state["mygrid"], "target": state["target"], "cq": cq[:40],
-                "answering": ans[:30], "worked": sorted(state["worked"]),
+                "answering": ans[:30], "worked": sorted(list(state["worked"])),
                 "msgs": msgs, "mytx": list(state["mytx"])[:15], "dxfocus": dxf,
-                "holds": holds, "callers": [c for c, _ in ENG["callers"]],
+                "holds": holds, "callers": [c for c, _ in list(ENG["callers"])],
                 "parity": {"even": par[0], "odd": par[1],
                            "hot": ("even" if par[0] >= par[1] else "odd")},
                 "idle": max(0, round(ENG["idle_until"] - time.time())),
+                "cq_calling": max(0, round(ENG["cq_until"] - time.time())),
                 "log": list(state["log"]), "config": state["config"], "stats": state["stats"],
                 "udp": {"holder": u["holder"], "ws_id": state["ws_id"],
+                        "revision": u.get("revision", ""), "ws_hunter": has_ws_hunter(),
                         "dxcall": u["dxcall"], "rx_count": u["rx_count"],
                         "tx_enabled": u.get("tx_enabled", False),
                         "transmitting": u.get("transmitting", False) if u.get("tx_t", 0) and time.time() - u.get("tx_t", 0) < 20 else False,
@@ -581,16 +694,18 @@ class H(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
         if p == "/api/start": state["running"] = True; log("hunter started")
         elif p == "/api/stop":
-            state["running"] = False; state["target"] = None
+            state["running"] = False; state["target"] = None; ENG["cq_until"] = 0
             ENG["callers"].clear(); halt_ws(); log("stopped, TX halted")
         elif p == "/api/skip":
-            if state["target"]:
+            t = state["target"]
+            if t:
                 halt_ws()
-                ENG["holds"][state["target"]["call"]] = time.time() + state["config"].get("hold_min", 10) * 60
+                hold(t["call"])
             state["target"] = None; log("target skipped + held")
         elif p == "/api/cq":
             # reset WS stack to default CQ + stop hunting so WS calls CQ on its own
             halt_ws()
+            state["running"] = False
             state["target"] = None; ENG["callers"].clear()
             try:
                 CTX["tx"].sendto(pack_configure(state["ws_id"]), ws_dest())
@@ -602,16 +717,13 @@ class H(BaseHTTPRequestHandler):
             log(f"arm TX: {arm_tx()}")
         elif p == "/api/call" and body.get("call"):
             c = body["call"].upper(); g = body.get("grid", "").upper()
-            # find the exact decode line for this call
-            cand = [m for m in state["decparams"] if re.match(
-                rf"^CQ\s+(?:DX\s+|TEST\s+)?{re.escape(c)}\b", m, re.I)]
-            if not cand:
+            # the exact CQ line last decoded for this call
+            e = next((e for e in list(state["cq"].values()) if same_call(e["call"], c)), None)
+            if not e or not e.get("msg"):
                 self._json({"error": f"no recent CQ decode for {c}"}, 404); return
-            msg = sorted(cand, key=lambda m: state["decparams"][m].get("snr", -99))[-1]
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            if send_exact_reply(s, msg):
-                state["target"] = {"call": c, "grid": g, "left": state["config"]["max_cycles"]}
-                log(f"manual call {msg}")
+            if acquire(e["call"], g or e["grid"], e["msg"],
+                       tries=state["config"].get("cq_tries", 3), why="manual"):
+                log(f"manual call {e['msg']}")
         elif p == "/api/smoke":
             # Replay poke to WSJT-X's own port: WS answers with decode backlog + Status
             before = state["udp"].get("ws_rx", 0)
