@@ -104,6 +104,22 @@ ENG["callers"][0]["t"] -= 200                     # W3CC gave up long ago
 st["target"]["left"] = 1; ns["engine_tick"]()     # W2BB times out
 check("caller not heard for 6 periods is dropped", not ENG["callers"] and st["target"] is None)
 
+# --- regression: YS1CH answered in the period we timed out, and was ignored
+fresh(); st["config"]["call_cq"] = False
+now_par = ns["parity"](ns["tod_ms"](time.time()))
+dec("CQ YS1CH EK54", snr=-5, t_ms=now_par * 15000)     # their CQ is in the current period's parity
+ns["engine_tick"]()
+check("starting in their period allows an extra period", st["target"]["left"] == 7)
+st["target"] = None; ns["hold"]("YS1CH")                # tries ran out, held
+dec("CQ EA8UP IL18", snr=-3); ns["engine_tick"]()        # moved on to the next CQ
+check("moved on to EA8UP", st["target"]["call"] == "EA8UP")
+dec("<KR4MZM/AG> YS1CH -12")                              # YS1CH's answer arrives late
+check("late reply lifts the hold and goes first in line",
+      not ns["on_hold"]("YS1CH") and ENG["callers"][0]["call"] == "YS1CH")
+check("...and replaces the unanswered EA8UP target", st["target"] is None)
+ns["engine_tick"]()
+check("YS1CH answered", st["target"]["call"] == "YS1CH" and st["target"]["msg"] == "<KR4MZM/AG> YS1CH -12")
+
 # --- tail-end targets the sender
 fresh(); dec("JA1AAA VK2BBB RR73", snr=3); ns["engine_tick"]()
 check("tail-end targets sender VK2BBB", st["target"] and st["target"]["call"] == "VK2BBB")
@@ -160,7 +176,9 @@ st["udp"]["revision"] = ""
 # --- politeness / success strategies
 ns["load_cty"]()
 fresh(); dec("CQ K9XYZ EN52", snr=5); ns["engine_tick"]()
-check("tries count transmissions (3 tries = 6 cycles)", st["target"]["left"] == 6)
+their_period_now = ns["parity"](ns["tod_ms"](time.time())) == 0   # CQ above was decoded in period 0
+check("tries count transmissions (3 tries = 6 periods, +1 if starting in their period)",
+      st["target"]["left"] == (7 if their_period_now else 6))
 CTX["tx"].sent.clear(); dec("N0OTH K9XYZ -12")
 check("target answers someone else -> stop calling, no hold",
       st["target"] is None and HALT in CTX["tx"].sent and not ns["on_hold"]("K9XYZ"))

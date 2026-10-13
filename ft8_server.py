@@ -892,12 +892,18 @@ def cq_rank(e):
 
 def acquire(call, grid, msg, tries, why):
     p = state["decparams"].get(msg)
+    extra = 0
     if p:
-        tune_tx(1 - parity(p["t_ms"]))  # we answer in the other period
+        tx_par = 1 - parity(p["t_ms"])  # we answer in the other period
+        tune_tx(tx_par)
+        # Starting in their period, our first call goes out a period later;
+        # allow for it so their answer to our last call is decoded before we
+        # give up on them.
+        extra = 1 if parity(tod_ms(time.time())) != tx_par else 0
     if not send_exact_reply(CTX["tx"], msg):
         return False
     # `left` counts T/R periods; we transmit in every other one
-    state["target"] = {"call": call, "grid": grid, "left": tries * 2, "why": why,
+    state["target"] = {"call": call, "grid": grid, "left": tries * 2 + extra, "why": why,
                        "msg": msg, "resp": False}
     ENG["cq_until"] = 0  # a Reply replaces our CQ in WS
     state["stats"]["calls_made"] += 1
@@ -961,15 +967,26 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                 t["done"] = t.get("done") or signoff
                 t["left"] = 2 if signoff else 99
                 log(f"reply: {msg}")
-            elif state["running"] and not signoff and not is_worked(frm) and not on_hold(frm):
+            elif state["running"] and not signoff and not is_worked(frm):
+                # A hold stops us calling them, not them answering us: a reply
+                # from a held station is a late answer to our call. Lift the
+                # hold and work them next.
+                late = on_hold(frm)
+                if late:
+                    ENG["holds"].pop(base_call(frm), None)
                 # someone calling us: queue first-come-first-serve; a repeat call
                 # keeps their place but refreshes the message we will answer
                 q = next((c for c in list(ENG["callers"]) if same_call(c["call"], frm)), None)
                 if q:
                     q.update(msg=msg, t=now)
                 else:
-                    ENG["callers"].append({"call": frm, "msg": msg, "t": now})
-                    log(f"caller queued: {msg}")
+                    entry = {"call": frm, "msg": msg, "t": now}
+                    if late:
+                        ENG["callers"].appendleft(entry)
+                        log(f"late reply, answering next: {msg}")
+                    else:
+                        ENG["callers"].append(entry)
+                        log(f"caller queued: {msg}")
                     if t and not t.get("resp"):  # never abandon a QSO in progress
                         halt_ws()
                         log(f"dropping {tgt} for caller {frm}")
