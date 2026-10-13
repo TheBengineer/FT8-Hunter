@@ -34,7 +34,7 @@ def fresh():
     ENG["callers"].clear(); ENG["holds"].clear()
     ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0)
     ENG["occ"].clear(); ENG["spec"].clear(); ENG["noise_hist"].clear(); st["udp"].pop("tx_df", None)
-    ENG["spec_pending"].clear(); ENG["qrm_first"] = None
+    ENG["spec_pending"].clear(); ENG["qrm_first"] = None; ENG["tx_iv"].clear()
     ENG["active"].clear(); ENG["calls_to"].clear()
     CTX["tx"].sent.clear()
 
@@ -274,6 +274,19 @@ for i in range(8, 20):
         dec(f"W{k}AA K{k}BB -10", df=df, t_ms=tm)
 settle(); check("busy FT2 band whose decodes arrive late: no backoff", ENG["qrm_until"] == 0)
 st["udp"]["mode"] = "FT8"
+# regression: our own transmit periods (receiver muted, ~45 dB lower) were
+# taken as the noise floor, so the real band looked like one wide signal
+fresh()
+for i in range(12):                                # band ~-15 dB, muted TX periods ~-65 dB
+    handle(spectrum(quiet, t_ms=i * 15000, floor=-20.0 if i % 2 else -70.0))
+check("muted (transmit) periods kept out of the noise floor once it is known",
+      sum(1 for x in ENG["noise_hist"] if x < -40) == 2 and len(ENG["noise_hist"]) == 8)
+for i in range(12, 16): handle(spectrum(quiet, t_ms=i * 15000))
+settle(); check("normal band after our transmissions: no backoff", ENG["qrm_until"] == 0)
+fresh(); ns["note_tx"](True)
+handle(spectrum(quiet, t_ms=ns["tod_ms"](time.time()) // 15000 * 15000))
+check("spectrum of a period we are transmitting in is ignored", not ENG["spec_pending"])
+ns["note_tx"](False); ENG["tx_iv"].clear()
 st["udp"]["revision"] = ""
 
 # --- real UDP packets through udp_listener

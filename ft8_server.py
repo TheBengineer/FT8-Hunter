@@ -263,6 +263,7 @@ ENG = {"holds": {}, "callers": deque(maxlen=20), "parity": {0: 0, 1: 0},
        "spec_pending": deque(maxlen=20),  # spectra waiting for their decodes
        "spec_log": deque(maxlen=20),      # evaluated spectra, for /api/debug/spectrum
        "qrm_first": None,
+       "tx_iv": deque(maxlen=50),          # our transmissions [on, off] (epoch s)
        "qrm_until": 0, "qrm_n": 0, "qrm_why": "",
        "active": {},    # base call -> last time heard sending to someone (0 = signed off)
        "calls_to": {}}  # base call -> {caller base call: last time}: their pileup
@@ -386,7 +387,9 @@ def udp_listener():
                         state["udp"]["dxcall"] = strs[1]
                     if len(strs) == 4 and p + 2 <= len(data):
                         state["udp"]["tx_enabled"] = bool(data[p]); p += 1
-                        state["udp"]["transmitting"] = bool(data[p]); p += 1
+                        txing = bool(data[p]); p += 1
+                        note_tx(txing)
+                        state["udp"]["transmitting"] = txing
                         state["udp"]["tx_t"] = time.time()
                         if p + 9 <= len(data):  # Decoding bool, Rx DF u32, Tx DF u32
                             state["udp"]["rx_df"], state["udp"]["tx_df"] = struct.unpack(">II", data[p+1:p+9])
@@ -602,6 +605,28 @@ def tune_tx(par):
         tx.sendto(pack_set_u32(SET_TX_DF, wid, f), ws_dest())
         log(f"Tx offset {cur} -> {f} Hz ({'even' if par == 0 else 'odd'})")
 
+def tod_ms(ts):
+    """UTC time of day in ms, the clock WS uses for period start times."""
+    return int(ts * 1000) % 86400000
+
+def note_tx(txing):
+    """Record our transmit intervals from Status, so spectra of periods we
+    transmitted in (the rig mutes its receive audio) are never judged."""
+    now, iv = time.time(), ENG["tx_iv"]
+    if txing and not (iv and iv[-1][1] is None):
+        iv.append([now, None])
+    elif not txing and iv and iv[-1][1] is None:
+        iv[-1][1] = now
+
+def overlaps_tx(t_ms, tr_ms, margin_ms=1000):
+    """Did any of our transmissions overlap this period (+ audio latency)?"""
+    end = t_ms + tr_ms
+    for on, off in list(ENG["tx_iv"]):
+        a, b = tod_ms(on) - margin_ms, tod_ms(off if off else time.time()) + margin_ms
+        if a < end and b > t_ms:
+            return True
+    return False
+
 def handle_spectrum(data, off):
     """ws-hunter SpectrumSummary: period QTime ms, T/R ms, start Hz, bin Hz,
     floor dB, step dB, levels. Marks hot bins for the offset picker right
@@ -613,11 +638,14 @@ def handle_spectrum(data, off):
     db = [floor + v * step for v in levels]
     freqs = [start + i * bin_hz for i in range(len(db))]
     band = sorted(d for f, d in zip(freqs, db) if 200 <= f < 2800)
-    if not band:
-        return
+    if not band or overlaps_tx(t_ms, tr_ms):
+        return  # we transmitted: the receiver was muted, this is not the band
+    p10 = band[len(band) // 10]
+    if len(ENG["noise_hist"]) >= 4 and p10 < sorted(ENG["noise_hist"])[len(ENG["noise_hist"]) // 2] - 15:
+        return  # far below the usual floor: muted audio (TX we missed, or RX off)
     # Noise floor from history, not this period alone: a voice signal can
     # fill the whole passband, so this period's own floor would be the signal.
-    ENG["noise_hist"].append(band[len(band) // 10])
+    ENG["noise_hist"].append(p10)
     hist = sorted(ENG["noise_hist"])
     noise = hist[len(hist) // 4]
     hot = [f for f, d in zip(freqs, db) if d > noise + 8]
