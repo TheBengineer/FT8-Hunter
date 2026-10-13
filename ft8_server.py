@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 state = {
     "running": False, "mycall": "", "mygrid": "",
     "target": None, "cq": {}, "answering": {},
-    "worked": set(), "log": deque(maxlen=50),
+    "worked": {}, "log": deque(maxlen=50),
     "msgs": deque(maxlen=80), "mytx": deque(maxlen=20),
     "config": {"max_cycles": 3, "cooldown": 2, "cq_only": True,
                "cq_tries": 3, "tail_tries": 2, "hold_min": 10,
@@ -206,13 +206,13 @@ def dx_ok(e):
 def load_worked():
     """Only TODAY's contacts count (UTC date, as ADIF records qso_date), each
     as (call, band, mode) so a station can be worked again on another band or
-    mode. Returns (set, {path: mtime})."""
+    mode. Returns ({(call, band, mode): epoch time}, {path: mtime})."""
     import datetime
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
     paths = [os.path.expanduser("~/.local/share/WS/wsjtx_log.adi"),
              os.path.expanduser("~/.local/share/WSJT-X/wsjtx_log.adi"),
              os.path.expanduser("~/.wsjtx/wsjtx_log.adi")]
-    w, mtimes = set(), {}
+    w, mtimes = {}, {}
     for p in paths:
         if not os.path.exists(p):
             continue
@@ -232,7 +232,13 @@ def load_worked():
             mm = (re.search(r"<submode:\d+>(\w+)", rec, re.I)
                   or re.search(r"<mode:\d+>(\w+)", rec, re.I))
             band_ = mb.group(1).lower() if mb else band_of(float(mf.group(1)) * 1e6) if mf else None
-            w.add((mc.group(1).upper(), band_, mm.group(1).upper() if mm else None))
+            mt = (re.search(r"<time_on:\d+>(\d{4,6})", rec, re.I)
+                  or re.search(r"<time_off:\d+>(\d{4,6})", rec, re.I))
+            ts = None
+            if md and mt:
+                ts = datetime.datetime.strptime(md.group(1) + mt.group(1)[:4], "%Y%m%d%H%M").replace(
+                    tzinfo=datetime.timezone.utc).timestamp()
+            w[(mc.group(1).upper(), band_, mm.group(1).upper() if mm else None)] = ts
         log(f"worked today: {len(w)} total ({p})")
     return w, mtimes
 
@@ -262,7 +268,7 @@ def cycle_ticker():
 CTX = {"tx": None, "myll": None, "seen": {}, "cycle": [0]}
 # Targeting engine: holds {call: until_ts}, callers queue [{call, msg, t}], parity {0:n,1:n},
 # idle_until ts (listen-only rest), busy_cycles (consecutive cycles with a target)
-ENG = {"holds": {}, "callers": deque(maxlen=20), "parity": {0: 0, 1: 0},
+ENG = {"holds": {}, "held": {}, "callers": deque(maxlen=20), "parity": {0: 0, 1: 0},
        "idle_until": 0, "busy": 0, "idle_n": 0,
        "cq_until": 0,  # calling our own CQ until this time (0 = not calling)
        "occ": deque(maxlen=800),  # recent decodes {t, par, df}: who is where
@@ -535,13 +541,15 @@ def hold(call):
     """Hold a call for hold_min minutes on this band and mode; returns the minutes."""
     mins = state["config"].get("hold_min", 10)
     ENG["holds"][slot_key(call)] = time.time() + mins * 60
+    ENG["held"][slot_key(call)] = (call, time.time())  # for the worked/ignored list
     return mins
 
 def unhold(call):
     ENG["holds"].pop(slot_key(call), None)
+    ENG["held"].pop(slot_key(call), None)  # they answered after all
 
 def add_worked(call, band_=None, mode_=None):
-    state["worked"].add((call.upper(), band_ or band(), mode_ or mode()))
+    state["worked"][(call.upper(), band_ or band(), mode_ or mode())] = time.time()
 
 def is_worked(call):
     """Worked today on this band and mode. A log entry missing its band or
@@ -1132,10 +1140,19 @@ class H(BaseHTTPRequestHandler):
             holds = {k[0]: max(0, round(until - now)) for k, until in list(ENG["holds"].items())
                      if until > now and k[1:] == here}
             worked = sorted({c for c, b, m in list(state["worked"]) if is_worked(c)})
+            # today's book across every band and mode, newest first: contacts
+            # plus stations we gave up on (still on hold or not)
+            book = [{"call": c, "band": b, "mode": m, "kind": "worked", "t": ts}
+                    for (c, b, m), ts in list(state["worked"].items())]
+            book += [{"call": c, "band": k[1], "mode": k[2], "kind": "ignored", "t": ts,
+                      "hold_s": max(0, round(ENG["holds"].get(k, 0) - now))}
+                     for k, (c, ts) in list(ENG["held"].items())
+                     if not any(base_call(w[0]) == k[0] and w[1:] == k[1:] for w in list(state["worked"]))]
+            book.sort(key=lambda e: -(e["t"] or 0))
             par = ENG["parity"]
             return self._json({"running": state["running"], "mycall": state["mycall"],
                 "mygrid": state["mygrid"], "target": state["target"], "cq": cq[:40],
-                "answering": ans[:30], "worked": worked, "band": band(),
+                "answering": ans[:30], "worked": worked, "book": book[:200], "band": band(),
                 "msgs": msgs, "mytx": list(state["mytx"])[:15], "dxfocus": dxf,
                 "holds": holds, "callers": [c["call"] for c in list(ENG["callers"])],
                 "parity": {"even": par[0], "odd": par[1],

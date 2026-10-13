@@ -30,7 +30,7 @@ def dec(msg, snr=-5, df=1500, t_ms=0):
     ns["handle_decode"](msg, snr, CTX["tx"], None, {}, [0], 15000)
 
 def fresh():
-    st["target"] = None; st["cq"].clear(); st["msgs"].clear(); st["worked"] = set()
+    st["target"] = None; st["cq"].clear(); st["msgs"].clear(); st["worked"] = {}; ENG["held"].clear()
     ENG["callers"].clear(); ENG["holds"].clear()
     ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0)
     ENG["occ"].clear(); ENG["spec"].clear(); ENG["noise_hist"].clear(); st["udp"].pop("tx_df", None)
@@ -125,7 +125,7 @@ fresh(); dec("JA1AAA VK2BBB RR73", snr=3); ns["engine_tick"]()
 check("tail-end targets sender VK2BBB", st["target"] and st["target"]["call"] == "VK2BBB")
 
 # --- worked checks
-st["worked"] = {("N0CALL", None, None)}
+st["worked"] = {("N0CALL", None, None): None}
 check("worked check ignores /P suffix", ns["is_worked"]("N0CALL/P"))
 check("own call counts as worked", ns["is_worked"]("<KR4MZM/AG>"))
 
@@ -151,13 +151,15 @@ home = tempfile.mkdtemp(dir=os.environ.get("TMPDIR"))
 os.makedirs(os.path.join(home, ".local/share/WS"))
 today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
 with open(os.path.join(home, ".local/share/WS/wsjtx_log.adi"), "w") as f:
-    f.write(f"<call:5>K1ABC <qso_date:8>{today} <band:3>20m <mode:3>FT8 <eor>"
+    f.write(f"<call:5>K1ABC <qso_date:8>{today} <time_on:6>134502 <band:3>20m <mode:3>FT8 <eor>"
             f"<call:5>K2ABC <qso_date:8>{today} <freq:9>7.075500 <mode:4>MFSK <submode:3>FT4 <eor>"
             f"<call:5>K3ABC <qso_date:8>19990101 <band:3>20m <mode:3>FT8 <eor>")
 old_home = os.environ["HOME"]; os.environ["HOME"] = home
 w, _ = ns["load_worked"](); os.environ["HOME"] = old_home
 check("ADIF: band, freq and FT4 submode read; old days ignored",
-      w == {("K1ABC", "20m", "FT8"), ("K2ABC", "40m", "FT4")})
+      set(w) == {("K1ABC", "20m", "FT8"), ("K2ABC", "40m", "FT4")})
+check("ADIF time_on kept for the worked list",
+      time.strftime("%H:%M", time.gmtime(w[("K1ABC", "20m", "FT8")])) == "13:45")
 st["worked"] = w; st["udp"].update(band="20m", mode="FT4")
 check("ADIF 20m FT8 contact doesn't block 20m FT4", not ns["is_worked"]("K1ABC"))
 st["udp"]["mode"] = "FT8"
@@ -400,6 +402,25 @@ try:
     check("WRL reply relayed to WS", back == halt)
 except socket.timeout:
     check("WRL bridge round trip", False)
+
+# --- worked / ignored list in /api/state: time, band, mode, kind
+import json, urllib.request
+from http.server import ThreadingHTTPServer
+fresh(); st["udp"].update(band="20m", mode="FT8")
+ns["add_worked"]("K1ABC"); ns["add_worked"]("K2ABC", "40m", "FT4")
+ns["hold"]("W9NOP"); ns["hold"]("W8LATE"); ns["unhold"]("W8LATE")
+srv = ThreadingHTTPServer(("127.0.0.1", 0), ns["H"])
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+api = json.load(urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}/api/state"))
+book = {e["call"]: e for e in api["book"]}
+check("book lists contacts on every band/mode with time",
+      book["K2ABC"]["band"] == "40m" and book["K2ABC"]["mode"] == "FT4"
+      and book["K1ABC"]["kind"] == "worked" and book["K1ABC"]["t"])
+check("book lists a station we gave up on as ignored, with its hold",
+      book["W9NOP"]["kind"] == "ignored" and book["W9NOP"]["band"] == "20m" and book["W9NOP"]["hold_s"] > 0)
+check("a station that answered after its hold isn't listed as ignored", "W8LATE" not in book)
+check("worked count is for this band/mode only", api["worked"] == ["K1ABC"])
+srv.shutdown()
 
 print("ALL PASS" if ok else "SOME FAILED")
 sys.exit(0 if ok else 1)

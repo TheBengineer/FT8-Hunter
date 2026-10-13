@@ -63,7 +63,8 @@ only stop the hunter starting something new.
 The web UI draws this same flow and lights up the step the hunter is on, with
 the steps it passed marked "no". Each CQ shows why it is or isn't being called
 (on hold, in QSO, pileup size, stale, weak, region/DX-only), and calls on hold
-are underlined wherever they appear. On a desktop the cards spread into two or
+are underlined wherever they appear. The worked / ignored list shows today's
+contacts and the stations that never answered, with time, band and mode. On a desktop the cards spread into two or
 three columns.
 
 ## Run
