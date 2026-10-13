@@ -29,11 +29,11 @@ flowchart TD
     tgt -- yes --> fin{Logged, signed off,<br/>or out of tries?}
     fin -- no --> keep[Keep going: re-send the Reply<br/>until they answer] --> wait([next cycle])
     fin -- yes --> rel[Release target<br/>hold it if it never answered] --> wait
-    tgt -- no --> qrm{Someone else on<br/>frequency? *}
-    qrm -- yes --> wait
-    qrm -- no --> caller{Station<br/>calling me?}
+    tgt -- no --> caller{Station<br/>calling me?}
     caller -- yes --> ans[Answer it]
-    caller -- no --> rest{Listen pause?}
+    caller -- no --> qrm{Someone else on<br/>frequency? *}
+    qrm -- yes --> wait
+    qrm -- no --> rest{Listen pause?}
     rest -- yes --> wait
     rest -- no --> act{Activator CQ<br/>worth answering?}
     act -- yes --> pounce[Pounce on the best]
@@ -53,7 +53,9 @@ flowchart TD
 hold, not in a QSO with someone since that CQ, at or above the minimum SNR, not a
 CQ aimed at a region, and for `CQ DX` on another continent. Between cycles, each
 decode can also end a target early: if it answers someone else the hunter stops
-calling, and a new caller replaces a target that hasn't answered yet.
+calling, and a new caller replaces a target that hasn't answered yet. A station
+calling you is always answered: holds, listen pauses and the busy-frequency backoff
+only stop the hunter starting something new.
 
 \* needs the [ws-hunter](#ws-build-with-hunter-controls) build of WS.
 

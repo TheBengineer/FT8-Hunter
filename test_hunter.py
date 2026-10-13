@@ -277,6 +277,8 @@ check("verdict waits for the period's decodes", ENG["qrm_until"] == 0)
 settle(); check("30 s of wide undecoded signal -> back off", ENG["qrm_until"] > time.time())
 ENG["cq_until"] = 0; dec("CQ K4PRK EM85", snr=-3); ns["engine_tick"]()
 check("no new calls during backoff", st["target"] is None)
+dec("KR4MZM/AG W5ANS EM12"); ns["engine_tick"]()
+check("a station calling us is answered even during the backoff", st["target"]["call"] == "W5ANS")
 # regression: busy FT2 band right after a mode change, decodes arriving after
 # the spectrum, was flagged as "2160 Hz of undecoded signal"
 fresh(); st["udp"]["mode"] = "FT2"

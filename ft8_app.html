@@ -89,8 +89,8 @@ function snrC(s){return s>=0?'good':s>=-12?'mid':'bad'}
 // engine steps in the order engine_tick checks them: [id, question, yes-action]
 const STEPS=[['stopped','Hunter running?','Stopped'],
  ['target','Calling or working a target?','Work the target'],
- ['qrm','Someone else on frequency?','Back off: no new calls'],
  ['caller','Station calling me?','Answer the caller'],
+ ['qrm','Someone else on frequency?','Back off: no new calls'],
  ['listen','Listen pause?','Listen'],
  ['activator','Activator CQ worth answering?','Pounce'],
  ['cq','Other CQ worth answering?','Answer the CQ'],

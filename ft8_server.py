@@ -782,8 +782,6 @@ def engine_tick():
                 else f"calling, {(t['left'] + 1) // 2} tries left"
             return at("target", f"{t['call']}: {how}")
     check_qrm(now)  # spectra wait for their decodes; we may transmit meanwhile
-    if now < ENG["qrm_until"]:
-        return at("qrm", ENG["qrm_why"])  # someone else is using the frequency
     # stations calling us, first-come-first-serve, working through all of them
     waiting = fresh_callers(now)
     while waiting:
@@ -793,8 +791,13 @@ def engine_tick():
             ENG["busy"] += 1
             more = f" ({len(waiting)} more waiting)" if waiting else ""
             return at("caller", c["call"] + more)
+    # Holds of every kind (busy frequency, listen pause, a station on hold)
+    # never stop us answering a station that is calling us; they only stop
+    # us starting something new.
+    if now < ENG["qrm_until"]:
+        return at("qrm", ENG["qrm_why"])  # someone else is using the frequency
     if now < ENG["idle_until"]:
-        # listen-only rest (stations calling us are still answered above)
+        # listen-only rest
         return at("listen", f"{round(ENG['idle_until'] - now)} s left")
     # CQ callers: activations first (if enabled), then best chance of a
     # contact; fall through to the next if one can't be answered.
