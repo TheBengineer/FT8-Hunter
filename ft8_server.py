@@ -1139,6 +1139,15 @@ ap.add_argument("--mycall", default="KR4MZM"); ap.add_argument("--mygrid", defau
 ap.add_argument("--port", type=int, default=2237); ap.add_argument("--http", type=int, default=8080)
 a = ap.parse_args()
 state["mycall"] = a.mycall.upper(); state["mygrid"] = a.mygrid.upper(); udp_port = a.port
+def shutdown(signum, frame):
+    """Service stop/restart: halt WS so it isn't left transmitting unattended."""
+    if CTX["tx"] is not None and state.get("ws_addr"):
+        halt_ws()
+        print("halted WS on shutdown", flush=True)
+    os._exit(0)
+import signal
+signal.signal(signal.SIGTERM, shutdown)
+signal.signal(signal.SIGINT, shutdown)
 threading.Thread(target=watcher, daemon=True).start()
 log(f"hunter ready as {state['mycall']} {state['mygrid']}")
 print(f"open http://0.0.0.0:{a.http}/")
