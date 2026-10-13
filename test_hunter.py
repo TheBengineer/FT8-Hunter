@@ -403,6 +403,21 @@ try:
 except socket.timeout:
     check("WRL bridge round trip", False)
 
+# --- globe: positions from grids heard, else the country's centre
+fresh(); ns["GRIDS"].clear(); st["mygrid"] = "EM84"; st["udp"].update(band="20m", mode="FT8")
+dec("CQ JA1XYZ PM95"); dec("W1AW K9ABC EN52"); dec("K9ABC W1AW RR73")
+check("grid learned from a CQ and from a reply, not from RR73",
+      ns["GRIDS"].get("JA1XYZ") == "PM95" and ns["GRIDS"].get("K9ABC") == "EN52" and "W1AW" not in ns["GRIDS"])
+ns["CTY"]["prefix"]["W"] = ("United States", "NA", 37.53, -91.67)
+check("no grid: country centre", ns["locate"]("W1AW") == (37.53, -91.67))
+ns["add_worked"]("JA1XYZ"); dec("KR4MZM/AG W1AW -10")
+st["target"] = {"call": "K9ABC", "left": 5}
+g = ns["globe"]()
+check("globe: me, contacts, target and traffic located",
+      g["me"] and g["worked"][0]["call"] == "JA1XYZ" and g["target"]["call"] == "K9ABC" and g["target"]["ll"]
+      and any(x["from"] == "K9ABC" and x["to"] == "W1AW" for x in g["traffic"])
+      and any(x["tome"] and x["b"] == g["me"] for x in g["traffic"]))
+
 # --- worked / ignored list in /api/state: time, band, mode, kind
 import json, urllib.request
 from http.server import ThreadingHTTPServer

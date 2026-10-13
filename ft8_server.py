@@ -158,7 +158,9 @@ def km(a, b):
     h = math.sin((la2-la1)/2)**2 + math.cos(la1)*math.cos(la2)*math.sin((lo2-lo1)/2)**2
     return round(2 * 6371 * math.asin(math.sqrt(h)))
 
-CTY = {"exact": {}, "prefix": {}}  # call/prefix -> (country, continent)
+CTY = {"exact": {}, "prefix": {}}  # call/prefix -> (country, continent, lat, lon)
+GRIDS = {}  # base call -> grid, learned from decodes and the log (for the globe)
+GRID_RE = re.compile(r"^[A-R]{2}\d{2}([A-X]{2})?$")
 CTY_PATHS = ("~/ws-hunter-app/share/ws/cty.dat", "~/ws/usr/share/ws/cty.dat",
              "~/ws-wide/usr/share/ws/cty.dat", "/usr/share/wsjtx/cty.dat")
 
@@ -177,7 +179,9 @@ def load_cty():
                 if not m:
                     continue
                 c = re.search(r"\{(\w\w)\}", tok)  # per-prefix continent override
-                (CTY["exact"] if m.group(1) else CTY["prefix"])[m.group(2)] = (f[0], c.group(1) if c else f[3])
+                # cty.dat longitudes are positive west
+                (CTY["exact"] if m.group(1) else CTY["prefix"])[m.group(2)] = (
+                    f[0], c.group(1) if c else f[3], float(f[4]), -float(f[5]))
         log(f"country file: {p} ({len(CTY['prefix'])} prefixes)")
         return
 
@@ -192,6 +196,18 @@ def dxcc(call):
         if key[:n] in CTY["prefix"]:
             return CTY["prefix"][key[:n]]
     return None
+
+def note_grid(call, grid):
+    if call and grid and grid.upper() != "RR73" and GRID_RE.match(grid.upper()):
+        GRIDS[base_call(call)] = grid.upper()
+
+def locate(call):
+    """(lat, lon) for a call: its grid if we've seen one, else its country's centre."""
+    g = GRIDS.get(base_call(call))
+    if g:
+        return grid_to_latlon(g)
+    d = dxcc(call)
+    return (d[2], d[3]) if d and len(d) > 3 else None
 
 def dx_ok(e):
     """CQ DX is for stations on another continent; answering from the same
@@ -239,6 +255,9 @@ def load_worked():
                 ts = datetime.datetime.strptime(md.group(1) + mt.group(1)[:4], "%Y%m%d%H%M").replace(
                     tzinfo=datetime.timezone.utc).timestamp()
             w[(mc.group(1).upper(), band_, mm.group(1).upper() if mm else None)] = ts
+            mg = re.search(r"<gridsquare:\d+>(\w+)", rec, re.I)
+            if mg:
+                note_grid(mc.group(1), mg.group(1)[:4])
         log(f"worked today: {len(w)} total ({p})")
     return w, mtimes
 
@@ -379,7 +398,8 @@ def udp_listener():
                     q5 += max(ln, 0)
                     lband = lmode = None
                     try:  # DX grid, Tx frequency (dial Hz), Mode
-                        ln = struct.unpack(">i", data[q5:q5+4])[0]; q5 += 4 + max(ln, 0)
+                        ln = struct.unpack(">i", data[q5:q5+4])[0]; q5 += 4
+                        note_grid(dxcall, data[q5:q5+max(ln, 0)].decode("utf-8", "errors")[:4]); q5 += max(ln, 0)
                         lband = band_of(struct.unpack(">Q", data[q5:q5+8])[0]); q5 += 8
                         ln = struct.unpack(">i", data[q5:q5+4])[0]; q5 += 4
                         lmode = data[q5:q5+max(ln, 0)].decode("utf-8", "errors").strip().upper() or None
@@ -1008,6 +1028,7 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
             tag = (m.group(1) or "").upper()
             call, grid = m.group(2).upper(), (m.group(3) or "").upper()
             dist = km(myll, grid_to_latlon(grid)) if grid else None
+            note_grid(call, grid)
             state["cq"][call] = {"call": call, "grid": grid, "snr": snr,
                 "tag": tag, "special": tag in SPECIAL,
                 "km": dist, "worked": is_worked(call), "msg": msg,
@@ -1018,6 +1039,8 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
             state["stats"]["cq_heard"] += 1
             return  # selection happens in engine_tick (priority order)
         signoff = bool(rest) and rest[-1] in SIGNOFF
+        if frm and rest:
+            note_grid(frm, rest[-1])
         if frm and "." not in frm and not is_me(frm):
             fb = base_call(frm)
             ENG["active"][fb] = 0 if signoff else now
@@ -1063,6 +1086,31 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                         state["target"] = None
         state["answering"][msg] = {"msg": msg, "snr": snr, "tome": to_me,
             "from": frm or msg, "seen": now, "t": time.strftime("%H:%M:%S")}
+
+def globe():
+    """Positions for the globe: me, today's contacts, the target, and recent
+    traffic between other stations (both ends located)."""
+    now, here = time.time(), (band(), mode())
+    me = grid_to_latlon(state["mygrid"]) if state["mygrid"] else locate(state["mycall"])
+    seen, worked = set(), []
+    for (c, b, m), ts in sorted(list(state["worked"].items()), key=lambda kv: -(kv[1] or 0)):
+        ll = locate(c)
+        if ll and (c, b, m) not in seen:
+            seen.add((c, b, m))
+            worked.append({"call": c, "ll": ll, "band": b, "mode": m, "here": (b, m) == here})
+    t = state["target"]
+    tgt = {"call": t["call"], "ll": locate(t["call"]), "resp": bool(t.get("resp"))} if t else None
+    traffic = []
+    for e in sorted(list(state["answering"].values()), key=lambda e: -e["seen"]):
+        if now - e["seen"] > cyc(8) or len(traffic) >= 60:
+            continue
+        to, frm, _ = addressing(e["msg"])
+        a, b = locate(frm) if frm else None, (me if is_me(to) else locate(to)) if to else None
+        if a and b and a != b:
+            traffic.append({"from": frm, "to": to, "a": a, "b": b, "age": round(now - e["seen"]),
+                            "tome": e["tome"]})
+    return {"me": me, "mycall": state["mycall"], "worked": worked[:300], "target": tgt,
+            "traffic": traffic}
 
 def arm_tx(only_if_off=False):
     """Click WS 'Enable Tx' via xdotool (no UDP message exists for it).
@@ -1116,6 +1164,8 @@ class H(BaseHTTPRequestHandler):
                 self.wfile.write(b); return
             except FileNotFoundError:
                 self.send_error(404); return
+        if self.path == "/api/globe":
+            return self._json(globe())
         if self.path == "/api/debug/spectrum":
             return self._json({"noise_hist": [round(x, 1) for x in list(ENG["noise_hist"])],
                                "spectra": list(ENG["spec_log"])})

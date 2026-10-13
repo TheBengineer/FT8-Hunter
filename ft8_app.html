@@ -65,6 +65,9 @@ details summary{font-weight:700;padding:4px}
 <div class="row"><button id="bS">Start</button><button id="bX" class="warn">Skip</button></div>
 <div class="row" style="margin-top:8px"><button id="bCQ" style="background:#1f9d4d">🔴 ARM TX</button></div>
 <div class="row" style="margin-top:8px"><button id="bT" style="background:#5a4a8a">🔌 Smoke test</button></div></div>
+<div class="card" data-id="globe"><h2>🌍 Globe <span class="small" id="gsum"></span></h2>
+<canvas id="globe" style="width:100%;aspect-ratio:1;display:block;touch-action:none;cursor:grab"></canvas>
+<div class="small" style="margin-top:4px"><span style="color:#ff7a3d">━ target</span> · <span style="color:#2ecc71">━ worked</span> · <span style="color:#7fa8ff99">━ traffic</span> · drag to turn</div></div>
 <div class="card" data-id="flow"><h2>🧭 Decision flow <span class="small" id="stepage"></span></h2><div class="flow" id="flow"></div>
 <div class="small" style="margin-top:6px">Checked top to bottom each period; the first “yes” wins.</div></div>
 <div class="card" data-id="dx"><h2>🎯 DX focus <span class="small" id="dxn"></span></h2><ul id="dxf"></ul>
@@ -215,8 +218,8 @@ const c=$('ctxt');if(c)c.textContent=`${window._mode||'FT8'} · ${pos.toFixed(1)
 const box=document.querySelector('.cards'),KEY='cardCols';
 const all=[...box.querySelectorAll(':scope>.card')],by=Object.fromEntries(all.map(c=>[c.dataset.id,c]));
 const DEF={1:[all.map(c=>c.dataset.id)],
- 2:[['status','flow','dx','manual'],['cq','seq','ans','msgs','log','worked','settings']],
- 3:[['status','flow','dx'],['cq','seq','ans','msgs'],['manual','log','worked','settings']]};
+ 2:[['status','globe','flow','dx','manual'],['cq','seq','ans','msgs','log','worked','settings']],
+ 3:[['status','globe','flow','dx'],['cq','seq','ans','msgs'],['manual','log','worked','settings']]};
 let saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||'{}')||{}}catch(e){}
 const ncols=()=>innerWidth>=1350?3:innerWidth>=900?2:1;
 let n=0;
@@ -252,5 +255,64 @@ all.forEach(c=>{const mv=document.createElement('div');mv.className='mv';
  const end=()=>{if(drag!==c)return;drag=null;c.classList.remove('dragging');
   box.querySelectorAll('.col').forEach(x=>x.classList.remove('over'));save()};
  g.addEventListener('pointerup',end);g.addEventListener('pointercancel',end)});
+})();
+</script>
+<script>
+// Spinning globe: today's contacts as high arcs from home into space, the
+// current target bold, other stations' live traffic faint. Coastlines come
+// from world-atlas (TopoJSON); without the internet it's a plain sphere.
+(()=>{
+const cv=document.getElementById('globe'),ctx=cv.getContext('2d'),D=Math.PI/180;
+let G={worked:[],traffic:[]},coast=[],lon0=0,lat0=20,drag=null,last=0,spin=true;
+fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json').then(r=>r.json()).then(t=>{
+ const [sx,sy]=t.transform.scale,[tx,ty]=t.transform.translate;   // delta-decode quantized arcs
+ coast=t.arcs.map(a=>{let x=0,y=0;return a.map(([dx,dy])=>{x+=dx;y+=dy;return vec(y*sy+ty,x*sx+tx)})})}).catch(()=>{});
+const vec=(lat,lon)=>[Math.cos(lat*D)*Math.sin(lon*D),Math.sin(lat*D),Math.cos(lat*D)*Math.cos(lon*D)];
+function view([x,y,z]){  // spin about the pole by lon0, then tilt by lat0
+ const c=Math.cos(-lon0*D),s=Math.sin(-lon0*D),X=x*c+z*s,Z=-x*s+z*c;
+ const ct=Math.cos(lat0*D),st=Math.sin(lat0*D);return [X,y*ct-Z*st,y*st+Z*ct]}
+function arcPts(a,b){  // great circle a->b lifted to a height that grows with distance
+ const A=vec(...a),B=vec(...b),w=Math.acos(Math.max(-1,Math.min(1,A[0]*B[0]+A[1]*B[1]+A[2]*B[2])));
+ if(w<1e-4)return[];const n=Math.max(16,Math.ceil(w/D/2)),H=0.15+0.6*w/Math.PI,p=[];
+ for(let i=0;i<=n;i++){const t=i/n,k1=Math.sin((1-t)*w)/Math.sin(w),k2=Math.sin(t*w)/Math.sin(w),h=1+H*Math.sin(Math.PI*t);
+  p.push([(A[0]*k1+B[0]*k2)*h,(A[1]*k1+B[1]*k2)*h,(A[2]*k1+B[2]*k2)*h])}return p}
+const shown=v=>{const [x,y,z]=view(v);return z>0||x*x+y*y>1};  // in front, or outside the disc
+function line(pts,R,cx,cy){ctx.beginPath();let on=false;
+ for(const v of pts){const [x,y,z]=view(v);if(z>0||x*x+y*y>1){const X=cx+R*x,Y=cy-R*y;on?ctx.lineTo(X,Y):ctx.moveTo(X,Y);on=true}else on=false}
+ ctx.stroke()}
+function dot(ll,R,cx,cy,r,col){const v=vec(...ll);if(!shown(v))return;const [x,y]=view(v);
+ ctx.fillStyle=col;ctx.beginPath();ctx.arc(cx+R*x,cy-R*y,r,0,7);ctx.fill()}
+function comet(pts,f,R,cx,cy,col){if(!pts.length)return;const v=pts[Math.floor(f*(pts.length-1))];if(!shown(v))return;
+ const [x,y]=view(v);ctx.fillStyle=col;ctx.beginPath();ctx.arc(cx+R*x,cy-R*y,2.2,0,7);ctx.fill()}
+let cache={};const arcs=(k,a,b)=>cache[k]||(cache[k]=arcPts(a,b));
+function draw(ts){requestAnimationFrame(draw);
+ if(document.hidden||ts-last<33||!cv.offsetWidth)return;   // ~30 fps, idle when not visible
+ const dt=Math.min(100,ts-last);last=ts;if(spin&&!drag)lon0=(lon0-dt*0.006)%360;
+ const dpr=devicePixelRatio||1,W=cv.offsetWidth*dpr;if(cv.width!==W){cv.width=cv.height=W}
+ const cx=W/2,cy=W/2,R=W*0.36;ctx.clearRect(0,0,W,W);
+ const g=ctx.createRadialGradient(cx-R*.3,cy-R*.3,R*.1,cx,cy,R);g.addColorStop(0,'#1d3550');g.addColorStop(1,'#0b1622');
+ ctx.fillStyle=g;ctx.beginPath();ctx.arc(cx,cy,R,0,7);ctx.fill();
+ ctx.strokeStyle='#2a3f55';ctx.lineWidth=dpr;ctx.stroke();
+ ctx.strokeStyle='#ffffff10';for(let la=-60;la<=60;la+=30){const p=[];for(let lo=0;lo<=360;lo+=5)p.push(vec(la,lo));line(p,R,cx,cy)}
+ for(let lo=0;lo<180;lo+=30){const p=[];for(let la=0;la<=360;la+=5)p.push(vec(90-la,lo));line(p,R,cx,cy)}
+ ctx.strokeStyle='#7fb0d0';ctx.lineWidth=dpr;for(const c of coast){line(c,R,cx,cy)}
+ const me=G.me,f=(ts/2500)%1;
+ ctx.lineWidth=1*dpr;for(const t of G.traffic){ctx.strokeStyle=`rgba(127,168,255,${Math.max(.08,.35-t.age/400)})`;line(arcs('t'+t.a+t.b,t.a,t.b),R,cx,cy)}
+ if(me){for(const w of G.worked){ctx.strokeStyle=w.here?'rgba(46,204,113,.85)':'rgba(46,204,113,.4)';ctx.lineWidth=(w.here?1.6:1)*dpr;
+   const p=arcs('w'+w.ll,me,w.ll);line(p,R,cx,cy);comet(p,f,R,cx,cy,'#b8ffd2');dot(w.ll,R,cx,cy,2*dpr,'#2ecc71')}
+  const T=G.target;if(T&&T.ll){const p=arcs('T'+T.ll,me,T.ll);ctx.strokeStyle='#ff7a3d';ctx.lineWidth=3.2*dpr;line(p,R,cx,cy);
+   for(let k=0;k<3;k++)comet(p,(f*2+k/3)%1,R,cx,cy,'#ffd2b8');dot(T.ll,R,cx,cy,4*dpr,'#ff7a3d')}
+  dot(me,R,cx,cy,4*dpr,'#fff')}}
+requestAnimationFrame(draw);
+async function poll(){try{const r=await fetch('/api/globe');G=await r.json();
+ if(Object.keys(cache).length>800)cache={};
+ if(!poll.homed&&G.me){lon0=G.me[1];lat0=Math.max(-50,Math.min(50,G.me[0]));poll.homed=true}
+ document.getElementById('gsum').textContent=`· ${G.worked.length} worked · ${G.traffic.length} live`+(G.target?` · → ${G.target.call}`:'')}catch(e){}}
+poll();setInterval(poll,5000);
+cv.addEventListener('pointerdown',e=>{drag={x:e.clientX,y:e.clientY,lon:lon0,lat:lat0};spin=false;cv.setPointerCapture(e.pointerId);cv.style.cursor='grabbing'});
+cv.addEventListener('pointermove',e=>{if(!drag)return;const k=180/cv.offsetWidth;
+ lon0=drag.lon-(e.clientX-drag.x)*k;lat0=Math.max(-80,Math.min(80,drag.lat+(e.clientY-drag.y)*k))});
+const up=()=>{if(!drag)return;drag=null;cv.style.cursor='grab';setTimeout(()=>{spin=true},4000)};
+cv.addEventListener('pointerup',up);cv.addEventListener('pointercancel',up);
 })();
 </script></body></html>
