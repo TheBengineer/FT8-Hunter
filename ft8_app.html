@@ -68,7 +68,7 @@ details summary{font-weight:700;padding:4px}
 <div class="row" style="margin-top:8px"><button id="bWake" class="mini" style="flex:1;padding:8px;background:#3a4552">📱 Keep screen awake: off</button></div></div>
 <div class="card" data-id="globe"><h2>🌍 Globe <span class="small" id="gsum"></span></h2>
 <canvas id="globe" style="width:100%;aspect-ratio:1;display:block;touch-action:none;cursor:grab"></canvas>
-<div class="small" style="margin-top:4px"><span style="color:#ff7a3d">━ calling</span> · <span style="color:#2f9bff">━ QSO</span> · <span style="color:#2ecc71">━ worked</span> · <span style="color:#7fa8ff99">━ traffic</span> · drag to turn; it drifts back to you</div></div>
+<div class="small" style="margin-top:4px"><span style="color:#c061ff">━ calling</span> · <span style="color:#ff7a3d">━ QSO</span> · <span style="color:#2ecc71">━ worked</span> · <span style="color:#7fa8ff99">━ traffic</span> · drag to turn; it drifts back to you</div></div>
 <div class="card" data-id="flow"><h2>🧭 Decision flow <span class="small" id="stepage"></span></h2><div class="flow" id="flow"></div>
 <div class="small" style="margin-top:6px">Checked top to bottom each period; the first “yes” wins.</div></div>
 <div class="card" data-id="dx"><h2>🎯 DX focus <span class="small" id="dxn"></span></h2><ul id="dxf"></ul>
@@ -306,8 +306,8 @@ function draw(ts){requestAnimationFrame(draw);
    ctx.strokeStyle=`rgba(127,168,255,${al.toFixed(3)})`;line(arcs('t'+t.a+t.b,t.a,t.b),R,cx,cy)}
  if(me){for(const w of G.worked){ctx.strokeStyle=w.here?'rgba(46,204,113,.85)':'rgba(46,204,113,.4)';ctx.lineWidth=(w.here?1.6:1)*dpr;
    const p=arcs('w'+w.ll,me,w.ll);line(p,R,cx,cy);comet(p,f,R,cx,cy,'#b8ffd2');dot(w.ll,R,cx,cy,2*dpr,'#2ecc71')}
-  const T=G.target;if(T&&T.ll){  // orange while calling, blue once they answer (QSO in progress)
-   const [c,cc]=T.resp?['#2f9bff','#cfe6ff']:['#ff7a3d','#ffd2b8'];
+  const T=G.target;if(T&&T.ll){  // purple while calling, orange once they answer (QSO in progress)
+   const [c,cc]=T.resp?['#ff7a3d','#ffd2b8']:['#c061ff','#ead0ff'];
    const p=arcs('T'+T.ll,me,T.ll);ctx.strokeStyle=c;ctx.lineWidth=3.2*dpr;line(p,R,cx,cy);
    for(let k=0;k<3;k++)comet(p,(f*2+k/3)%1,R,cx,cy,cc);dot(T.ll,R,cx,cy,4*dpr,c)}
   dot(me,R,cx,cy,4*dpr,'#fff')}}
