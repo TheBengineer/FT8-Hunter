@@ -301,7 +301,9 @@ function draw(ts){requestAnimationFrame(draw);
  for(let lo=0;lo<180;lo+=30){const p=[];for(let la=0;la<=360;la+=5)p.push(vec(90-la,lo));line(p,R,cx,cy)}
  ctx.strokeStyle='#7fb0d0';ctx.lineWidth=dpr;for(const c of coast){line(c,R,cx,cy)}
  const me=G.me,f=(ts/2500)%1;
- ctx.lineWidth=1*dpr;for(const t of G.traffic){ctx.strokeStyle=`rgba(127,168,255,${Math.max(.08,.35-t.age/400)})`;line(arcs('t'+t.a+t.b,t.a,t.b),R,cx,cy)}
+ ctx.lineWidth=1*dpr;for(const t of G.traffic){  // fades to nothing over G.fade seconds (ages are from the last poll)
+   const al=.4*(1-(t.age+(ts-pollT)/1000)/(G.fade||300));if(al<=0.01)continue;
+   ctx.strokeStyle=`rgba(127,168,255,${al.toFixed(3)})`;line(arcs('t'+t.a+t.b,t.a,t.b),R,cx,cy)}
  if(me){for(const w of G.worked){ctx.strokeStyle=w.here?'rgba(46,204,113,.85)':'rgba(46,204,113,.4)';ctx.lineWidth=(w.here?1.6:1)*dpr;
    const p=arcs('w'+w.ll,me,w.ll);line(p,R,cx,cy);comet(p,f,R,cx,cy,'#b8ffd2');dot(w.ll,R,cx,cy,2*dpr,'#2ecc71')}
   const T=G.target;if(T&&T.ll){  // orange while calling, blue once they answer (QSO in progress)
@@ -310,7 +312,8 @@ function draw(ts){requestAnimationFrame(draw);
    for(let k=0;k<3;k++)comet(p,(f*2+k/3)%1,R,cx,cy,cc);dot(T.ll,R,cx,cy,4*dpr,c)}
   dot(me,R,cx,cy,4*dpr,'#fff')}}
 requestAnimationFrame(draw);
-async function poll(){try{const r=await fetch('/api/globe');G=await r.json();
+let pollT=0;
+async function poll(){try{const r=await fetch('/api/globe');G=await r.json();pollT=performance.now();
  if(Object.keys(cache).length>800)cache={};
  if(G.me){if(!home){lon0=G.me[1];lat0=Math.max(-50,Math.min(50,G.me[0]))}home=G.me}
  document.getElementById('gsum').textContent=`· ${G.worked.length} worked · ${G.traffic.length} live`+(G.target?` · → ${G.target.call}`:'')}catch(e){}}

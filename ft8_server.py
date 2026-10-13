@@ -160,6 +160,8 @@ def km(a, b):
 
 CTY = {"exact": {}, "prefix": {}}  # call/prefix -> (country, continent, lat, lon)
 GRIDS = {}  # base call -> grid, learned from decodes and the log (for the globe)
+PAIRS = {}  # frozenset of two base calls -> {"a", "b", "t"}: who is working whom (globe)
+TRAFFIC_SECS = 300  # traffic lines fade out over this long
 GRID_RE = re.compile(r"^[A-R]{2}\d{2}([A-X]{2})?$")
 CTY_PATHS = ("~/ws-hunter-app/share/ws/cty.dat", "~/ws/usr/share/ws/cty.dat",
              "~/ws-wide/usr/share/ws/cty.dat", "/usr/share/wsjtx/cty.dat")
@@ -584,6 +586,8 @@ def prune(now):
     for d in (state["cq"], state["answering"]):
         for k in [k for k, e in list(d.items()) if now - e["seen"] > 600]:
             d.pop(k, None)
+    for k in [k for k, p in list(PAIRS.items()) if now - p["t"] > TRAFFIC_SECS]:
+        PAIRS.pop(k, None)
     for c in [c for c, until in list(ENG["holds"].items()) if until <= now]:
         ENG["holds"].pop(c, None)
     for c in [c for c, ts in list(ENG["active"].items()) if now - ts > 600]:
@@ -1041,6 +1045,8 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
         signoff = bool(rest) and rest[-1] in SIGNOFF
         if frm and rest:
             note_grid(frm, rest[-1])
+        if to and frm and "." not in to + frm:  # every exchange, both ends, for the globe
+            PAIRS[frozenset((base_call(to), base_call(frm)))] = {"a": frm, "b": to, "t": now}
         if frm and "." not in frm and not is_me(frm):
             fb = base_call(frm)
             ENG["active"][fb] = 0 if signoff else now
@@ -1101,16 +1107,16 @@ def globe():
     t = state["target"]
     tgt = {"call": t["call"], "ll": locate(t["call"]), "resp": bool(t.get("resp"))} if t else None
     traffic = []
-    for e in sorted(list(state["answering"].values()), key=lambda e: -e["seen"]):
-        if now - e["seen"] > cyc(8) or len(traffic) >= 60:
+    for p in sorted(list(PAIRS.values()), key=lambda p: -p["t"]):
+        age = now - p["t"]
+        if age > TRAFFIC_SECS or len(traffic) >= 150:
             continue
-        to, frm, _ = addressing(e["msg"])
-        a, b = locate(frm) if frm else None, (me if is_me(to) else locate(to)) if to else None
+        a, b = (me if is_me(c) else locate(c) for c in (p["a"], p["b"]))
         if a and b and a != b:
-            traffic.append({"from": frm, "to": to, "a": a, "b": b, "age": round(now - e["seen"]),
-                            "tome": e["tome"]})
+            traffic.append({"from": p["a"], "to": p["b"], "a": a, "b": b, "age": round(age),
+                            "tome": is_me(p["b"])})
     return {"me": me, "mycall": state["mycall"], "worked": worked[:300], "target": tgt,
-            "traffic": traffic}
+            "traffic": traffic, "fade": TRAFFIC_SECS}
 
 def arm_tx(only_if_off=False):
     """Click WS 'Enable Tx' via xdotool (no UDP message exists for it).

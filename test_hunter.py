@@ -404,7 +404,7 @@ except socket.timeout:
     check("WRL bridge round trip", False)
 
 # --- globe: positions from grids heard, else the country's centre
-fresh(); ns["GRIDS"].clear(); st["mygrid"] = "EM84"; st["udp"].update(band="20m", mode="FT8")
+fresh(); ns["GRIDS"].clear(); ns["PAIRS"].clear(); st["mygrid"] = "EM84"; st["udp"].update(band="20m", mode="FT8")
 dec("CQ JA1XYZ PM95"); dec("W1AW K9ABC EN52"); dec("K9ABC W1AW RR73")
 check("grid learned from a CQ and from a reply, not from RR73",
       ns["GRIDS"].get("JA1XYZ") == "PM95" and ns["GRIDS"].get("K9ABC") == "EN52" and "W1AW" not in ns["GRIDS"])
@@ -413,9 +413,14 @@ check("no grid: country centre", ns["locate"]("W1AW") == (37.53, -91.67))
 ns["add_worked"]("JA1XYZ"); dec("KR4MZM/AG W1AW -10")
 st["target"] = {"call": "K9ABC", "left": 5}
 g = ns["globe"]()
+dec("<...> K9ABC R-05")
+check("traffic pairs keep both ends and skip hashed calls",
+      ns["PAIRS"][frozenset(("K9ABC", "W1AW"))]["b"] == "K9ABC" and not any("." in p["a"] + p["b"] for p in ns["PAIRS"].values()))
+ns["PAIRS"][frozenset(("K9ABC", "JA1XYZ"))] = {"a": "JA1XYZ", "b": "K9ABC", "t": time.time() - 400}
+check("traffic older than the fade time is dropped", not any(x["from"] == "JA1XYZ" for x in ns["globe"]()["traffic"]))
 check("globe: me, contacts, target and traffic located",
       g["me"] and g["worked"][0]["call"] == "JA1XYZ" and g["target"]["call"] == "K9ABC" and g["target"]["ll"]
-      and any(x["from"] == "K9ABC" and x["to"] == "W1AW" for x in g["traffic"])
+      and any({x["from"], x["to"]} == {"K9ABC", "W1AW"} for x in g["traffic"])
       and any(x["tome"] and x["b"] == g["me"] for x in g["traffic"]))
 
 # --- worked / ignored list in /api/state: time, band, mode, kind
