@@ -239,12 +239,12 @@ def watcher():
     threading.Thread(target=cycle_ticker, daemon=True).start()
 
 def cycle_ticker():
-    """Independent 15s engine tick (drives targeting even if ALL.TXT stalls)."""
-    FT = 15
-    nxt = (int(time.time()) // FT + 1) * FT
+    """Engine tick at each T/R period boundary of the current mode (drives
+    targeting even if ALL.TXT stalls)."""
     while True:
-        time.sleep(max(0.5, nxt - time.time()))
-        nxt += FT
+        per = period()
+        nxt = (time.time() // per + 1) * per
+        time.sleep(max(0.2, nxt - time.time()))
         CTX["cycle"][0] += 1
         try:
             engine_tick()
@@ -271,9 +271,28 @@ state["udp"] = {"holder": "?", "last_rx": 0, "dxcall": "", "tx_enabled": False,
 state["decparams"] = {}  # msg -> {t_ms, snr, dt, df}
 
 state["fwd_port"] = 2238  # passthrough port: hunter rebroadcasts WS packets here for WRL Desktop
+def wrl_relay(fwd):
+    """Other half of the WRL Desktop bridge: anything WRL sends back to the
+    socket we forward from (Heartbeats, Replies, Halt...) goes on to WS, as
+    if WRL were talking to WS directly."""
+    while True:
+        try:
+            data, _ = fwd.recvfrom(8192)
+            if not state.get("ws_addr") or data[:4] != struct.pack(">I", 0xADBCCBDA):
+                continue  # until WS is known, 2237 would just loop it back to WRL
+            fwd.sendto(data, state["ws_addr"])
+            rb = state["udp"].setdefault("wrl_by_type", {})
+            mtype = struct.unpack(">I", data[8:12])[0]
+            rb[mtype] = rb.get(mtype, 0) + 1
+        except Exception as e:
+            log_err("WRL relay", e)
+            time.sleep(1)
+
 def udp_listener():
     """Passive REUSEPORT listener: learns WS id, tracks Status/TX state."""
     fwd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    fwd.bind(("127.0.0.1", 0))  # fixed source port, so WRL's answers come back here
+    threading.Thread(target=wrl_relay, args=(fwd,), daemon=True).start()
     rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
@@ -358,6 +377,8 @@ def udp_listener():
                         if ln < 0 or ln > 64:
                             break
                         strs.append(data[p:p+ln].decode("utf-8", "errors")); p += ln
+                    if strs:
+                        set_mode(strs[0])
                     if len(strs) >= 2:
                         state["udp"]["dxcall"] = strs[1]
                     if len(strs) == 4 and p + 2 <= len(data):
@@ -490,16 +511,53 @@ def prune(now):
         if all(now - ts > 60 for ts in list(callers.values())):
             ENG["calls_to"].pop(c, None)
 
-FT8_BW, GUARD = 50, 15  # FT8 signal width above its DF; clearance each side (Hz)
+# T/R period (s) and signal width above its DF (Hz) per mode
+MODES = {"FT8": (15.0, 50), "FT4": (7.5, 83), "FT2": (3.75, 167)}
+GUARD = 15  # clearance each side of a signal (Hz)
+
+def mode():
+    m = state["udp"].get("mode", "FT8")
+    return m if m in MODES else "FT8"
+
+def period():
+    """Current T/R period in seconds (15 FT8, 7.5 FT4, 3.75 FT2)."""
+    return MODES[mode()][0]
+
+def bw():
+    return MODES[mode()][1]
+
+def cyc(n):
+    """n T/R periods in seconds: timing rules scale with the mode."""
+    return n * period()
 
 def parity(t_ms):
-    """0 = even (first) 15 s period of the minute, 1 = odd."""
-    return int(t_ms // 1000 // 15) % 2
+    """0 = even (first) period of the minute, 1 = odd."""
+    return int(t_ms // (period() * 1000)) % 2
+
+def set_mode(new):
+    """WS changed mode: decodes, CQs and occupancy from the old mode no longer
+    apply (a Reply must match a decode in the current mode)."""
+    old = state["udp"].get("mode")
+    state["udp"]["mode"] = new
+    if old is None or old == new:
+        return
+    if state["target"]:
+        halt_ws()
+    state["target"] = None
+    for k in ("cq", "answering", "decparams"):
+        state[k].clear()
+    state["msgs"].clear()
+    for k in ("callers", "occ", "noise_hist"):
+        ENG[k].clear()
+    for k in ("spec", "active", "calls_to"):
+        ENG[k].clear()
+    ENG["cq_until"] = 0
+    log(f"mode {old} -> {new}: {period()} s periods")
 
 def occupied(par, now):
     """Occupied audio intervals [lo, hi) on one T/R parity: recent decodes plus,
     on the ws-hunter build, spectrum bins well above the noise floor."""
-    iv = [(o["df"] - GUARD, o["df"] + FT8_BW + GUARD) for o in list(ENG["occ"])
+    iv = [(o["df"] - GUARD, o["df"] + bw() + GUARD) for o in list(ENG["occ"])
           if o["par"] == par and now - o["t"] < 120]
     sp = ENG["spec"].get(par)
     if sp and now - sp["t"] < 120:
@@ -512,16 +570,16 @@ def pick_tx_df(par, current=None):
     cfg = state["config"]
     lo, hi = cfg.get("df_lo", 300), cfg.get("df_hi", 2700)
     iv = occupied(par, time.time())
-    def room(f):  # Hz of clearance around [f, f + FT8_BW]; negative = overlap
-        d = min(f - lo, hi - (f + FT8_BW))
+    def room(f):  # Hz of clearance around [f, f + bw()]; negative = overlap
+        d = min(f - lo, hi - (f + bw()))
         for a, b in iv:
-            if f + FT8_BW > a and f < b:
+            if f + bw() > a and f < b:
                 return -1
-            d = min(d, a - (f + FT8_BW) if a >= f + FT8_BW else f - b)
+            d = min(d, a - (f + bw()) if a >= f + bw() else f - b)
         return d
     if current and room(current) >= 0:
         return current
-    best = max(range(lo, hi - FT8_BW + 1, 10), key=lambda f: (room(f), -abs(f - (current or 1500))))
+    best = max(range(lo, hi - bw() + 1, 10), key=lambda f: (room(f), -abs(f - (current or 1500))))
     return best if room(best) >= 0 else None
 
 def tune_tx(par):
@@ -563,8 +621,8 @@ def handle_spectrum(data, off):
     if not state["config"].get("qrm_detect", True):
         return
     # undecoded wide energy: strong bins no FT8 decode explains, in one run
-    dec_iv = [(o["df"] - GUARD, o["df"] + FT8_BW + GUARD) for o in list(ENG["occ"])
-              if o["par"] == par and now - o["t"] < 30]
+    dec_iv = [(o["df"] - GUARD, o["df"] + bw() + GUARD) for o in list(ENG["occ"])
+              if o["par"] == par and now - o["t"] < cyc(2)]
     run = best = 0
     for f, d in zip(freqs, db):
         strong = d > noise + 12 and not any(a <= f < b for a, b in dec_iv)
@@ -640,7 +698,7 @@ def engine_tick():
     cands = [e for e in list(state["cq"].values())
              if e.get("tag", "") in ANSWERABLE and dx_ok(e)
              and not is_worked(e["call"]) and not on_hold(e["call"])
-             and now - e["seen"] < 35 and not in_qso(e)
+             and now - e["seen"] < cyc(2) + 5 and not in_qso(e)
              and e["snr"] >= cfg.get("min_snr", -20)]
     cands.sort(key=cq_rank)
     for e in cands:
@@ -656,7 +714,7 @@ def engine_tick():
     # station running the frequency, who is about to be free; prefer those.
     best = None
     for m in list(state["msgs"]):
-        if now - m.get("seen", 0) >= 30:
+        if now - m.get("seen", 0) >= cyc(2):
             continue
         to, frm, rest = addressing(m["msg"])
         if not frm or "." in frm or is_me(to) or is_me(frm):
@@ -712,10 +770,10 @@ def start_cq(secs):
     log(f"calling CQ for {secs}s ({how})")
 
 def pileup(call, now=None):
-    """Stations heard calling `call` in the last 30 s (not counting us)."""
+    """Stations heard calling `call` in the last two periods (not counting us)."""
     now = now or time.time()
     return sum(1 for c, ts in list(ENG["calls_to"].get(base_call(call), {}).items())
-               if now - ts < 30 and not is_me(c))
+               if now - ts < cyc(2) and not is_me(c))
 
 def in_qso(e):
     """They have sent to someone since their last CQ."""
@@ -723,9 +781,9 @@ def in_qso(e):
 
 def cq_score(e, now=None):
     """Chance of a contact: their SNR, less 3 dB per station already calling
-    them, plus 3 if heard in the last cycle (still on frequency)."""
+    them, plus 3 if heard in the last period (still on frequency)."""
     now = now or time.time()
-    return e["snr"] - 3 * pileup(e["call"], now) + (3 if now - e["seen"] < 16 else 0)
+    return e["snr"] - 3 * pileup(e["call"], now) + (3 if now - e["seen"] < cyc(1) + 1 else 0)
 
 def cq_rank(e):
     special = state["config"].get("special_first", True) and e.get("special", False)
@@ -737,7 +795,7 @@ def acquire(call, grid, msg, tries, why):
         tune_tx(1 - parity(p["t_ms"]))  # we answer in the other period
     if not send_exact_reply(CTX["tx"], msg):
         return False
-    # `left` counts 15 s cycles; we transmit in every other one
+    # `left` counts T/R periods; we transmit in every other one
     state["target"] = {"call": call, "grid": grid, "left": tries * 2, "why": why,
                        "msg": msg, "resp": False}
     ENG["cq_until"] = 0  # a Reply replaces our CQ in WS
@@ -764,7 +822,7 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
         to_me = is_me(to)
         # even/odd sequence: decode time falls just after the 15s TX slot
         if t_ms is not None:
-            ENG["parity"][int((t_ms // 1000 // 15) % 2)] += 1
+            ENG["parity"][parity(t_ms)] += 1
         state["msgs"].appendleft({"msg": msg, "snr": snr, "t": time.strftime("%H:%M:%S"),
             "seen": now, "tome": to_me,
             "dx": bool(tgt) and (same_call(to, tgt) or same_call(frm, tgt))})
@@ -890,6 +948,7 @@ class H(BaseHTTPRequestHandler):
                            "hot": ("even" if par[0] >= par[1] else "odd")},
                 "idle": max(0, round(ENG["idle_until"] - time.time())),
                 "cq_calling": max(0, round(ENG["cq_until"] - time.time())),
+                "mode": mode(), "period": period(),
                 "qrm": {"secs": max(0, round(ENG["qrm_until"] - time.time())), "why": ENG["qrm_why"]},
                 "txdf": {"current": u.get("tx_df"), **ENG.get("suggest", {})},
                 "log": list(state["log"]), "config": state["config"], "stats": state["stats"],
@@ -900,6 +959,7 @@ class H(BaseHTTPRequestHandler):
                         "transmitting": u.get("transmitting", False) if u.get("tx_t", 0) and time.time() - u.get("tx_t", 0) < 20 else False,
                         "by_type": u.get("by_type", {}),
                         "fwd_port": state.get("fwd_port", 2238),
+                        "wrl_by_type": u.get("wrl_by_type", {}),
                         "heard_ago": round(time.time() - u["last_rx"], 1) if u["last_rx"] else None}})
         self.send_error(404)
     def do_POST(self):

@@ -240,5 +240,40 @@ for spec, extra in ((1, b""), (2, struct.pack(">i", -18000))):
     check(f"QSO Logged (timespec {spec}) marks worked + clears target",
           "W1AW" in st["worked"] and st["target"] is None)
 
+# --- FT4 / FT2: everything follows the mode WS reports in Status
+def status(mode_name, tx_df=1500):
+    body = struct.pack(">Q", 14074000) + ps(mode_name) + ps("") + ps("-10") + ps(mode_name)
+    body += bytes([0, 0, 0]) + struct.pack(">II", 1500, tx_df)
+    send(1, body)
+fresh(); dec("CQ K9XYZ EN52", snr=5)
+status("FT8"); check("FT8: 15 s periods", ns["period"]() == 15.0 and ns["parity"](15000) == 1)
+status("FT4")
+check("FT4: 7.5 s periods, odd at 7.5 s", ns["period"]() == 7.5 and ns["parity"](7500) == 1 and ns["parity"](15000) == 0)
+check("mode change clears old-mode CQs", not st["cq"])
+check("FT4 signal width used by the picker", ns["bw"]() == 83)
+dec("CQ K9XYZ EN52", snr=5); st["cq"]["K9XYZ"]["seen"] -= 22; ns["engine_tick"]()
+check("FT4: a CQ 22 s old (3 periods) is stale", st["target"] is None)
+status("FT2")
+check("FT2: 3.75 s periods", ns["period"]() == 3.75 and ns["parity"](3750) == 1)
+dec("CQ K9XYZ EN52", snr=5); st["cq"]["K9XYZ"]["seen"] -= 10; ns["engine_tick"]()
+check("FT2: a CQ 10 s old is still fresh", st["target"] and st["target"]["call"] == "K9XYZ")
+status("FT8")
+check("back to FT8 releases the FT2 target", st["target"] is None and ns["period"]() == 15.0)
+
+# --- WRL Desktop bridge: WS packets forwarded to WRL, WRL's replies relayed to WS
+wrl = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); wrl.bind(("127.0.0.1", 22998)); wrl.settimeout(2)
+ws = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); ws.bind(("127.0.0.1", 0)); ws.settimeout(2)
+ws.sendto(struct.pack(">III", 0xADBCCBDA, 2, 0) + ps("WS") + struct.pack(">I", 3) + ps("3.2.1") + ps("x"),
+          ("127.0.0.1", 22999))  # WS heartbeat: hunter learns WS's address
+try:
+    pkt, fwd_addr = wrl.recvfrom(8192)
+    check("WS packet forwarded to WRL", struct.unpack(">I", pkt[8:12])[0] == 0)
+    halt = struct.pack(">III", 0xADBCCBDA, 2, 8) + ps("WS") + b"\x01"
+    wrl.sendto(halt, fwd_addr)  # WRL answers the address it heard from
+    back, _ = ws.recvfrom(8192)
+    check("WRL reply relayed to WS", back == halt)
+except socket.timeout:
+    check("WRL bridge round trip", False)
+
 print("ALL PASS" if ok else "SOME FAILED")
 sys.exit(0 if ok else 1)

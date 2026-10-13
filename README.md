@@ -1,9 +1,10 @@
 # FT8 Hunter
 
-Automated FT8 operating for WSJT-X / WS Digital Suite: **make as many contacts as
-possible without being rude on the band.**
+Automated FT8 / FT4 / FT2 operating for WSJT-X / WS Digital Suite: **make as many
+contacts as possible without being rude on the band.** It follows whatever mode WS
+is in; all timing rules scale with the mode's period.
 
-Each cycle it does the first of these that applies:
+Each T/R period (15 s FT8, 7.5 s FT4, 3.75 s FT2) it does the first of these that applies:
 
 1. Answer a station calling you.
 2. Pounce on an activator (CQ POTA / SOTA / WWFF / IOTA / BOTA / LOTA).
@@ -12,7 +13,7 @@ Each cycle it does the first of these that applies:
 5. Call CQ for a while, then stop and listen.
 
 CQs are ranked by chance of a contact: SNR, minus 3 dB for each station already
-calling them, plus 3 if heard last cycle.
+calling them, plus 3 if heard last period.
 
 To stay polite it limits retries (counted in transmissions), holds off stations that
 don't answer, stops the moment its target picks someone else, never abandons a QSO
@@ -23,7 +24,7 @@ frequency.
 
 ```mermaid
 flowchart TD
-    tick([Every 15 s cycle]) --> tgt{Calling or<br/>working a target?}
+    tick([Every T/R period]) --> tgt{Calling or<br/>working a target?}
     tgt -- yes --> fin{Logged, signed off,<br/>or out of tries?}
     fin -- no --> keep[Keep going: re-send the Reply<br/>until they answer] --> wait([next cycle])
     fin -- yes --> rel[Release target<br/>hold it if it never answered] --> wait
@@ -47,7 +48,7 @@ flowchart TD
     ans & pounce & reply & tailend & callcq --> tune[Before TX: Hold Tx Freq +<br/>move to a clear offset *] --> wait
 ```
 
-"Worth answering" means: heard in the last 35 s, not already worked today or on
+"Worth answering" means: heard in the last two periods, not already worked today or on
 hold, not in a QSO with someone since that CQ, at or above the minimum SNR, not a
 CQ aimed at a region, and for `CQ DX` on another continent. Between cycles, each
 decode can also end a target early: if it answers someone else the hunter stops
@@ -95,6 +96,7 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
   from recent decodes and the spectrum; it stays put while that spot is clear.
 - **Someone else on frequency** (ws-hunter build): wide undecoded energy in the
   spectrum for two cycles running pauses new calls for 5 minutes.
-- **WRL passthrough**: every WS packet is rebroadcast to `127.0.0.1:2238` — point
-  WRL Desktop there. (Two apps can't share 2237: Linux REUSEPORT *load-balances*,
-  so they'd each miss half the traffic.)
+- **WRL Desktop bridge**: every WS packet is rebroadcast to `127.0.0.1:2238` — set
+  WRL Desktop's UDP server to that port — and whatever WRL sends back is relayed to
+  WS, so WRL logs as if it were talking to WS directly. (Two apps can't share 2237:
+  Linux REUSEPORT *load-balances*, so they'd each miss half the traffic.)
