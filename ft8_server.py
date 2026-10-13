@@ -1152,7 +1152,7 @@ class H(BaseHTTPRequestHandler):
             par = ENG["parity"]
             return self._json({"running": state["running"], "mycall": state["mycall"],
                 "mygrid": state["mygrid"], "target": state["target"], "cq": cq[:40],
-                "answering": ans[:30], "worked": worked, "book": book[:200], "band": band(),
+                "answering": ans[:80], "now": now, "worked": worked, "book": book[:200], "band": band(),
                 "msgs": msgs, "mytx": list(state["mytx"])[:15], "dxfocus": dxf,
                 "holds": holds, "callers": [c["call"] for c in list(ENG["callers"])],
                 "parity": {"even": par[0], "odd": par[1],

@@ -38,6 +38,8 @@ li.skip{opacity:.55}li.tgt{background:#1d3a2a;border-radius:8px}
 .dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#666;margin-right:6px}
 .dot.run{background:#2ecc71}.small{font-size:.8rem;color:#9ab}
 details summary{font-weight:700;padding:4px}
+.sel{padding:8px;border-radius:8px;border:1px solid #334;background:#0f1419;color:#fff;font-size:.9rem}
+.ago{margin-left:auto;font-variant-numeric:tabular-nums}
 /* drag a card by its grip to reorder; the order is remembered in this browser */
 .card{position:relative}
 .mv{position:absolute;top:4px;right:4px;display:flex;gap:2px}
@@ -67,7 +69,11 @@ details summary{font-weight:700;padding:4px}
 <div class="card" data-id="seq"><div class="row"><span class="small">seq hot: <b id="par">…</b></span><span class="small" id="idle"></span></div>
 <div class="small" id="callers"></div></div>
 <div class="card" data-id="msgs"><details><summary>📡 All messages (<span id="mn">0</span>)</summary><ul id="msgs"></ul></details></div>
-<div class="card" data-id="ans"><h2>💬 Answering / traffic</h2><ul id="ans"></ul></div>
+<div class="card" data-id="ans"><h2>💬 Answering / traffic <span class="small" id="ansn"></span></h2>
+<div class="row"><input id="aQ" placeholder="filter: call or text" autocapitalize="characters" style="margin-top:0;padding:8px">
+<select id="aAge" class="sel"><option value="0">any age</option><option value="60">1 min</option><option value="300" selected>5 min</option><option value="900">15 min</option></select></div>
+<div class="row small" style="margin-top:4px"><label><input id="aMe" type="checkbox" style="width:auto;margin:0 4px 0 0">to me only</label></div>
+<ul id="ans"></ul></div>
 <div class="card" data-id="manual"><h2>✍️ Manual call</h2><div class="row">
 <input id="mc" placeholder="CALL" autocapitalize="characters"><input id="mg" placeholder="GRID" style="max-width:110px" autocapitalize="characters"></div>
 <button id="bC" style="margin-top:8px">Call now</button></div>
@@ -126,6 +132,18 @@ function cqBadges(e){let b='';
  else if(e.skip&&e.skip!=='worked')b+=`<span class="badge ${SKIP[e.skip]||'dim'}">${e.skip}</span>`;
  if(e.pileup)b+=`<span class="badge pile" title="stations already calling">👥${e.pileup}</span>`;
  return b}
+// Answering / traffic: age shown live, filtered by text, age and "to me"
+const ago=sec=>sec<60?`${sec}s`:sec<3600?`${Math.floor(sec/60)}m${String(sec%60).padStart(2,'0')}s`:`${Math.floor(sec/3600)}h`;
+const srvNow=()=>Date.now()/1000-(window._skew||0);
+function renderAns(){const all=window._ans||[],q=$('aQ').value.trim().toUpperCase(),max=+$('aAge').value,me=$('aMe').checked,now=srvNow();
+ const rows=all.filter(e=>(!q||e.msg.toUpperCase().includes(q))&&(!max||now-e.seen<=max)&&(!me||e.tome));
+ $('ansn').textContent=rows.length===all.length?`(${all.length})`:`(${rows.length} of ${all.length})`;
+ $('ans').innerHTML=rows.map(e=>`<li>${e.tome?'<span class="badge me">TO ME</span>':''}<span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="mono">${mark(e.msg)}</span><span class="small ago" data-seen="${e.seen}" title="heard at ${e.t}">${ago(Math.max(0,Math.round(now-e.seen)))}</span></li>`).join('')||'<li>—</li>'}
+function ansPrefs(save){const f={q:$('aQ'),age:$('aAge'),me:$('aMe')};
+ try{if(save)localStorage.setItem('ansFilter',JSON.stringify({q:f.q.value,age:f.age.value,me:f.me.checked}));
+  else{const p=JSON.parse(localStorage.getItem('ansFilter')||'null');if(p){f.q.value=p.q||'';f.age.value=p.age||'300';f.me.checked=!!p.me}}}catch(e){}}
+ansPrefs(false);['aQ','aAge','aMe'].forEach(id=>$(id).addEventListener('input',()=>{ansPrefs(true);renderAns()}));
+setInterval(()=>{const now=srvNow();document.querySelectorAll('#ans .ago').forEach(el=>el.textContent=ago(Math.max(0,Math.round(now-el.dataset.seen))))},1000);
 async function tick(){const s=await api('/api/state');
 fillSettings(s.config);HELD=s.holds||{};flow(s.step);
 $('dot').className='dot'+(s.running?' run':'');
@@ -137,7 +155,7 @@ $('cq').innerHTML=s.cq.map(e=>`<li class="${baseCall(e.call)===tgtCall?'tgt':e.s
 ${e.tag?`<span class="badge${e.special?' act':''}">${e.tag}</span>`:''}<span class="mono"><b class="${e.skip==='on hold'?'held':''}">${e.call}</b> ${e.grid||''}</span>
 ${cqBadges(e)}<span class="small">${e.km!=null?e.km+'km':'?km'} ${e.t}</span>
 ${e.worked?'<span class="badge wkd">wkd</span>':`<button class="mini" onclick="call('${e.call}','${e.grid||''}')">call</button>`}</li>`).join('')||'<li>— quiet —</li>';
-$('ans').innerHTML=s.answering.map(e=>`<li>${e.tome?'<span class="badge me">TO ME</span>':''}<span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="mono">${mark(e.msg)}</span></li>`).join('')||'<li>—</li>';
+window._skew=Date.now()/1000-(s.now||Date.now()/1000);window._ans=s.answering;renderAns();
 $('log').innerHTML=s.log.map(l=>`<li>${l.t} ${l.msg}</li>`).join('');
 $('stats').textContent=`CQ heard ${s.stats.cq_heard} · calls ${s.stats.calls_made}`;
 window._tx=s.udp.transmitting;window._per=s.period||15;window._mode=s.mode||'FT8';window._dx=s.udp.dxcall||'';
