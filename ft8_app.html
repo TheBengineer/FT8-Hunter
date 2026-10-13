@@ -4,10 +4,14 @@
 <title>FT8 Hunter</title>
 <style>
 *{box-sizing:border-box;margin:0}body{font-family:system-ui,sans-serif;background:#0f1419;color:#e6e6e6;
-max-width:480px;margin:0 auto;padding:12px;min-height:100vh}
+margin:0 auto;padding:12px;min-height:100vh}
+/* phone: one stack; desktop: cards flow into 2 then 3 columns, masonry-style */
+.cards{max-width:480px;margin:0 auto;columns:1;column-gap:10px}
+@media (min-width:900px){.cards{columns:2;max-width:980px}}
+@media (min-width:1350px){.cards{columns:3;max-width:1500px}}
 h1{font-size:1.2rem;text-align:center;margin-bottom:8px}
 h2{font-size:.95rem;margin-bottom:6px}
-.card{background:#1a222c;border-radius:12px;padding:12px;margin-bottom:10px}
+.card{background:#1a222c;border-radius:12px;padding:12px;margin-bottom:10px;break-inside:avoid;display:inline-block;width:100%}
 .row{display:flex;gap:8px;align-items:center}
 button{flex:1;padding:14px;border:0;border-radius:10px;font-size:1rem;font-weight:700;color:#fff;background:#2a6cb6}
 button.on{background:#1f9d4d}button.warn{background:#8a2f2f}
@@ -19,11 +23,24 @@ ul{list-style:none;padding:0}li{padding:8px;border-bottom:1px solid #26303c;font
 .good{color:#2ecc71}.mid{color:#f1c40f}.bad{color:#e74c3c}
 .badge{font-size:.7rem;background:#2a6cb6;border-radius:6px;padding:2px 6px}
 .badge.me{background:#1f9d4d}.badge.wkd{background:#555}.badge.act{background:#b8860b}
+.badge.hold{background:#c0761a}.badge.busy{background:#6a4a9a}.badge.dim{background:#3a4552}.badge.pile{background:#2f3d4c}
+li.skip{opacity:.55}li.tgt{background:#1d3a2a;border-radius:8px}
+.held{color:#f0a040;text-decoration:underline dotted}
+/* decision flow: question on the left, its "yes" action on the right */
+.flow .r{display:grid;grid-template-columns:1fr 16px 1fr;align-items:center;gap:4px;margin:3px 0}
+.flow .q,.flow .a{border:1px solid #334;padding:5px 8px;font-size:.78rem;line-height:1.25}
+.flow .q{border-radius:14px}.flow .a{border-radius:6px}.flow .ar{text-align:center;color:#556;font-size:.8rem}
+.flow .ans{float:right;font-size:.7rem;color:#9ab;margin-left:6px}
+.flow .pass .q{border-color:#2a6cb6;color:#cde}.flow .pass .a{opacity:.35}
+.flow .cur .q{background:#2a6cb6;border-color:#2a6cb6;color:#fff}
+.flow .cur .a{background:#1f9d4d;border-color:#1f9d4d;color:#fff;font-weight:700}.flow .cur .ar{color:#2ecc71}
+.flow .ahead{opacity:.35}.flow .det{display:block;font-weight:400;font-size:.72rem;opacity:.9}
 .dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#666;margin-right:6px}
 .dot.run{background:#2ecc71}.small{font-size:.8rem;color:#9ab}
 details summary{font-weight:700;padding:4px}
 </style></head><body>
 <h1>📻 FT8 Hunter</h1>
+<main class="cards">
 <div class="card"><div class="row"><span id="dot" class="dot"></span><b id="st">…</b></div>
 <div class="row" style="margin-top:6px"><span id="udpdot" class="dot"></span><span class="small" id="udp">UDP …</span></div>
 <div id="target">no target</div>
@@ -36,10 +53,12 @@ details summary{font-weight:700;padding:4px}
 <div class="row"><button id="bS">Start</button><button id="bX" class="warn">Skip</button></div>
 <div class="row" style="margin-top:8px"><button id="bCQ" style="background:#1f9d4d">🔴 ARM TX</button></div>
 <div class="row" style="margin-top:8px"><button id="bT" style="background:#5a4a8a">🔌 Smoke test</button></div></div>
+<div class="card"><h2>🧭 Decision flow <span class="small" id="stepage"></span></h2><div class="flow" id="flow"></div>
+<div class="small" style="margin-top:6px">Checked top to bottom each period; the first “yes” wins.</div></div>
 <div class="card"><h2>🎯 DX focus <span class="small" id="dxn"></span></h2><ul id="dxf"></ul>
 <div class="small" style="margin-top:6px">my TX</div><ul id="mytx"></ul>
 <div class="small" id="holds" style="margin-top:6px"></div></div>
-<div class="card"><h2>📢 CQ calls (activations first, then strongest)</h2><ul id="cq"></ul></div>
+<div class="card"><h2>📢 CQ calls (activations first, then best chance)</h2><ul id="cq"></ul></div>
 <div class="card"><div class="row"><span class="small">seq hot: <b id="par">…</b></span><span class="small" id="idle"></span></div>
 <div class="small" id="callers"></div></div>
 <div class="card"><details><summary>📡 All messages (<span id="mn">0</span>)</summary><ul id="msgs"></ul></details></div>
@@ -62,21 +81,57 @@ details summary{font-weight:700;padding:4px}
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Auto Tx offset (ws-hunter build)</span><input id="sAutoDf" type="checkbox" style="width:auto;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Back off when non-FT8 signals appear</span><input id="sQrm" type="checkbox" style="width:auto;margin-top:0"></div>
 <button id="bSave" style="margin-top:8px">Save</button></details></div>
+</main>
 <script>
 const $=id=>document.getElementById(id);
 async function api(p,b,m){const r=await fetch(p,{method:m||(b?'POST':'GET'),headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});return r.json()}
 function snrC(s){return s>=0?'good':s>=-12?'mid':'bad'}
+// engine steps in the order engine_tick checks them: [id, question, yes-action]
+const STEPS=[['stopped','Hunter running?','Stopped'],
+ ['target','Calling or working a target?','Work the target'],
+ ['qrm','Someone else on frequency?','Back off: no new calls'],
+ ['caller','Station calling me?','Answer the caller'],
+ ['listen','Listen pause?','Listen'],
+ ['activator','Activator CQ worth answering?','Pounce'],
+ ['cq','Other CQ worth answering?','Answer the CQ'],
+ ['mycq','Our CQ run still going?','Keep calling CQ'],
+ ['tail','Station signing off?','Tail-end it'],
+ ['cq_end','Our CQ run just ended?','Stop TX and listen'],
+ ['cq_start','CQ calling enabled?','Start a CQ run']];
+function flow(st){const id=(st||{}).step||'stopped',det=(st||{}).detail||'';
+ let cur=STEPS.findIndex(x=>x[0]===id);if(cur<0)cur=STEPS.length; // idle: every check said no
+ let html=STEPS.map(([sid,q,a],i)=>{
+  const cls=i<cur?'pass':i===cur?'cur':'ahead';
+  // the first check is inverted: "running? yes" continues down, "no" stops
+  const ans=i<cur?(i===0?'yes':'no'):i===cur?(i===0?'no':'yes'):'';
+  return `<div class="r ${cls}"><div class="q">${q}<span class="ans">${ans}</span></div><div class="ar">→</div>`+
+   `<div class="a">${a}${i===cur&&det?`<span class="det">${det}</span>`:''}</div></div>`}).join('');
+ html+=`<div class="r ${cur===STEPS.length?'cur':'ahead'}"><div></div><div></div><div class="a">Idle until next period${cur===STEPS.length&&det?`<span class="det">${det}</span>`:''}</div></div>`;
+ $('flow').innerHTML=html;
+ $('stepage').textContent=st&&st.t?'· '+Math.max(0,Math.round(Date.now()/1000-st.t))+'s ago':''}
+// same rule as the server's base_call(): strip <...> and portable prefix/suffix
+function baseCall(t){t=t.replace(/[<>]/g,'').toUpperCase();const p=t.split('/').filter(Boolean);
+ return p.sort((a,b)=>((/\d/.test(b))-(/\d/.test(a)))||b.length-a.length)[0]||t}
+let HELD={};  // base call -> seconds left on hold
+function mark(msg){return msg.split(' ').map(w=>HELD[baseCall(w)]?`<span class="held" title="on hold ${Math.ceil(HELD[baseCall(w)]/60)}m">${w}</span>`:w).join(' ')}
+const SKIP={'on hold':'hold','in QSO':'busy'};
+function cqBadges(e){let b='';
+ if(e.skip==='on hold')b+=`<span class="badge hold">hold ${Math.ceil(e.hold_s/60)}m</span>`;
+ else if(e.skip&&e.skip!=='worked')b+=`<span class="badge ${SKIP[e.skip]||'dim'}">${e.skip}</span>`;
+ if(e.pileup)b+=`<span class="badge pile" title="stations already calling">👥${e.pileup}</span>`;
+ return b}
 async function tick(){const s=await api('/api/state');
-fillSettings(s.config);
+fillSettings(s.config);HELD=s.holds||{};flow(s.step);
 $('dot').className='dot'+(s.running?' run':'');
 $('st').textContent=(s.running?'RUNNING':'STOPPED')+' · '+s.mycall+' '+s.mygrid;
 $('target').textContent=s.target?('🎯 '+s.target.call+' '+(s.target.grid||'')+' · '+(s.target.why||'')+' · '+(s.target.resp?'in QSO':Math.ceil(s.target.left/2)+' tries left')):(s.cq_calling?('📣 calling CQ · '+s.cq_calling+'s'):'no target');
 $('bS').textContent=s.running?'Stop':'Start';$('bS').className=s.running?'warn':'on';
-$('cq').innerHTML=s.cq.map(e=>`<li><span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span>
-${e.tag?`<span class="badge${e.special?' act':''}">${e.tag}</span>`:''}<span class="mono"><b>${e.call}</b> ${e.grid||''}</span>
-<span class="small">${e.km!=null?e.km+'km':'?km'} ${e.t}</span>
+const tgtCall=s.target?baseCall(s.target.call):'';
+$('cq').innerHTML=s.cq.map(e=>`<li class="${baseCall(e.call)===tgtCall?'tgt':e.skip?'skip':''}"><span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span>
+${e.tag?`<span class="badge${e.special?' act':''}">${e.tag}</span>`:''}<span class="mono"><b class="${e.skip==='on hold'?'held':''}">${e.call}</b> ${e.grid||''}</span>
+${cqBadges(e)}<span class="small">${e.km!=null?e.km+'km':'?km'} ${e.t}</span>
 ${e.worked?'<span class="badge wkd">wkd</span>':`<button class="mini" onclick="call('${e.call}','${e.grid||''}')">call</button>`}</li>`).join('')||'<li>— quiet —</li>';
-$('ans').innerHTML=s.answering.map(e=>`<li>${e.tome?'<span class="badge me">TO ME</span>':''}<span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="mono">${e.msg}</span></li>`).join('')||'<li>—</li>';
+$('ans').innerHTML=s.answering.map(e=>`<li>${e.tome?'<span class="badge me">TO ME</span>':''}<span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="mono">${mark(e.msg)}</span></li>`).join('')||'<li>—</li>';
 $('log').innerHTML=s.log.map(l=>`<li>${l.t} ${l.msg}</li>`).join('');
 $('stats').textContent=`CQ heard ${s.stats.cq_heard} · calls ${s.stats.calls_made}`;
 window._tx=s.udp.transmitting;window._per=s.period||15;window._mode=s.mode||'FT8';window._dx=s.udp.dxcall||'';
@@ -88,14 +143,14 @@ if(ago!=null&&ago<45){$('udpdot').className='dot run';$('udp').textContent=`🔗
 else{$('udpdot').className='dot';$('udp').textContent=`⚪ no WS UDP yet · port: ${s.udp.holder}`}
 $('wn').textContent=s.worked.length;$('wk').innerHTML=s.worked.map(c=>`<li class="mono">${c}</li>`).join('');
 $('dxn').textContent=s.target?('· '+s.target.call):'· no target';
-$('dxf').innerHTML=(s.dxfocus||[]).map(e=>`<li>${e.tome?'<span class="badge me">TO ME</span>':''}<span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="mono">${e.msg}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';
+$('dxf').innerHTML=(s.dxfocus||[]).map(e=>`<li>${e.tome?'<span class="badge me">TO ME</span>':''}<span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="mono">${mark(e.msg)}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';
 $('mytx').innerHTML=(s.mytx||[]).map(e=>`<li><span class="badge me">TX</span><span class="mono">${e.msg}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';
 $('mn').textContent=(s.msgs||[]).length;
 $('par').textContent=(s.parity? s.parity.hot+' ('+s.parity.even+'/'+s.parity.odd+')':'…');
 $('idle').textContent=s.idle?('👂 listening '+s.idle+'s'):'';
 $('callers').textContent=(s.callers&&s.callers.length)?('📥 callers waiting: '+s.callers.join(', ')):'';
-$('holds').textContent=(s.holds&&Object.keys(s.holds).length)?('⏸ holds: '+Object.entries(s.holds).map(([c,sec])=>c+' '+Math.ceil(sec/60)+'m').join(', ')):'';
-$('msgs').innerHTML=(s.msgs||[]).map(e=>`<li>${e.tome?'<span class="badge me">ME</span>':''}${e.dx?'<span class="badge">DX</span>':''}<span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="mono">${e.msg}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';
+$('holds').innerHTML=(s.holds&&Object.keys(s.holds).length)?('on hold: '+Object.entries(s.holds).map(([c,sec])=>`<span class="badge hold">${c} ${Math.ceil(sec/60)}m</span>`).join(' ')):'';
+$('msgs').innerHTML=(s.msgs||[]).map(e=>`<li>${e.tome?'<span class="badge me">ME</span>':''}${e.dx?'<span class="badge">DX</span>':''}<span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="mono">${mark(e.msg)}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';
 }
 async function call(c,g){await api('/api/call',{call:c,grid:g||''})}
 $('bS').onclick=async()=>{const s=await api('/api/state');await api(s.running?'/api/stop':'/api/start',{},'POST');tick()};

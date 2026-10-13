@@ -640,8 +640,36 @@ def handle_spectrum(data, off):
     else:
         ENG["qrm_n"] = 0
 
+def at(step, detail=""):
+    """Record where the engine stopped this period (shown live in the UI's
+    decision flow). Steps follow engine_tick's order; see STEPS in the UI."""
+    ENG["step"] = {"step": step, "detail": detail, "t": time.time()}
+
+def cq_skip(e, now=None):
+    """Why a CQ won't be answered right now; '' means it is worth answering.
+    The engine and the UI share this, so the badges match what it does."""
+    now = now or time.time()
+    if e.get("tag", "") not in ANSWERABLE:
+        return f"CQ {e['tag']}"  # aimed at a region
+    if is_worked(e["call"]):
+        return "worked"
+    if on_hold(e["call"]):
+        return "on hold"
+    if not dx_ok(e):
+        return "DX only"  # CQ DX from our own continent
+    if now - e["seen"] >= cyc(2) + 5:
+        return "stale"
+    if in_qso(e):
+        return "in QSO"
+    if e["snr"] < state["config"].get("min_snr", -20):
+        return "weak"
+    if not e.get("msg"):
+        return "no decode"
+    return ""
+
 def engine_tick():
-    """Called once per 15s FT8 cycle. Priority: callers-to-me > CQ > traffic."""
+    """Called once per T/R period. Priority: our target > callers-to-me >
+    activator CQs > other CQs > tail-end > our own CQ."""
     now = time.time()
     # refresh today's worked if a log file changed
     try:
@@ -653,7 +681,7 @@ def engine_tick():
         log_err("ADIF reload", e)
     prune(now)
     if not state["running"]:
-        return
+        return at("stopped")
     t = state["target"]
     cfg = state["config"]
     if t and is_worked(t["call"]):  # logged (seen in ADIF) without a QSO Logged packet
@@ -675,9 +703,11 @@ def engine_tick():
             # once QSO progresses (resp), WS auto-sequences — don't touch it
             if not t.get("resp") and t.get("msg"):
                 send_exact_reply(CTX["tx"], t["msg"])
-            return
+            how = ("signing off" if t.get("done") else "in QSO") if t.get("resp") \
+                else f"calling, {(t['left'] + 1) // 2} tries left"
+            return at("target", f"{t['call']}: {how}")
     if now < ENG["qrm_until"]:
-        return  # someone else is using the frequency: start nothing new
+        return at("qrm", ENG["qrm_why"])  # someone else is using the frequency
     # drop stale/held callers, first-come-first-serve
     while ENG["callers"]:
         c, m = ENG["callers"][0]
@@ -688,27 +718,23 @@ def engine_tick():
         c, m = ENG["callers"].popleft()
         if acquire(c, "", m, tries=cfg.get("cq_tries", 3), why="called us"):
             ENG["busy"] += 1
-            return
+            return at("caller", c)
     if now < ENG["idle_until"]:
-        return  # listen-only rest (stations calling us are still answered above)
-    # CQ callers: activations first (if enabled), then strongest; fall through
-    # to the next if one can't be answered. Region-directed CQs are skipped.
-    # A CQ older than ~2 cycles, or followed by them sending to someone else,
-    # means they are busy now; calling anyway just adds QRM.
-    cands = [e for e in list(state["cq"].values())
-             if e.get("tag", "") in ANSWERABLE and dx_ok(e)
-             and not is_worked(e["call"]) and not on_hold(e["call"])
-             and now - e["seen"] < cyc(2) + 5 and not in_qso(e)
-             and e["snr"] >= cfg.get("min_snr", -20)]
+        # listen-only rest (stations calling us are still answered above)
+        return at("listen", f"{round(ENG['idle_until'] - now)} s left")
+    # CQ callers: activations first (if enabled), then best chance of a
+    # contact; fall through to the next if one can't be answered.
+    cands = [e for e in list(state["cq"].values()) if not cq_skip(e, now)]
     cands.sort(key=cq_rank)
     for e in cands:
-        if e.get("msg") and acquire(e["call"], e["grid"], e["msg"],
-                                    tries=cfg.get("cq_tries", 3),
-                                    why=e["tag"] if e.get("special") else "CQ"):
+        if acquire(e["call"], e["grid"], e["msg"], tries=cfg.get("cq_tries", 3),
+                   why=e["tag"] if e.get("special") else "CQ"):
             ENG["busy"] += 1
-            return
+            special = e.get("special") and cfg.get("special_first", True)
+            return at("activator" if special else "cq", f"{e['call']} ({e['snr']:+d})")
     if now < ENG["cq_until"]:
-        return  # our own CQ keeps running; WS repeats it each period
+        # our own CQ keeps running; WS repeats it each period
+        return at("mycq", f"{round(ENG['cq_until'] - now)} s left")
     # no CQ: tail-end a station signing off, never one mid-QSO. A Reply to
     # "A B ..." makes WS call B, the sender. RR73/RRR usually comes from the
     # station running the frequency, who is about to be free; prefer those.
@@ -728,22 +754,23 @@ def engine_tick():
             best = (m, frm, key)
     if best and acquire(best[1], "", best[0]["msg"], tries=cfg.get("tail_tries", 2), why="tail-end"):
         ENG["busy"] += 1
-        return
+        return at("tail", best[1])
     ENG["busy"] = 0
     if ENG["cq_until"]:  # our CQ run just ended: stop and listen before the next
         ENG["cq_until"] = 0
         halt_ws()
         ENG["idle_until"] = now + cfg.get("idle_secs", 60)
         log(f"CQ run over, listening {cfg.get('idle_secs', 60)}s")
-        return
+        return at("cq_end", f"listening {cfg.get('idle_secs', 60)} s")
     if cfg.get("call_cq", True):  # last resort: call CQ ourselves
         start_cq(cfg.get("cq_secs", 120))
-        return
+        return at("cq_start", f"{cfg.get('cq_secs', 120)} s run")
     # spare cycle: every idle_every idle cycles, rest to catch the off sequence
     ENG["idle_n"] += 1
     if ENG["idle_n"] % max(1, cfg.get("idle_every", 4)) == 0:
         ENG["idle_until"] = now + cfg.get("idle_secs", 60)
         log(f"listening {cfg.get('idle_secs', 60)}s (off-sequence watch)")
+    return at("idle", "CQ calling is off")
 
 def start_cq(secs):
     """Reset WS's message stack to its default CQ and enable Tx. Halt first so
@@ -926,9 +953,14 @@ class H(BaseHTTPRequestHandler):
                 self.send_error(404); return
         if self.path == "/api/state":
             # snapshot shared structures first: the UDP/engine threads mutate them
+            now = time.time()
             cq = list(state["cq"].values())
             for e in cq:
                 e["worked"] = is_worked(e["call"])
+                e["skip"] = cq_skip(e, now)
+                e["hold_s"] = max(0, round(ENG["holds"].get(base_call(e["call"]), 0) - now))
+                e["pileup"] = pileup(e["call"], now)
+                e["score"] = round(cq_score(e, now))
             cq.sort(key=cq_rank)
             ans = sorted(list(state["answering"].values()), key=lambda e: (not e["tome"], -e["seen"]))
             all_msgs = list(state["msgs"])
@@ -949,6 +981,7 @@ class H(BaseHTTPRequestHandler):
                 "idle": max(0, round(ENG["idle_until"] - time.time())),
                 "cq_calling": max(0, round(ENG["cq_until"] - time.time())),
                 "mode": mode(), "period": period(),
+                "step": ENG.get("step") or {"step": "stopped" if not state["running"] else "idle"},
                 "qrm": {"secs": max(0, round(ENG["qrm_until"] - time.time())), "why": ENG["qrm_why"]},
                 "txdf": {"current": u.get("tx_df"), **ENG.get("suggest", {})},
                 "log": list(state["log"]), "config": state["config"], "stats": state["stats"],
@@ -966,10 +999,10 @@ class H(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", 0) or 0)
         body = json.loads(self.rfile.read(n) or b"{}") if n else {}
         p = urlparse(self.path).path
-        if p == "/api/start": state["running"] = True; log("hunter started")
+        if p == "/api/start": state["running"] = True; log("hunter started"); at("idle", "starting at next period")
         elif p == "/api/stop":
             state["running"] = False; state["target"] = None; ENG["cq_until"] = 0
-            ENG["callers"].clear(); halt_ws(); log("stopped, TX halted")
+            ENG["callers"].clear(); halt_ws(); log("stopped, TX halted"); at("stopped")
         elif p == "/api/skip":
             t = state["target"]
             if t:

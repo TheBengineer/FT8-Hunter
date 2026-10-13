@@ -56,6 +56,12 @@ calling, and a new caller replaces a target that hasn't answered yet.
 
 \* needs the [ws-hunter](#ws-build-with-hunter-controls) build of WS.
 
+The web UI draws this same flow and lights up the step the hunter is on, with
+the steps it passed marked "no". Each CQ shows why it is or isn't being called
+(on hold, in QSO, pileup size, stale, weak, region/DX-only), and calls on hold
+are underlined wherever they appear. On a desktop the cards spread into two or
+three columns.
+
 ## Run
 
 ```bash

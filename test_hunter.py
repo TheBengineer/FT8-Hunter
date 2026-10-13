@@ -166,6 +166,19 @@ for c in ("N1AA", "N2BB", "N3CC"):
 ns["engine_tick"]()
 check("3-deep pileup ranks below a quieter clear CQ", st["target"]["call"] == "K2QUIET")
 
+# --- live decision-flow step + CQ skip reasons (shown in the UI)
+fresh(); dec("CQ POTA K4PRK EM85", snr=-6); ns["engine_tick"]()
+check("step: pounce on activator", ENG["step"]["step"] == "activator" and "K4PRK" in ENG["step"]["detail"])
+ns["engine_tick"]()
+check("step: then working the target", ENG["step"]["step"] == "target" and "tries left" in ENG["step"]["detail"])
+st["running"] = False; ns["engine_tick"](); st["running"] = True
+check("step: stopped", ENG["step"]["step"] == "stopped")
+fresh(); dec("CQ K1HELD FN42"); ns["hold"]("K1HELD"); dec("CQ K9BUSY EN52"); dec("N0OTH K9BUSY -10")
+dec("CQ EU DL9ABC JO40"); dec("CQ W9WEAK EN50", snr=-25)
+skip = {c: ns["cq_skip"](e) for c, e in st["cq"].items()}
+check("skip reasons: hold / in QSO / region / weak",
+      skip == {"K1HELD": "on hold", "K9BUSY": "in QSO", "DL9ABC": "CQ EU", "W9WEAK": "weak"})
+
 # --- frequency picker
 fresh()
 pick = ns["pick_tx_df"]
