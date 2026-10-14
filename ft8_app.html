@@ -286,7 +286,7 @@ all.forEach(c=>{const mv=document.createElement('div');mv.className='mv';
 const cv=document.getElementById('globe'),ctx=cv.getContext('2d'),D=Math.PI/180;
 let G={worked:[],traffic:[]},coast=[],lon0=0,lat0=20,drag=null,last=0,spin=true,home=null,zoom=1,px=0,py=0,uz=1;  // uz: the viewer's own zoom (wheel / pinch)
 const SWING=50,SWING_S=120;  // sway ±50° either side of home, once every 2 minutes
-const ZMIN=.6,ZMAX=8,TILT=35;  // QSO close-up: 0.6x (long haul) to 8x, looking at the arc from up to 35° to one side
+const ZMIN=.6,ZMAX=3,FILL=.6,TILT=35;  // QSO close-up: 0.6x (long haul) to 3x, the arc filling about 60% of the view, seen from up to 35° to one side
 fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json').then(r=>r.json()).then(t=>{
  const [sx,sy]=t.transform.scale,[tx,ty]=t.transform.translate;   // delta-decode quantized arcs
  coast=t.arcs.map(a=>{let x=0,y=0;return a.map(([dx,dy])=>{x+=dx;y+=dy;return vec(y*sy+ty,x*sx+tx)})})}).catch(()=>{});
@@ -309,7 +309,7 @@ function focus(){  // during a QSO: the view, zoom and pan that frame its arc, e
  for(const v of [...p,A,B]){const [x,y]=view(v,lon,lat);
   x0=Math.min(x0,x);x1=Math.max(x1,x);y0=Math.min(y0,y);y1=Math.max(y1,y)}
  if(x0>x1)return null;const e=Math.max(x1-x0,y1-y0)/2;   // half-size in globe radii
- return {lon,lat,zoom:Math.max(ZMIN,Math.min(ZMAX,0.42/0.36/Math.max(e,1e-3))),px:(x0+x1)/2,py:(y0+y1)/2}}
+ return {lon,lat,zoom:Math.max(ZMIN,Math.min(ZMAX,FILL/2/0.36/Math.max(e,1e-3))),px:(x0+x1)/2,py:(y0+y1)/2}}
 function arcPts(a,b){  // great circle a->b lifted to a height that grows with distance
  const A=vec(...a),B=vec(...b),w=Math.acos(Math.max(-1,Math.min(1,A[0]*B[0]+A[1]*B[1]+A[2]*B[2])));
  if(w<1e-4)return[];const n=Math.max(16,Math.ceil(w/D/2)),H=0.15+0.6*w/Math.PI,p=[];
