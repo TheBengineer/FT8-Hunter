@@ -454,6 +454,9 @@ check("globe: me, contacts, target and traffic located",
       g["me"] and "JA1XYZ" in [w["call"] for w in g["worked"]] and g["target"]["call"] == "K9ABC" and g["target"]["ll"]
       and any({x["from"], x["to"]} == {"K9ABC", "W1AW"} for x in g["traffic"])
       and any(x["tome"] and x["b"] == g["me"] for x in g["traffic"]))
+check("globe: a target we are only calling is not a QSO yet", not g["target"]["resp"])
+st["target"] = {"call": "K9ABC", "left": 5, "why": "called us"}
+check("globe: a station that called us is a QSO (orange) from the start", ns["globe"]()["target"]["resp"])
 
 # --- worked / ignored list in /api/state: time, band, mode, kind
 import json, urllib.request

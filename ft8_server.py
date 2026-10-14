@@ -1217,7 +1217,10 @@ def globe():
             seen.add((c, b, m))
             worked.append({"call": c, "ll": ll, "band": b, "mode": m, "here": (b, m) == here})
     t = state["target"]
-    tgt = {"call": t["call"], "ll": locate(t["call"]), "resp": bool(t.get("resp"))} if t else None
+    # a QSO for the globe once they have answered, or from the start when they
+    # called us: either way they are working us directly
+    tgt = {"call": t["call"], "ll": locate(t["call"]),
+           "resp": bool(t.get("resp")) or t.get("why") == "called us"} if t else None
     traffic = []
     for p in sorted(list(PAIRS.values()), key=lambda p: -p["t"]):
         age = now - p["t"]
