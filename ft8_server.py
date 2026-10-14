@@ -19,7 +19,8 @@ state = {
                "idle_every": 4, "idle_secs": 60, "special_first": True,
                "call_cq": True, "cq_secs": 120, "cq_first": False,
                "auto_df": True, "df_lo": 1300, "df_hi": 2700,  # df_lo: rig feeds back below 1300 Hz
-               "qrm_detect": True, "qrm_backoff_min": 5, "min_snr": -20},
+               "qrm_detect": True, "qrm_backoff_min": 5, "min_snr": -20,
+               "tx_watts": None},  # TX power chosen in the UI, held on the radio
     "stats": {"cq_heard": 0, "calls_made": 0},
 }
 # "CQ [TAG] CALL [GRID]"; TAG is DX, TEST, an activity (POTA...) or a
@@ -1332,6 +1333,58 @@ def flrig():
             c = super().make_connection(host); c.timeout = 3; return c
     return xmlrpc.client.ServerProxy(RIG["url"], transport=T())  # one per call: not thread-safe
 
+# FLRig's get_power reads 0 on the G90, so its power setting is read with a
+# raw CI-V 14 0A instead. The G90 answers on its own scale (not BCD 0-255),
+# measured for each setting; 1 and 2 W both read 0000, 10 and 11 W 0128.
+CIV = {"Xiegu-G90": (0x70, {1: 0x000, 2: 0x000, 3: 0x01D, 4: 0x02A, 5: 0x048, 6: 0x055, 7: 0x063,
+                            8: 0x080, 9: 0x09D, 10: 0x128, 11: 0x128, 12: 0x136, 13: 0x143,
+                            14: 0x161, 15: 0x17E, 16: 0x18B, 17: 0x209, 18: 0x216, 19: 0x224,
+                            20: 0x25F})}
+
+def civ_watts(raw, table):
+    """Watts for a raw G90 power value: the nearest measured setting."""
+    return min(table, key=lambda w: (abs(table[w] - raw), w))
+
+def civ_power(fl):
+    """The rig's TX power setting in W, asked over raw CI-V; None if this rig
+    isn't in CIV or it didn't answer (it can't while transmitting)."""
+    if RIG.get("xcvr") not in CIV:
+        return None
+    addr, table = CIV[RIG["xcvr"]]
+    for _ in range(3):  # often garbled: it collides with FLRig's own polling
+        rep = str(fl.rig.cat_string(f"xFE xFE x{addr:02X} xE0 x14 x0A xFD"))
+        m = re.search(rf"FE FE E0 {addr:02X} 14 0A ([0-9A-F]{{2}}) ([0-9A-F]{{2}}) FD", rep)
+        if m:
+            return civ_watts(int(m.group(1) + m.group(2), 16), table)
+        time.sleep(0.3)
+    return None
+
+def same_watts(a, b):
+    """Two power settings the rig can tell apart? (G90: 1 = 2 W, 10 = 11 W)"""
+    table = CIV.get(RIG.get("xcvr"), (0, {}))[1]
+    return a == b or (a in table and b in table and table[a] == table[b])
+
+def hold_power(fl, now):
+    """Keep the radio at the power chosen in the UI: read its real setting
+    every few seconds while receiving, and set it back (logged) if something
+    else changed it."""
+    if RIG.get("ptt") or now - RIG.get("pw_t", 0) < 6:
+        return
+    w = civ_power(fl)
+    if w is None:
+        return
+    RIG.update(power=w, pw_t=now)
+    want = state["config"].get("tx_watts")
+    if not want or same_watts(w, want):
+        RIG["pw_off"] = 0
+        return
+    RIG["pw_off"] = RIG.get("pw_off", 0) + 1
+    RIG["pw_t"] = now - 4  # confirm on the next poll, not in 6 s
+    if RIG["pw_off"] >= 2:  # twice in a row: not a read caught mid-change
+        fl.rig.set_power(want)
+        RIG.update(power=want, pw_off=0, pw_t=0)
+        log(f"radio TX power went to {w} W (not set here): set back to {want} W")
+
 def rig_poll():
     import xmlrpc.client
     while True:
@@ -1341,10 +1394,16 @@ def rig_poll():
                 RIG["xcvr"] = str(fl.rig.get_xcvr())
                 RIG["max"] = int(float(fl.rig.get_maxpwr() or 0)) or MAX_W.get(RIG["xcvr"], 100)
             m = xmlrpc.client.MultiCall(flrig())
-            m.rig.get_ptt(); m.rig.get_power(); m.rig.get_smeter()
-            ptt, power, sm = list(m())
-            # (the G90's power and SWR meters over CAT don't track reality, so they aren't shown)
-            RIG.update(ok=True, err="", t=time.time(), ptt=bool(int(ptt)), power=int(float(power)), s=float(sm))
+            m.rig.get_ptt(); m.rig.get_power(); m.rig.get_smeter(); m.rig.get_pwrmeter()
+            ptt, power, sm, out = list(m())
+            # (the G90's SWR meter over CAT doesn't track reality, so it isn't shown;
+            # its power meter is coarse, full or nothing, but shows we put out power)
+            ptt = bool(int(ptt))
+            RIG.update(ok=True, err="", t=time.time(), ptt=ptt, s=float(sm),
+                       out=max(0.0, float(out or 0)) if ptt else 0.0)
+            if RIG.get("xcvr") not in CIV:
+                RIG["power"] = int(float(power))
+            hold_power(flrig(), time.time())
             if float(sm) > 0:
                 RIG["has_s"] = True  # some rigs (the G90) never report an S-meter over CAT
         except Exception as e:
@@ -1592,7 +1651,9 @@ class H(BaseHTTPRequestHandler):
             try:
                 w = max(1, min(int(body.get("watts", 0)), RIG.get("max", 100)))
                 flrig().rig.set_power(w)
-                RIG["power"] = w
+                RIG.update(power=w, pw_t=time.time(), pw_off=0)
+                state["config"]["tx_watts"] = w
+                save_config()
                 log(f"TX power set to {w} W")
             except Exception as e:
                 return self._json({"error": str(e)[:80]}, 502)

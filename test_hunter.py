@@ -598,14 +598,16 @@ fl.register_multicall_functions()
 for name, f in {"rig.get_xcvr": lambda: "Xiegu-G90", "rig.get_maxpwr": lambda: 0,
                 "rig.get_ptt": lambda: RADIO["ptt"], "rig.get_power": lambda: RADIO["power"],
                 "rig.get_pwrmeter": lambda: "15", "rig.get_swrmeter": lambda: "12", "rig.get_smeter": lambda: "0",
-                "rig.set_power": lambda w: RADIO.update(power=w) or 0}.items():
+                "rig.set_power": lambda w: RADIO.update(power=w) or 0,
+                "rig.cat_string": lambda c: "FE FE 70 E0 14 0A FD FE FE E0 70 14 0A %02X %02X FD" % divmod(
+                    ns["CIV"]["Xiegu-G90"][1][RADIO["power"]], 256)}.items():
     fl.register_function(f, name)
 threading.Thread(target=fl.serve_forever, daemon=True).start()
 ns["RIG"]["url"] = f"http://127.0.0.1:{fl.server_address[1]}"
 threading.Thread(target=ns["rig_poll"], daemon=True).start(); time.sleep(1.0)
 R = ns["RIG"]
-check("FLRig polled: rig, max power from the table, PTT, no S-meter",
-      R["ok"] and R["xcvr"] == "Xiegu-G90" and R["max"] == 20 and R["power"] == 16 and R["ptt"]
+check("FLRig polled: rig, max power from the table, PTT, no S-meter (power not read mid-TX)",
+      R["ok"] and R["xcvr"] == "Xiegu-G90" and R["max"] == 20 and "power" not in R and R["ptt"]
       and not R.get("has_s"))
 def post(path, body):
     req = urllib.request.Request(f"http://127.0.0.1:{srv.server_address[1]}{path}", json.dumps(body).encode(),
@@ -615,6 +617,17 @@ post("/api/rig/power", {"watts": 50})
 check("TX power set through FLRig, clamped to the rig's max", RADIO["power"] == 20)
 post("/api/rig/power", {"watts": 5})
 check("TX power lowered", RADIO["power"] == 5)
+check("chosen TX power saved", json.load(open(ns["CONFIG_FILE"]))["tx_watts"] == 5)
+RADIO["ptt"] = 0; time.sleep(2.5)
+check("power setting read from the radio over CI-V (FLRig's get_power is 0 on a G90)", R["power"] == 5)
+RADIO["power"] = 1                                  # something else turns it down
+deadline = time.time() + 20
+while RADIO["power"] != 5 and time.time() < deadline: time.sleep(0.5)
+check("power changed behind our back is set back to the chosen power", RADIO["power"] == 5)
+check("G90 raw power values map to watts", ns["civ_watts"](0x17E, ns["CIV"]["Xiegu-G90"][1]) == 15
+      and ns["civ_watts"](0x128, ns["CIV"]["Xiegu-G90"][1]) == 10 and ns["same_watts"](10, 11))
+RADIO["ptt"] = 1; time.sleep(2.5)
+check("output power shown while transmitting", R["out"] == 15)
 post("/api/config", {"df_lo": 1400})
 saved = json.load(open(ns["CONFIG_FILE"]))
 st["config"]["df_lo"] = 1300; ns["load_config"]()

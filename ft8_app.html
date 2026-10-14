@@ -73,6 +73,7 @@ details summary{font-weight:700;padding:4px}
 <div class="row" style="margin-top:6px"><span class="small" style="min-width:64px">TX power</span>
 <button class="mini" id="pwDn">−</button><input id="pw" type="range" min="1" max="20" step="1" style="flex:1;margin:0;padding:0">
 <button class="mini" id="pwUp">+</button><b id="pwV" class="mono" style="min-width:42px;text-align:right">– W</b></div>
+<div class="meter" title="Output power from the rig's meter (the G90's is coarse: full or nothing)"><span class="small">Output</span><div class="bar" style="height:4px"><i id="mO" style="background:#ff9f43"></i></div><span class="mono small" id="vO">–</span></div>
 <div class="meter" id="sRow" style="display:none"><span class="small">S-meter</span><div class="bar"><i id="mS" style="background:#2ecc71"></i></div><span class="mono small" id="vS">–</span></div>
 <div class="small" id="rxBest" style="margin-top:2px"></div></div>
 <div class="row" style="margin-top:8px"><button id="bWake" class="mini" style="flex:1;padding:8px;background:#3a4552">📱 Keep screen awake: off</button></div></div>
@@ -226,6 +227,7 @@ function rigView(r,rx){
  $('rigSt').innerHTML=!r.ok?`<span class="bad">FLRig not reachable</span>`:r.ptt?'<span class="bad">● TX</span>':'<span class="good">RX</span>';
  ['pwDn','pwUp','pw'].forEach(id=>$(id).disabled=!r.ok);
  if(r.ok){$('pw').max=r.max||100;if(Date.now()-pwBusy>4000){$('pw').value=r.power;$('pwV').textContent=r.power+' W'}}
+ bar('mO',r.ok&&r.ptt?(r.out||0)/(r.max||100):0);$('vO').textContent=r.ok&&r.ptt?Math.round(r.out||0)+' W':'–';
  $('sRow').style.display=r.has_s?'flex':'none';if(r.has_s){bar('mS',r.s/100);$('vS').textContent=r.ptt?'–':String(r.s)}
  $('rxBest').textContent=rx&&rx.best!=null?`strongest decode last period: ${rx.best>0?'+':''}${rx.best} dB SNR (${rx.n} decodes)`:'no decodes last period'}
 $('bC').onclick=()=>api('/api/call',{call:$('mc').value,grid:$('mg').value}).then(tick);
