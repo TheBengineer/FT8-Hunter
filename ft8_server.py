@@ -728,18 +728,36 @@ def new_slot():
     ENG["cq_until"] = 0
 
 RECENT_PERIODS = 2  # same-parity periods the offset picker looks back
-def occupied(par, now):
-    """Occupied audio intervals [lo, hi) on one T/R parity, from its last two
-    periods only (someone who left a frequency before that has given it up):
-    decodes plus, on the ws-hunter build, spectrum bins above the quiet level."""
+LOOK_BACK = 20       # how far back (same-parity periods) it looks for ones we heard
+def heard_periods(par, now, n=RECENT_PERIODS):
+    """Starts (UTC ms of day) of the last n ended periods of parity `par` we
+    listened in, newest first. Periods we transmitted in are skipped, not
+    counted as empty: on the parity we transmit on, the last ones we heard
+    may be minutes old, but they are all we know about who is there."""
     tr = int(period() * 1000)
-    # period start ages: the last two of a parity start under 5 periods ago
-    recent = lambda tm: (tod_ms(now) - tm) % 86400000 < (2 * RECENT_PERIODS + 1) * tr
+    t = (tod_ms(now) // tr - 1) * tr  # the newest ended period
+    if (t // tr) % 2 != par:
+        t -= tr
+    out = []
+    for k in range(LOOK_BACK):
+        s = (t - 2 * k * tr) % 86400000
+        if not overlaps_tx(s, tr):
+            out.append(s)
+            if len(out) == n:
+                break
+    return out
+
+def occupied(par, now):
+    """Occupied audio intervals [lo, hi) on one T/R parity, from the last two
+    periods of it we heard (someone who left a frequency before that has
+    given it up): decodes plus, on the ws-hunter build, spectrum bins above
+    the quiet level."""
+    heard = set(heard_periods(par, now))
     iv = [(o["df"] - GUARD, o["df"] + bw() + GUARD) for o in list(ENG["occ"])
-          if o["par"] == par and o.get("tm") is not None and recent(o["tm"])]
-    sp = ENG["spec"].get(par)
-    if sp and now - sp["t"] < cyc(2 * RECENT_PERIODS):
-        iv += [(f - GUARD, f + sp["bin"] + GUARD) for f in sp["hot"]]
+          if o["par"] == par and o.get("tm") in heard]
+    ex = spec_excess(par, now, periods=heard)
+    if ex:
+        iv += [(f - GUARD, f + ex[3] + GUARD) for f in weak_hot(par, now, ex)]
     return iv
 
 def pick_tx_df(par, current=None):
@@ -847,10 +865,12 @@ def spec_baseline(tr_ms, nbins):
     k = len(rows) // 4
     return [sorted(col)[k] for col in zip(*rows)]
 
-def spec_excess(par, now, n=RECENT_PERIODS):
+def spec_excess(par, now, n=RECENT_PERIODS, periods=None):
     """(latest, average) excess over the baseline in dB per bin, for the last
-    n spectra of parity `par` (none older than that), with their bin layout."""
-    hist = [h for h in list(ENG["spec_hist"]) if h["par"] == par and now - h["t"] < cyc(2 * n) + 5]
+    n spectra of parity `par` (none older than that, or those of `periods`),
+    with their bin layout."""
+    hist = [h for h in list(ENG["spec_hist"]) if h["par"] == par
+            and (h["t_ms"] in periods if periods is not None else now - h["t"] < cyc(2 * n) + 5)]
     if not hist:
         return None
     last = hist[-1]
@@ -861,14 +881,14 @@ def spec_excess(par, now, n=RECENT_PERIODS):
     return exs[-1], avg, last["start"], last["bin"], base is not None
 
 WEAK_DB, NEW_DB, STRONG_DB = 1.2, 3.0, 8.0  # see weak_hot
-def weak_hot(par, now):
+def weak_hot(par, now, ex=None):
     """Bins with someone transmitting on parity `par`, decodable or not.
     Bin noise is ~0.5 dB about its baseline, so a run of 3+ bins (30 Hz)
     that is up 1.2 dB on average over the last two periods, or 3 dB in the
     latest, is a signal (a -20 dB FT8 signal is ~+2 dB); so is any single
     bin 8 dB up. Catches stations too weak to decode here who would still
     be on top of us at the far end."""
-    ex = spec_excess(par, now)
+    ex = ex or spec_excess(par, now)
     if not ex:
         return []
     last, avg, start, bin_hz, learned = ex

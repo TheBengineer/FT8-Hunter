@@ -326,6 +326,16 @@ fresh(); dec("K1OLD W2LEFT -10", df=1900, t_ms=recent_tm(1, back=2))  # 3 odd pe
 check("a frequency given up two cycles ago is free again", 1900 <= pick(1, current=1900) < 1950)
 fresh(); dec("K1NOW W2STAY -10", df=1900, t_ms=recent_tm(1, back=1))  # the odd period before last
 check("...but one used in the last two cycles is not", pick(1, current=1900) != 1900)
+# we transmitted on the odd periods for the last three cycles: the last two
+# odd periods we HEARD are older, and a station there still counts
+def tx_in(tm):  # our transmission filling the period that starts at tm
+    t0 = time.time() - (ns["tod_ms"](time.time()) - tm) / 1000
+    ENG["tx_iv"].append([t0 + 0.2, t0 + 13])
+fresh(); dec("K1OLD W2HERE -10", df=1900, t_ms=recent_tm(1, back=3))
+for k in (2, 1, 0): tx_in(recent_tm(1, back=k))
+check("transmitting for cycles doesn't make the frequency look free", pick(1, current=1900) != 1900)
+fresh(); dec("K1OLD W2HERE -10", df=1900, t_ms=recent_tm(1, back=3))
+check("...while heard-and-quiet cycles still free it", 1900 <= pick(1, current=1900) < 1950)
 st["config"]["df_lo"] = 300
 fresh(); check("lowest offset setting is honoured (300 -> mid-band)", 1400 <= pick(1) <= 1500)
 st["config"]["df_lo"] = 1300
@@ -354,7 +364,7 @@ def settle():  # pretend the decodes for every pending spectrum are in
     ns["check_qrm"](time.time() + 100)
 quiet = [20] * 300                                  # flat noise
 one_ft8 = quiet[:]; one_ft8[150:155] = [80] * 5     # one 50 Hz signal at 1500 Hz
-fresh(); handle(spectrum(one_ft8))
+fresh(); handle(spectrum(one_ft8, t_ms=recent_tm(1)))
 check("spectrum marks hot bins", ENG["spec"][1]["hot"] == [1500, 1510, 1520, 1530, 1540])
 f = pick(1, current=1510)
 check("undecoded signal in spectrum moves the pick", f != 1510)
@@ -424,7 +434,7 @@ def noisy(extra=None):
         lv[b] += d
     return lv
 fresh()
-T0 = (ns["tod_ms"](time.time()) // 30000 - 19) * 30000  # 18 periods ending just now, even first
+T0 = (ns["tod_ms"](time.time()) // 30000 - 9) * 30000  # 18 periods ending just now, even first
 for i in range(10): handle(spectrum(noisy(), t_ms=T0 + i * 15000))
 check("passband slope and bin noise: nothing hot", ENG["spec"][1]["hot"] == [] and ENG["spec"][0]["hot"] == [])
 weak = {b: 8 for b in range(180, 185)}               # +2 dB over 50 Hz at 1800 Hz, odd periods only
