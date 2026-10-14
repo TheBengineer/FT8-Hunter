@@ -273,11 +273,14 @@ def load_worked():
             mm = (re.search(r"<submode:\d+>(\w+)", rec, re.I)
                   or re.search(r"<mode:\d+>(\w+)", rec, re.I))
             band_ = mb.group(1).lower() if mb else band_of(float(mf.group(1)) * 1e6) if mf else None
-            mt = (re.search(r"<time_on:\d+>(\d{4,6})", rec, re.I)
-                  or re.search(r"<time_off:\d+>(\d{4,6})", rec, re.I))
+            # when the QSO ended (logged): a station repeating its R-report
+            # soon after needs our RR73 again (rr73_again)
+            mt = (re.search(r"<time_off:\d+>(\d{4,6})", rec, re.I)
+                  or re.search(r"<time_on:\d+>(\d{4,6})", rec, re.I))
+            dt_ = re.search(r"<qso_date_off:\d+>(\d{8})", rec, re.I) if mt and "time_off" in mt.group(0) else None
             ts = None
             if md and mt:
-                ts = datetime.datetime.strptime(md.group(1) + mt.group(1)[:4], "%Y%m%d%H%M").replace(
+                ts = datetime.datetime.strptime((dt_ or md).group(1) + mt.group(1)[:4], "%Y%m%d%H%M").replace(
                     tzinfo=datetime.timezone.utc).timestamp()
             key = (mc.group(1).upper(), band_, mm.group(1).upper() if mm else None)
             if ts and time.time() - ts < 86400:
@@ -325,10 +328,12 @@ ENG = {"holds": {}, "held": {}, "callers": deque(maxlen=20), "parity": {0: 0, 1:
        "noise_hist": deque(maxlen=40),  # per-period noise estimates (dB)
        "spec_pending": deque(maxlen=20),  # spectra waiting for their decodes
        "spec_log": deque(maxlen=20),      # evaluated spectra, for /api/debug/spectrum
+       "spec_hist": deque(maxlen=60),     # recent spectra relative to their own floor: waterfall + weak signals
        "qrm_first": None,
        "tx_iv": deque(maxlen=50),          # our transmissions [on, off] (epoch s)
        "qrm_until": 0, "qrm_n": 0, "qrm_why": "",
        "active": {},    # base call -> last time heard sending to someone (0 = signed off)
+       "rr73_again": {},  # base call -> RR73s re-sent after the QSO was logged
        "calls_to": {}}  # base call -> {caller base call: last time}: their pileup
 
 state["ws_id"] = "WSJT-X"   # learned from WS broadcasts when heard
@@ -520,7 +525,7 @@ def set_decparams(msg, params):
     d.pop(msg, None)
     d[msg] = params
     ENG["occ"].append({"t": time.time(), "tm": params["t_ms"], "par": parity(params["t_ms"]),
-                       "df": params["df"]})
+                       "df": params["df"], "snr": params.get("snr"), "msg": msg})
     if len(d) > 500:
         state["decparams"] = dict(list(d.items())[-300:])
 
@@ -715,7 +720,7 @@ def new_slot():
     for k in ("cq", "answering", "decparams"):
         state[k].clear()
     state["msgs"].clear()
-    for k in ("callers", "occ", "noise_hist", "spec_pending"):
+    for k in ("callers", "occ", "noise_hist", "spec_pending", "spec_hist"):
         ENG[k].clear()
     for k in ("spec", "active", "calls_to"):
         ENG[k].clear()
@@ -811,13 +816,109 @@ def handle_spectrum(data, off):
     ENG["noise_hist"].append(p10)
     hist = sorted(ENG["noise_hist"])
     noise = hist[len(hist) // 4]
-    hot = [f for f, d in zip(freqs, db) if d > noise + 8]
     now, par = time.time(), int(t_ms // max(tr_ms, 1)) % 2
-    ENG["spec"][par] = {"t": now, "bin": bin_hz, "hot": hot, "noise": noise}
+    # each bin relative to this period's own floor, so the waterfall and the
+    # weak-signal test don't care about band noise or gain changes
+    ENG["spec_hist"].append({"t": now, "t_ms": t_ms, "tr_ms": tr_ms, "par": par, "start": start,
+                             "bin": bin_hz, "rel": [d - p10 for d in db]})
+    ENG["spec"][par] = {"t": now, "bin": bin_hz, "hot": weak_hot(par, now), "noise": noise}
     ENG["spec_pending"].append({"t": now, "t_ms": t_ms, "tr_ms": tr_ms, "par": par, "bin": bin_hz,
                                 "freqs": freqs, "db": db, "noise": noise,
                                 "warm": len(ENG["noise_hist"]) >= 8})
     check_qrm(now)
+
+def spec_baseline(tr_ms, nbins):
+    """Each bin's usual quiet level (relative to the period floor): a low
+    percentile over recent periods of both parities. It holds the receiver's
+    passband slope and steady birdies; stations come and go, so they don't
+    pull it up. None until enough periods are in."""
+    rows = [h["rel"] for h in list(ENG["spec_hist"]) if h["tr_ms"] == tr_ms and len(h["rel"]) == nbins]
+    if len(rows) < 8:
+        return None
+    k = len(rows) // 4
+    return [sorted(col)[k] for col in zip(*rows)]
+
+def spec_excess(par, now, n=4):
+    """(latest, average) excess over the baseline in dB per bin, for the last
+    n spectra of parity `par` (3 minutes at most), with their bin layout."""
+    hist = [h for h in list(ENG["spec_hist"]) if h["par"] == par and now - h["t"] < 180]
+    if not hist:
+        return None
+    last = hist[-1]
+    hist = [h for h in hist[-n:] if h["tr_ms"] == last["tr_ms"] and len(h["rel"]) == len(last["rel"])]
+    base = spec_baseline(last["tr_ms"], len(last["rel"]))
+    exs = [[r - b for r, b in zip(h["rel"], base or [0.0] * len(h["rel"]))] for h in hist]
+    avg = [sum(c) / len(c) for c in zip(*exs)]
+    return exs[-1], avg, last["start"], last["bin"], base is not None
+
+WEAK_DB, NEW_DB, STRONG_DB = 1.2, 3.0, 8.0  # see weak_hot
+def weak_hot(par, now):
+    """Bins with someone transmitting on parity `par`, decodable or not.
+    Bin noise is ~0.5 dB about its baseline, so a run of 3+ bins (30 Hz)
+    that is up 1.2 dB on average over the last periods, or 3 dB in the
+    latest, is a signal (a -20 dB FT8 signal is ~+2 dB); so is any single
+    bin 8 dB up. Catches stations too weak to decode here who would still
+    be on top of us at the far end."""
+    ex = spec_excess(par, now)
+    if not ex:
+        return []
+    last, avg, start, bin_hz, learned = ex
+    if not learned:  # the passband slope would look like signals: strong ones only
+        return [start + i * bin_hz for i, l in enumerate(last) if l >= STRONG_DB and 200 <= start + i * bin_hz < 3000]
+    hot, run = [], []
+    for i, (l, a) in enumerate(zip(last, avg)):
+        if l >= NEW_DB or a >= WEAK_DB:
+            run.append(i)
+            continue
+        if len(run) >= 3:
+            hot += run
+        run = []
+    if len(run) >= 3:
+        hot += run
+    hot = set(hot) | {i for i, l in enumerate(last) if l >= STRONG_DB}
+    return [start + i * bin_hz for i in sorted(hot) if 200 <= start + i * bin_hz < 3000]
+
+def merged(iv):
+    """Sorted, overlapping [lo, hi) intervals joined."""
+    out = []
+    for a, b in sorted(iv):
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return out
+
+def waterfall(rows=40):
+    """The last `rows` T/R periods for the web UI, newest first: each bin's
+    excess over its usual quiet level (byte = 20 + 4 * dB, as hex), or a
+    gap marked as our transmission or no data; the decodes in them; what
+    the offset picker counts as occupied on each parity; and our offsets."""
+    now = time.time()
+    tr = int(period() * 1000)
+    by_t = {h["t_ms"]: h for h in list(ENG["spec_hist"]) if h["tr_ms"] == tr}
+    nb = len(next(iter(by_t.values()))["rel"]) if by_t else 0
+    base = (spec_baseline(tr, nb) or [0.0] * nb) if nb else []
+    last = (tod_ms(now) // tr - 1) * tr  # the newest period that has ended
+    out = []
+    for k in range(rows):
+        t = (last - k * tr) % 86400000
+        h = by_t.get(t)
+        if h:
+            ex = bytes(max(0, min(255, round(20 + 4 * (r - b)))) for r, b in zip(h["rel"], base))
+            out.append({"t_ms": t, "par": h["par"], "ex": ex.hex()})
+        else:
+            out.append({"t_ms": t, "par": int(t // tr) % 2, "tx": overlaps_tx(t, tr, 0)})
+    ts = {r["t_ms"] for r in out}
+    decs = [{"tm": o["tm"], "df": o["df"], "snr": o.get("snr"), "msg": o.get("msg", "")}
+            for o in list(ENG["occ"]) if o.get("tm") in ts]
+    h0 = next(iter(by_t.values()), None)
+    cfg, sug = state["config"], ENG.get("suggest", {})
+    return {"tr_ms": tr, "bw": bw(), "start": h0["start"] if h0 else 0, "bin": h0["bin"] if h0 else 10,
+            "rows": out, "decodes": decs,
+            "occupied": {p: merged(occupied(p, now)) for p in (0, 1)},
+            "tx_df": state["udp"].get("tx_df"), "tx_par": sug.get("par"), "suggest": sug.get("df"),
+            "df_lo": cfg.get("df_lo", 1300), "df_hi": cfg.get("df_hi", 2700),
+            "learned": len(by_t) >= 8, "ws_hunter": has_ws_hunter()}
 
 def check_qrm(now=None):
     """Busy-frequency check for spectra whose decodes are in by now (decoding
@@ -857,12 +958,23 @@ def check_qrm(now=None):
             if ENG["cq_until"]:
                 ENG["cq_until"] = 0; halt_ws()
 
+def rr73_again(call, rest, now):
+    """A station we just logged repeating its R-report never copied our RR73:
+    without another one the QSO is missing from their log. Worth answering
+    within 4 minutes of the contact, at most 3 more times."""
+    if not (rest and re.fullmatch(r"R[+-]\d\d", rest[-1])):
+        return False
+    here = (band(), mode())
+    ts = max((t for (c, b, m), t in list(state["worked"].items()) if (b, m) == here and same_call(c, call)),
+             default=0)
+    return now - (ts or 0) < 240 and ENG["rr73_again"].get(base_call(call), 0) < 3
+
 def fresh_callers(now=None):
     """Queued callers still worth answering, oldest first. Drops anyone worked,
     held, or not heard for 6 periods (they have given up)."""
     now = now or time.time()
     for c in list(ENG["callers"]):
-        if is_worked(c["call"]) or on_hold(c["call"]) or now - c["t"] > cyc(6):
+        if (is_worked(c["call"]) and not c.get("again")) or on_hold(c["call"]) or now - c["t"] > cyc(6):
             ENG["callers"].remove(c)
     return list(ENG["callers"])
 
@@ -920,7 +1032,7 @@ def engine_tick():
         return at("stopped")
     t = state["target"]
     cfg = state["config"]
-    if t and is_worked(t["call"]):  # logged (seen in ADIF) without a QSO Logged packet
+    if t and is_worked(t["call"]) and not t.get("again"):  # logged (seen in ADIF) without a QSO Logged packet
         log(f"{t['call']} is in the log, releasing target")
         state["target"] = t = None
     if t:
@@ -950,6 +1062,13 @@ def engine_tick():
     while waiting:
         c = waiting.pop(0)
         ENG["callers"].remove(c)
+        if c.get("again"):
+            if acquire(c["call"], "", c["msg"], tries=1, why="RR73 again"):
+                state["target"]["again"] = True
+                k = base_call(c["call"])
+                ENG["rr73_again"][k] = ENG["rr73_again"].get(k, 0) + 1
+                return at("caller", c["call"] + " (RR73 again)")
+            continue
         if acquire(c["call"], "", c["msg"], tries=cfg.get("cq_tries", 3), why="called us"):
             ENG["busy"] += 1
             more = f" ({len(waiting)} more waiting)" if waiting else ""
@@ -1117,6 +1236,7 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
         tgt = (t or {}).get("call", "")
         to, frm, rest = addressing(msg)
         to_me = is_me(to)
+        again = False
         # even/odd sequence: decode time falls just after the 15s TX slot
         if t_ms is not None:
             ENG["parity"][parity(t_ms)] += 1
@@ -1162,7 +1282,7 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                 t["done"] = t.get("done") or signoff
                 t["left"] = 2 if signoff else 99
                 log(f"reply: {msg}")
-            elif state["running"] and not signoff and not is_worked(frm):
+            elif state["running"] and not signoff and (not is_worked(frm) or (again := rr73_again(frm, rest, now))):
                 # A hold stops us calling them, not them answering us: a reply
                 # from a held station is a late answer to our call. Lift the
                 # hold and work them next.
@@ -1175,8 +1295,11 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                 if q:
                     q.update(msg=msg, t=now)
                 else:
-                    entry = {"call": frm, "msg": msg, "t": now}
-                    if late:
+                    entry = {"call": frm, "msg": msg, "t": now, "again": again}
+                    if again:
+                        ENG["callers"].appendleft(entry)
+                        log(f"{frm} didn't copy our RR73, sending it again: {msg}")
+                    elif late:
                         ENG["callers"].appendleft(entry)
                         log(f"late reply, answering next: {msg}")
                     else:
@@ -1227,6 +1350,21 @@ def rx_level(now):
     snrs = [m["snr"] for m in list(state["msgs"]) if now - m["seen"] < cyc(1) + 3]
     return {"best": max(snrs) if snrs else None, "n": len(snrs)}
 
+def manual_target(now):
+    """Operating WS by hand (no hunter target): its DX Call is the target,
+    while Enable Tx is on or for a minute after our last transmission, so a
+    finished QSO's DX Call left in WS doesn't stay on the globe. A QSO once
+    they have sent us anything in the last two minutes."""
+    u = state["udp"]
+    dx = (u.get("dxcall") or "").strip()
+    iv = ENG["tx_iv"]
+    last_tx = (iv[-1][1] or now) if iv else 0
+    if not dx or not (u.get("tx_enabled") or now - last_tx < 60):
+        return None
+    p = PAIRS.get(frozenset((base_call(dx), base_call(state["mycall"]))))
+    resp = bool(p) and same_call(p["a"], dx) and now - p["t"] < 120
+    return {"call": dx, "ll": locate(dx), "resp": resp}
+
 def globe():
     """Positions for the globe: me, today's contacts, the target, and recent
     traffic between other stations (both ends located)."""
@@ -1244,7 +1382,7 @@ def globe():
     # a QSO for the globe once they have answered, or from the start when they
     # called us: either way they are working us directly
     tgt = {"call": t["call"], "ll": locate(t["call"]),
-           "resp": bool(t.get("resp")) or t.get("why") == "called us"} if t else None
+           "resp": bool(t.get("resp")) or t.get("why") == "called us"} if t else manual_target(now)
     # Others answering us while we work someone: the caller queue, without
     # pruning it (that is the engine's job), shown only when more than one
     # station is answering us at once.
@@ -1324,6 +1462,8 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(b); return
         if self.path == "/api/globe":
             return self._json(globe())
+        if self.path == "/api/waterfall":
+            return self._json(waterfall())
         if self.path == "/api/debug/spectrum":
             return self._json({"noise_hist": [round(x, 1) for x in list(ENG["noise_hist"])],
                                "spectra": list(ENG["spec_log"])})
@@ -1448,6 +1588,16 @@ class H(BaseHTTPRequestHandler):
                 log(f"TX power set to {w} W")
             except Exception as e:
                 return self._json({"error": str(e)[:80]}, 502)
+        elif p == "/api/txdf":
+            # manual Tx offset from the waterfall; the auto picker keeps it while it stays clear
+            if not has_ws_hunter():
+                return self._json({"error": "needs the ws-hunter build of WS"}, 409)
+            f = max(200, min(int(body.get("df", 0)), 3000 - bw()))
+            tx, wid = CTX["tx"], state["ws_id"]
+            tx.sendto(pack_set_bool(SET_HOLD_TX_FREQ, wid, True), ws_dest())
+            tx.sendto(pack_set_u32(SET_TX_DF, wid, f), ws_dest())
+            state["udp"]["tx_df"] = f
+            log(f"Tx offset set to {f} Hz from the waterfall")
         elif p == "/api/config":
             state["config"].update({k: v for k, v in body.items() if k in state["config"]})
             c = state["config"]  # keep the offset range usable: 200 Hz up, room for a signal

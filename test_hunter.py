@@ -37,7 +37,7 @@ def fresh():
     ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0)
     ENG["occ"].clear(); ENG["spec"].clear(); ENG["noise_hist"].clear(); st["udp"].pop("tx_df", None)
     ENG["spec_pending"].clear(); ENG["qrm_first"] = None; ENG["tx_iv"].clear()
-    ENG["active"].clear(); ENG["calls_to"].clear()
+    ENG["active"].clear(); ENG["calls_to"].clear(); ENG["spec_hist"].clear(); ENG["rr73_again"].clear()
     CTX["tx"].sent.clear()
 
 def ps(s):
@@ -391,6 +391,52 @@ check("spectrum of a period we are transmitting in is ignored", not ENG["spec_pe
 ns["note_tx"](False); ENG["tx_iv"].clear()
 st["udp"]["revision"] = ""
 
+# --- weak signals: a learned per-bin baseline, so a passband slope isn't a
+# signal but a persistent -20 dB station (~+2 dB in its bins) is
+import random
+random.seed(1)
+def noisy(extra=None):
+    lv = [int(40 + 16 * (300 - i) / 300 + random.gauss(0, 2)) for i in range(300)]  # 4 dB slope, 0.5 dB noise
+    for b, d in (extra or {}).items():
+        lv[b] += d
+    return lv
+fresh()
+T0 = (ns["tod_ms"](time.time()) // 30000 - 19) * 30000  # 18 periods ending just now, even first
+for i in range(10): handle(spectrum(noisy(), t_ms=T0 + i * 15000))
+check("passband slope and bin noise: nothing hot", ENG["spec"][1]["hot"] == [] and ENG["spec"][0]["hot"] == [])
+weak = {b: 8 for b in range(180, 185)}               # +2 dB over 50 Hz at 1800 Hz, odd periods only
+for i in range(10, 18): handle(spectrum(noisy(weak if i % 2 else None), t_ms=T0 + i * 15000))
+hot = ENG["spec"][1]["hot"]
+check("persistent weak signal found on its parity", hot and min(hot) >= 1780 and max(hot) <= 1860)
+check("...and not on the other parity", ENG["spec"][0]["hot"] == [])
+check("picker avoids the weak signal", not 1750 < pick(1, current=1800) < 1850)
+wf = ns["waterfall"]()
+row = next(r for r in wf["rows"] if "ex" in r and r["par"] == 1)
+ex = bytes.fromhex(row["ex"])
+check("waterfall rows carry excess over the baseline",
+      len(wf["rows"]) == 40 and len(ex) == 300 and (ex[182] - 20) / 4 > 1 and abs((ex[100] - 20) / 4) < 2)
+check("waterfall shows the weak signal as occupied", any(a <= 1800 < b for a, b in wf["occupied"][1]))
+
+# --- a station we just logged that repeats its R-report never got our RR73
+fresh(); st["running"] = True
+ns["add_worked"]("KE0N")
+dec("<KR4MZM/AG> KE0N R-15", t_ms=15000)
+check("logged station repeating R-report is queued for RR73 again",
+      [c["call"] for c in ENG["callers"]] == ["KE0N"] and ENG["callers"][0]["again"])
+ns["engine_tick"]()
+check("...and answered once, despite being in the log",
+      st["target"] and st["target"]["call"] == "KE0N" and st["target"].get("again") and REPLY in CTX["tx"].sent)
+ns["engine_tick"]()
+check("...without being released as 'in the log' first", st["target"] and st["target"]["call"] == "KE0N")
+fresh(); ns["add_worked"]("W1OLD"); st["worked"][("W1OLD", ns["band"](), ns["mode"]())] -= 600
+dec("<KR4MZM/AG> W1OLD R-10")
+check("not for a contact logged long ago", not ENG["callers"])
+fresh(); ns["add_worked"]("W1GRD"); dec("KR4MZM/AG W1GRD EM10")
+check("not for a fresh call (grid) from a logged station", not ENG["callers"])
+fresh(); ns["add_worked"]("K1REP"); ENG["rr73_again"]["K1REP"] = 3
+dec("KR4MZM/AG K1REP R-05")
+check("at most 3 extra RR73s", not ENG["callers"])
+
 # --- real UDP packets through udp_listener
 ns["udp_port"] = 22999; st["fwd_port"] = 22998
 time.sleep = real_sleep
@@ -488,6 +534,17 @@ check("globe: others answering us while in a QSO are listed (not the target)",
 st["target"] = None; ENG["callers"].pop()
 check("globe: a single station answering us is not shown as 'also answering'", ns["globe"]()["callers"] == [])
 ENG["callers"].clear()
+# operating WS by hand: its DX Call is the target while we are transmitting to it
+st["udp"].update(dxcall="DL1ABC", tx_enabled=True); ns["note_grid"]("DL1ABC", "JO62")
+g = ns["globe"]()["target"]
+check("globe: manual operation shows WS's DX Call as the target", g and g["call"] == "DL1ABC" and g["ll"] and not g["resp"])
+dec("KR4MZM/AG DL1ABC -07")
+check("globe: ...a QSO once they answer us", ns["globe"]()["target"]["resp"])
+st["udp"]["tx_enabled"] = False
+check("globe: ...and gone once Tx is off and we haven't transmitted for a minute", ns["globe"]()["target"] is None)
+ENG["tx_iv"].append([time.time() - 20, time.time() - 5])
+check("globe: ...but kept just after our last transmission", ns["globe"]()["target"]["call"] == "DL1ABC")
+ENG["tx_iv"].clear(); st["udp"].update(dxcall="", tx_enabled=False)
 
 # --- worked / ignored list in /api/state: time, band, mode, kind
 import json, urllib.request

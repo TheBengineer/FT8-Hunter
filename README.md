@@ -7,7 +7,9 @@ is in; all timing rules scale with the mode's period.
 Each T/R period (15 s FT8, 7.5 s FT4, 3.75 s FT2) it does the first of these that applies:
 
 1. Answer stations calling you — when several answer your CQ it works them all,
-   in the order they called, moving to the next as soon as you send RR73.
+   in the order they called, moving to the next as soon as you send RR73. A
+   station that repeats its R-report after you logged it never copied your RR73,
+   so it gets another one (up to 3, within 4 minutes) to complete its log too.
 2. Pounce on an activator (CQ POTA / SOTA / WWFF / IOTA / BOTA / LOTA).
 3. Answer any other CQ.
 4. Tail-end a station signing off.
@@ -65,7 +67,10 @@ only stop the hunter starting something new.
 \* needs the [ws-hunter](#ws-build-with-hunter-controls) build of WS.
 
 The web UI draws this same flow and lights up the step the hunter is on, with
-the steps it passed marked "no". Each CQ shows why it is or isn't being called
+the steps it passed marked "no". A waterfall (ws-hunter build) shows the last 40
+periods with the decodes boxed, so undecoded signals stand out, and bars marking
+which offsets the picker counts as taken on the even and odd periods; tap a spot
+to see who is there and move your Tx offset to it. Each CQ shows why it is or isn't being called
 (on hold, in QSO, pileup size, stale, weak, region/DX-only), and calls on hold
 are underlined wherever they appear. A spinning globe draws today's contacts as
 arcs from your station, the current target in bold and other stations' live
@@ -116,6 +121,10 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
 - **Clear offset** (ws-hunter build): before answering or calling CQ it ticks Hold
   Tx Freq and moves to the widest gap on the period it will transmit in, judged
   from recent decodes and the spectrum; it stays put while that spot is clear.
+  The spectrum test compares each 10 Hz bin with its usual quiet level (learned
+  over the last few minutes, so the receiver's passband slope doesn't count), so
+  a station too weak to decode here, about -20 dB and up, still marks its spot
+  taken: it may be strong at the far end.
   It never picks below the lowest offset in Settings (default 1300 Hz, for rigs
   that feed back on low audio tones). Settings are saved in `hunter_config.json`.
 - **Someone else on frequency** (ws-hunter build): wide undecoded energy in the

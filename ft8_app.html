@@ -76,6 +76,12 @@ details summary{font-weight:700;padding:4px}
 <div class="meter" id="sRow" style="display:none"><span class="small">S-meter</span><div class="bar"><i id="mS" style="background:#2ecc71"></i></div><span class="mono small" id="vS">–</span></div>
 <div class="small" id="rxBest" style="margin-top:2px"></div></div>
 <div class="row" style="margin-top:8px"><button id="bWake" class="mini" style="flex:1;padding:8px;background:#3a4552">📱 Keep screen awake: off</button></div></div>
+<div class="card" data-id="wf"><h2>🌊 Waterfall <span class="small" id="wfsum"></span></h2>
+<canvas id="wf" style="width:100%;display:block;cursor:crosshair"></canvas>
+<div class="small" id="wfinfo" style="margin-top:4px;min-height:2.4em">Tap a spot to see who is there and move your Tx offset to it.</div>
+<div class="row" id="wfact" style="display:none;margin-top:4px"><button class="mini" id="wfGo" style="flex:1;padding:8px"></button></div>
+<div class="small" style="margin-top:4px">One row per period, newest on top, colour = dB above the usual noise in that spot.
+<span style="color:#cfd8e3">▭ decoded</span> · <span style="color:#ff6b6b">┆ our Tx</span> · bars: <span style="color:#3fae6a">clear</span> / <span style="color:#d04a4a">taken</span> per period (even, odd), ▲ the hunter's pick · dim = outside the auto range</div></div>
 <div class="card" data-id="globe"><h2>🌍 Globe <span class="small" id="gsum"></span></h2>
 <canvas id="globe" style="width:100%;aspect-ratio:1;display:block;touch-action:none;cursor:grab"></canvas>
 <div class="small" style="margin-top:4px"><span style="color:#c061ff">━ calling</span> · <span style="color:#ff7a3d">━ QSO</span> · <span style="color:#ffd54a">━ also answering</span> · <span style="color:#2ecc71">━ worked</span> · <span style="color:#7fa8ff99">━ traffic</span> · drag to turn, scroll or pinch to zoom; it drifts back to you</div></div>
@@ -239,6 +245,60 @@ const txEl=$('tx');if(txEl){txEl.textContent=tx?'🔴 TX':'🟢 RX';txEl.style.c
 const c=$('ctxt');if(c)c.textContent=`${window._mode||'FT8'} · ${pos.toFixed(1)}s / ${per}s · ${pos<per*0.8?'receiving':pos<per*0.87?'decoding':'TX window'}`},200);
 </script>
 <script>
+// Waterfall from ws-hunter's per-period spectra: excess over each bin's usual
+// noise, the decodes in each period, and what the offset picker counts as taken.
+(()=>{
+const cv=$('wf'),ctx=cv.getContext('2d'),F0=200,F1=3000,G=18,TOP=14,RH=5,SH=11;
+let W={rows:[]},sel=null;
+const STOPS=[[-1,[11,22,34]],[.8,[16,38,61]],[2,[31,111,178]],[4,[33,181,201]],[8,[233,213,60]],[14,[240,138,36]],[22,[255,59,59]]];
+function col(e){if(e<=STOPS[0][0])return STOPS[0][1];for(let i=1;i<STOPS.length;i++){const[a,ca]=STOPS[i-1],[b,cb]=STOPS[i];
+ if(e<=b){const k=(e-a)/(b-a);return ca.map((v,j)=>Math.round(v+(cb[j]-v)*k))}}return STOPS[STOPS.length-1][1]}
+const parName=p=>p?'odd':'even';
+function geom(){const w=cv.clientWidth||300,n=(W.rows||[]).length||40;return{w,n,x:f=>G+(f-F0)/(F1-F0)*(w-G),f:x=>F0+(x-G)/(w-G)*(F1-F0),
+ y0:TOP,yS:TOP+n*RH+5,h:TOP+n*RH+5+2*SH+4+4}}
+function draw(){const g=geom(),dpr=devicePixelRatio||1;
+ if(cv.width!==Math.round(g.w*dpr)||cv.height!==Math.round(g.h*dpr)){cv.width=g.w*dpr;cv.height=g.h*dpr;cv.style.height=g.h+'px'}
+ ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle='#0f1419';ctx.fillRect(0,0,g.w,g.h);
+ ctx.font='9px system-ui';ctx.fillStyle='#9ab';ctx.textAlign='center';
+ for(let f=500;f<F1;f+=500){const x=g.x(f);ctx.fillText(f,x,9);ctx.fillRect(x,11,1,3)}
+ const bin=W.bin||10,st=W.start||0,bw=W.bw||50,idx={};
+ (W.rows||[]).forEach((r,i)=>{const y=g.y0+i*RH;idx[r.t_ms]=i;
+  ctx.fillStyle=r.ex?(r.par?'#b8860b':'#2a6cb6'):r.tx?'#c0392b':'#26303c';ctx.fillRect(2,y,G-6,RH-1);
+  if(!r.ex){ctx.fillStyle=r.tx?'#2a1515':'#141b23';ctx.fillRect(G,y,g.w-G,RH);return}
+  for(let b=0;b*2<r.ex.length;b++){const f=st+b*bin;if(f+bin<=F0||f>=F1)continue;
+   const c=col((parseInt(r.ex.substr(b*2,2),16)-20)/4);ctx.fillStyle=`rgb(${c})`;
+   const xa=g.x(Math.max(f,F0));ctx.fillRect(xa,y,g.x(Math.min(f+bin,F1))-xa+.5,RH)}});
+ ctx.fillStyle='rgba(15,20,25,.55)';const lo=g.x(W.df_lo||F0),hi=g.x(W.df_hi||F1),yb=g.y0+g.n*RH;
+ ctx.fillRect(G,g.y0,lo-G,yb-g.y0);ctx.fillRect(hi,g.y0,g.w-hi,yb-g.y0);
+ ctx.strokeStyle='rgba(230,236,243,.75)';ctx.lineWidth=1;
+ (W.decodes||[]).forEach(d=>{const i=idx[d.tm];if(i==null)return;ctx.strokeRect(g.x(d.df)+.5,g.y0+i*RH+.5,g.x(d.df+bw)-g.x(d.df)-1,RH-1)});
+ if(W.tx_df!=null){ctx.strokeStyle='#ff6b6b';ctx.setLineDash([3,3]);
+  [W.tx_df,W.tx_df+bw].forEach(f=>{const x=Math.round(g.x(f))+.5;ctx.beginPath();ctx.moveTo(x,g.y0);ctx.lineTo(x,yb);ctx.stroke()});ctx.setLineDash([])}
+ [0,1].forEach(p=>{const y=g.yS+p*(SH+4);ctx.fillStyle='#9ab';ctx.textAlign='left';ctx.fillText(p?'O':'E',4,y+SH-2);
+  ctx.fillStyle='#26303c';ctx.fillRect(G,y,g.w-G,SH);ctx.fillStyle='#1f5d3a';ctx.fillRect(lo,y,hi-lo,SH);
+  ctx.fillStyle='#d04a4a';((W.occupied||{})[p]||[]).forEach(([a,b])=>{a=Math.max(a,F0);b=Math.min(b,F1);if(b>a)ctx.fillRect(g.x(a),y,g.x(b)-g.x(a),SH)});
+  if(W.tx_df!=null&&W.tx_par===p){ctx.strokeStyle='#fff';ctx.strokeRect(g.x(W.tx_df)+.5,y+.5,g.x(W.tx_df+bw)-g.x(W.tx_df)-1,SH-1)}
+  if(W.suggest!=null&&W.tx_par===p){const x=g.x(W.suggest+bw/2);ctx.fillStyle='#2ecc71';ctx.beginPath();ctx.moveTo(x,y+SH+3);ctx.lineTo(x-5,y+SH+9);ctx.lineTo(x+5,y+SH+9);ctx.fill()}});
+ if(sel!=null){const x=Math.round(g.x(sel))+.5;ctx.strokeStyle='#f1c40f';ctx.beginPath();ctx.moveTo(x,g.y0);ctx.lineTo(x,g.yS+2*SH+4);ctx.stroke()}}
+function taken(p,a,b){return((W.occupied||{})[p]||[]).some(([x,y])=>a<y&&b>x)}
+function info(){if(sel==null)return;const bw=W.bw||50,a=sel,b=sel+bw;
+ const who=[...new Set((W.decodes||[]).filter(d=>d.df<b+20&&d.df+bw>a-20).map(d=>{const w=(d.msg||'').split(' ');return(w[0]==='CQ'?w[w.length>3?2:1]:w[1]||'').replace(/[<>]/g,'')}).filter(Boolean))];
+ const pars=[0,1].map(p=>`${parName(p)}: <b class="${taken(p,a,b)?'bad':'good'}">${taken(p,a,b)?'taken':'clear'}</b>`).join(' · ');
+ const low=sel<(W.df_lo||0)?' · below your lowest offset: the auto picker will move it back up':'';
+ $('wfinfo').innerHTML=`<b>${sel} Hz</b> · ${pars}${who.length?' · heard here: '+who.slice(0,6).join(', '):''}${low}`;
+ const go=$('wfact');go.style.display=W.ws_hunter?'flex':'none';$('wfGo').textContent=`Move Tx to ${sel} Hz`}
+cv.addEventListener('click',e=>{const r=cv.getBoundingClientRect(),g=geom(),f=g.f(e.clientX-r.left);
+ if(f<F0)return;sel=Math.max(F0,Math.min(F1-(W.bw||50),Math.round((f-(W.bw||50)/2)/10)*10));info();draw()});
+$('wfGo').onclick=async()=>{const r=await api('/api/txdf',{df:sel});if(r.error)alert(r.error);else{W.tx_df=sel;draw();poll()}};
+async function poll(){if(document.visibilityState!=='visible')return;
+ try{W=await (await fetch('/api/waterfall')).json();
+  const n=(W.rows||[]).filter(r=>r.ex).length;
+  $('wfsum').textContent=!W.ws_hunter?'· needs the ws-hunter build':!n?'· waiting for spectra':(W.learned?'':'· learning the noise')+` · Tx ${W.tx_df??'?'} Hz`+(W.tx_par!=null?' '+parName(W.tx_par):'');
+  draw();info()}catch(e){}}
+poll();setInterval(poll,4000);addEventListener('resize',draw);document.addEventListener('visibilitychange',poll);
+})();
+</script>
+<script>
 // Card layout: ▲ / ▼ move a card within its column, ◀ / ▶ to the next column,
 // or drag the ⠿ grip (mouse or touch) anywhere. Each column count (1, 2, 3)
 // keeps its own layout, saved per browser.
@@ -246,8 +306,8 @@ const c=$('ctxt');if(c)c.textContent=`${window._mode||'FT8'} · ${pos.toFixed(1)
 const box=document.querySelector('.cards'),KEY='cardCols';
 const all=[...box.querySelectorAll(':scope>.card')],by=Object.fromEntries(all.map(c=>[c.dataset.id,c]));
 const DEF={1:[all.map(c=>c.dataset.id)],
- 2:[['status','globe','flow','dx','manual'],['cq','seq','ans','msgs','log','worked','settings']],
- 3:[['status','globe','flow','dx'],['cq','seq','ans','msgs'],['manual','log','worked','settings']]};
+ 2:[['status','wf','globe','flow','dx','manual'],['cq','seq','ans','msgs','log','worked','settings']],
+ 3:[['status','wf','globe','flow','dx'],['cq','seq','ans','msgs'],['manual','log','worked','settings']]};
 let saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||'{}')||{}}catch(e){}
 const ncols=()=>innerWidth>=1350?3:innerWidth>=900?2:1;
 let n=0;
