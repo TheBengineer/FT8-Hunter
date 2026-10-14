@@ -15,7 +15,7 @@ state = {
     "worked": {}, "log": deque(maxlen=50),
     "msgs": deque(maxlen=80), "mytx": deque(maxlen=20),
     "config": {"max_cycles": 3, "cooldown": 2, "cq_only": True,
-               "cq_tries": 3, "tail_tries": 2, "hold_min": 10,
+               "cq_tries": 3, "tail_tries": 2, "qso_tries": 7, "hold_min": 10,
                "idle_every": 4, "idle_secs": 60, "special_first": True,
                "call_cq": True, "cq_secs": 120, "cq_first": False,
                "auto_df": True, "df_lo": 1300, "df_hi": 2700,  # df_lo: rig feeds back below 1300 Hz
@@ -1053,6 +1053,9 @@ def engine_tick():
             if t.get("done"):
                 add_worked(t["call"])
                 log(f"QSO with {t['call']} complete")
+            elif t.get("resp"):
+                log(f"no answer from {t['call']} to {state['config'].get('qso_tries', 7)} replies, "
+                    f"giving up, holding {hold(t['call'])}m")
             else:
                 log(f"timeout, holding {t['call']} {hold(t['call'])}m")
             state["target"] = None
@@ -1289,7 +1292,9 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                 # sign-off we only owe a 73, so release the target soon after.
                 t["resp"] = True
                 t["done"] = t.get("done") or signoff
-                t["left"] = 2 if signoff else 99
+                # each reply buys qso_tries more of our transmissions (+1 period
+                # to decode their answer to the last); silence after that: give up
+                t["left"] = 2 if signoff else state["config"].get("qso_tries", 7) * 2 + 1
                 log(f"reply: {msg}")
             elif state["running"] and not signoff and (not is_worked(frm) or (again := rr73_again(frm, rest, now))):
                 # A hold stops us calling them, not them answering us: a reply

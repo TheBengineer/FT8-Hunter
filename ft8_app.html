@@ -108,6 +108,7 @@ details summary{font-weight:700;padding:4px}
 <div class="card" data-id="settings"><details><summary>⚙️ Settings</summary>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">CQ tries</span><input id="sCq" type="number" min="1" max="10" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Tail-end tries</span><input id="sTail" type="number" min="1" max="10" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Our transmissions in a QSO without hearing back before giving up">Replies without an answer</span><input id="sQso" type="number" min="1" max="20" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Hold (min)</span><input id="sHold" type="number" min="1" max="60" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Listen every N idle</span><input id="sIdleN" type="number" min="1" max="20" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Listen secs</span><input id="sIdleS" type="number" min="15" max="300" step="15" style="max-width:90px;margin-top:0"></div>
@@ -233,11 +234,11 @@ function rigView(r,rx){
 $('bC').onclick=()=>api('/api/call',{call:$('mc').value,grid:$('mg').value}).then(tick);
 let sLoaded=false;
 function fillSettings(c){if(sLoaded)return;sLoaded=true;
-$('sCq').value=c.cq_tries;$('sTail').value=c.tail_tries;$('sHold').value=c.hold_min;
+$('sCq').value=c.cq_tries;$('sTail').value=c.tail_tries;$('sQso').value=c.qso_tries;$('sHold').value=c.hold_min;
 $('sIdleN').value=c.idle_every;$('sIdleS').value=c.idle_secs;$('sSpec').checked=c.special_first!==false;
 $('sCallCq').checked=c.call_cq!==false;$('sCqSecs').value=c.cq_secs;
 $('sAutoDf').checked=c.auto_df!==false;$('sDfLo').value=c.df_lo;$('sQrm').checked=c.qrm_detect!==false;$('sMinSnr').value=c.min_snr}
-$('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,hold_min:+$('sHold').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value,special_first:$('sSpec').checked,call_cq:$('sCallCq').checked,cq_secs:+$('sCqSecs').value,auto_df:$('sAutoDf').checked,df_lo:+$('sDfLo').value,qrm_detect:$('sQrm').checked,min_snr:+$('sMinSnr').value},'POST');sLoaded=false;tick()};
+$('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,qso_tries:+$('sQso').value,hold_min:+$('sHold').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value,special_first:$('sSpec').checked,call_cq:$('sCallCq').checked,cq_secs:+$('sCqSecs').value,auto_df:$('sAutoDf').checked,df_lo:+$('sDfLo').value,qrm_detect:$('sQrm').checked,min_snr:+$('sMinSnr').value},'POST');sLoaded=false;tick()};
 setInterval(tick,2000);tick();
 // T/R cycle bar (15 s FT8, 7.5 s FT4, 3.75 s FT2) + TX badge, updated locally every 200ms
 setInterval(()=>{const per=window._per||15,t=Date.now()/1000,pos=t%per,pct=pos/per*100;

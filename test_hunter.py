@@ -71,7 +71,7 @@ dec("CQ POTA W1AW FN31", snr=0); ns["engine_tick"]()
 t = st["target"]
 check("CQ POTA station targeted", t and t["call"] == "W1AW" and t["msg"] == "CQ POTA W1AW FN31")
 dec("<KR4MZM/AG> W1AW -10")
-check("reply to hashed /AG call detected", t["resp"] and t["left"] == 99)
+check("reply to hashed /AG call detected", t["resp"] and t["left"] == 15)
 n = len(CTX["tx"].sent); ns["engine_tick"]()
 check("no Reply re-sent once QSO is progressing", len(CTX["tx"].sent) == n)
 dec("KR4MZM/AG <W1AW> RR73")
@@ -105,7 +105,7 @@ dec("KR4MZM/AG W1AA R-08")                       # their R-report: QSO under way
 ns["on_my_tx"]("W1AA KR4MZM/AG RR73")             # we send RR73 (from ALL.TXT)
 check("our RR73 marks the QSO done", st["target"]["done"] and st["target"]["left"] == 2)
 dec("KR4MZM/AG W1AA R-08")                       # they repeat: didn't copy our RR73
-check("their repeat keeps the QSO open", st["target"]["left"] == 99)
+check("their repeat keeps the QSO open", st["target"]["left"] == 15)
 ns["on_my_tx"]("W1AA KR4MZM/AG RR73")
 CTX["tx"].sent.clear(); ns["engine_tick"](); ns["engine_tick"]()
 check("done -> next caller answered without a Halt",
@@ -442,6 +442,30 @@ check("waterfall shows the weak signal as occupied", any(a <= 1800 < b for a, b 
 handle(spectrum(noisy(), t_ms=T0 + 18 * 15000)); handle(spectrum(noisy(), t_ms=T0 + 19 * 15000))
 handle(spectrum(noisy(), t_ms=T0 + 20 * 15000)); handle(spectrum(noisy(), t_ms=T0 + 21 * 15000))
 check("...and free again once it has been gone two cycles", not any(1780 <= f <= 1860 for f in ENG["spec"][1]["hot"]))
+
+# --- a QSO where they stop answering: 7 of our replies without an answer, then give up
+fresh(); st["running"] = True
+dec("CQ K7GONE DN31", snr=-5, t_ms=recent_tm(0)); ns["engine_tick"]()
+dec("KR4MZM/AG K7GONE -12")                        # they answer: QSO under way
+for i in range(14): ns["engine_tick"]()           # 7 of our periods, silence
+check("still in the QSO through 7 unanswered replies", st["target"] and st["target"]["call"] == "K7GONE")
+ns["engine_tick"]()
+check("...then given up and held", st["target"] is None and ns["on_hold"]("K7GONE"))
+fresh(); st["running"] = True
+dec("CQ K7SLOW DN31", snr=-5, t_ms=recent_tm(0)); ns["engine_tick"]()
+dec("KR4MZM/AG K7SLOW -12")
+for i in range(10): ns["engine_tick"]()
+dec("KR4MZM/AG K7SLOW RR73")                       # an answer resets the count
+for i in range(2): ns["engine_tick"]()
+check("their sign-off after 5 unanswered replies still completes the QSO",
+      st["target"] is None and ns["is_worked"]("K7SLOW") and not ns["on_hold"]("K7SLOW"))
+fresh(); st["running"] = True
+dec("CQ K7MORE DN31", snr=-5, t_ms=recent_tm(0)); ns["engine_tick"]()
+dec("KR4MZM/AG K7MORE -12")
+for i in range(10): ns["engine_tick"]()
+dec("KR4MZM/AG K7MORE R-10")
+for i in range(10): ns["engine_tick"]()
+check("each answer buys 7 more replies", st["target"] and st["target"]["call"] == "K7MORE")
 
 # --- a station we just logged that repeats its R-report never got our RR73
 fresh(); st["running"] = True

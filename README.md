@@ -23,8 +23,8 @@ CQs are ranked by chance of a contact: SNR, minus 3 dB for each station already
 calling them, plus 3 if heard last period.
 
 To stay polite it limits retries (counted in transmissions), holds off stations that
-don't answer, stops the moment its target picks someone else, never abandons a QSO
-in progress, only tail-ends sign-offs, skips stations already in a QSO, answers
+don't answer, stops the moment its target picks someone else, gives up on a QSO
+in progress only after 7 replies without an answer (a setting), only tail-ends sign-offs, skips stations already in a QSO, answers
 `CQ DX` only from another continent, transmits on a clear offset instead of on top
 of the station it calls, and backs off when someone else (SSB, CW…) is using the
 frequency.
