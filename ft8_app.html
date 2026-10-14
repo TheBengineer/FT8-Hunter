@@ -108,6 +108,7 @@ details summary{font-weight:700;padding:4px}
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Call CQ when nothing to answer</span><input id="sCallCq" type="checkbox" style="width:auto;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">CQ run secs (then listen)</span><input id="sCqSecs" type="number" min="30" max="600" step="15" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Auto Tx offset (ws-hunter build)</span><input id="sAutoDf" type="checkbox" style="width:auto;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1">Lowest auto Tx offset (Hz)</span><input id="sDfLo" type="number" min="200" max="2400" step="50" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Back off when non-FT8 signals appear</span><input id="sQrm" type="checkbox" style="width:auto;margin-top:0"></div>
 <button id="bSave" style="margin-top:8px">Save</button>
 <button id="bLayout" class="mini" style="margin-top:8px;background:#3a4552">Reset card order</button></details></div>
@@ -221,8 +222,8 @@ function fillSettings(c){if(sLoaded)return;sLoaded=true;
 $('sCq').value=c.cq_tries;$('sTail').value=c.tail_tries;$('sHold').value=c.hold_min;
 $('sIdleN').value=c.idle_every;$('sIdleS').value=c.idle_secs;$('sSpec').checked=c.special_first!==false;
 $('sCallCq').checked=c.call_cq!==false;$('sCqSecs').value=c.cq_secs;
-$('sAutoDf').checked=c.auto_df!==false;$('sQrm').checked=c.qrm_detect!==false;$('sMinSnr').value=c.min_snr}
-$('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,hold_min:+$('sHold').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value,special_first:$('sSpec').checked,call_cq:$('sCallCq').checked,cq_secs:+$('sCqSecs').value,auto_df:$('sAutoDf').checked,qrm_detect:$('sQrm').checked,min_snr:+$('sMinSnr').value},'POST');sLoaded=false;tick()};
+$('sAutoDf').checked=c.auto_df!==false;$('sDfLo').value=c.df_lo;$('sQrm').checked=c.qrm_detect!==false;$('sMinSnr').value=c.min_snr}
+$('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,hold_min:+$('sHold').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value,special_first:$('sSpec').checked,call_cq:$('sCallCq').checked,cq_secs:+$('sCqSecs').value,auto_df:$('sAutoDf').checked,df_lo:+$('sDfLo').value,qrm_detect:$('sQrm').checked,min_snr:+$('sMinSnr').value},'POST');sLoaded=false;tick()};
 setInterval(tick,2000);tick();
 // T/R cycle bar (15 s FT8, 7.5 s FT4, 3.75 s FT2) + TX badge, updated locally every 200ms
 setInterval(()=>{const per=window._per||15,t=Date.now()/1000,pos=t%per,pct=pos/per*100;

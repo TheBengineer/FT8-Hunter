@@ -9,6 +9,8 @@ src = src[:src.index("ap = argparse.ArgumentParser()")]  # load without starting
 ns = {"__name__": "hunter", "__file__": os.path.join(HERE, "ft8_server.py")}
 exec(src, ns)
 st, ENG, CTX = ns["state"], ns["ENG"], ns["CTX"]
+import tempfile
+ns["CONFIG_FILE"] = os.path.join(tempfile.mkdtemp(), "hunter_config.json")  # never the real settings
 
 
 class FakeSock:
@@ -281,18 +283,25 @@ check("skip reasons: hold / in QSO / region / weak",
 fresh()
 pick = ns["pick_tx_df"]
 f = pick(1)
-check("empty band -> mid-band offset", f is not None and 1400 <= f <= 1500)
+check("default lowest offset is 1300 Hz", st["config"]["df_lo"] == 1300)
+check("empty band -> middle of the allowed 1300-2700 range", f is not None and 1900 <= f <= 2050)
+check("a clear offset below the lowest allowed is moved up", pick(1, current=900) >= 1300)
 for i, df in enumerate(range(300, 2700, 80)):  # crowd the odd period except one hole
     if not 1800 <= df < 2000:
         dec(f"W{i}AA K{i}BB -10", df=df, t_ms=15000)
 f = pick(1)
 check("picks the only clear gap (1800-2000)", f is not None and 1800 <= f and f + 50 <= 2000)
-check("even period unaffected by odd-period crowd", 1400 <= pick(0) <= 1500)
+check("even period unaffected by odd-period crowd", 1900 <= pick(0) <= 2050)
 check("keeps current offset while clear", pick(1, current=1850) == 1850)
 check("moves off an occupied current offset", pick(1, current=700) != 700)
 for i, df in enumerate(range(1800, 2000, 40)):
     dec(f"W{i}CC K{i}DD -10", df=df, t_ms=15000)
 check("fully crowded period -> no pick", pick(1) is None)
+f = pick(1, current=800)
+check("crowded but below the lowest offset -> least-bad spot inside the range", f is not None and 1300 <= f)
+st["config"]["df_lo"] = 300
+fresh(); check("lowest offset setting is honoured (300 -> mid-band)", 1400 <= pick(1) <= 1500)
+st["config"]["df_lo"] = 1300
 
 # answering a station on the even period moves us to a clear odd offset
 fresh(); st["udp"]["revision"] = "260926-hunter"; st["udp"]["tx_df"] = 1500
@@ -508,6 +517,14 @@ post("/api/rig/power", {"watts": 50})
 check("TX power set through FLRig, clamped to the rig's max", RADIO["power"] == 20)
 post("/api/rig/power", {"watts": 5})
 check("TX power lowered", RADIO["power"] == 5)
+post("/api/config", {"df_lo": 1400})
+saved = json.load(open(ns["CONFIG_FILE"]))
+st["config"]["df_lo"] = 1300; ns["load_config"]()
+check("lowest offset saved from Settings and loaded again after a restart",
+      saved["df_lo"] == 1400 and st["config"]["df_lo"] == 1400)
+post("/api/config", {"df_lo": 50}); lo1 = st["config"]["df_lo"]
+post("/api/config", {"df_lo": 2690}); lo2 = st["config"]["df_lo"]
+check("lowest offset kept between 200 Hz and 300 Hz under the top", lo1 == 200 and lo2 == 2400)
 fl.shutdown(); srv.shutdown()
 
 print("ALL PASS" if ok else "SOME FAILED")

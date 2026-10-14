@@ -18,7 +18,7 @@ state = {
                "cq_tries": 3, "tail_tries": 2, "hold_min": 10,
                "idle_every": 4, "idle_secs": 60, "special_first": True,
                "call_cq": True, "cq_secs": 120,
-               "auto_df": True, "df_lo": 300, "df_hi": 2700,
+               "auto_df": True, "df_lo": 1300, "df_hi": 2700,  # df_lo: rig feeds back below 1300 Hz
                "qrm_detect": True, "qrm_backoff_min": 5, "min_snr": -20},
     "stats": {"cq_heard": 0, "calls_made": 0},
 }
@@ -581,6 +581,22 @@ def read_qstr(data, p):
         raise ValueError("string past end")
     return data[p:p+ln].decode("utf-8", "replace"), p + ln
 
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hunter_config.json")
+def save_config():
+    """Settings changed in the UI survive a restart."""
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(state["config"], f, indent=1)
+    except OSError as e:
+        log(f"settings not saved: {e}")
+
+def load_config():
+    try:
+        saved = json.load(open(CONFIG_FILE))
+    except (OSError, ValueError):
+        return
+    state["config"].update({k: v for k, v in saved.items() if k in state["config"]})
+
 def ws_dest():
     return state["ws_addr"] or ("127.0.0.1", udp_port)
 
@@ -719,7 +735,7 @@ def pick_tx_df(par, current=None):
     """Clearest Tx offset on parity `par`: the spot furthest from any occupied
     interval (and the band edges). Keeps `current` while it stays clear."""
     cfg = state["config"]
-    lo, hi = cfg.get("df_lo", 300), cfg.get("df_hi", 2700)
+    lo, hi = cfg.get("df_lo", 1300), cfg.get("df_hi", 2700)
     iv = occupied(par, time.time())
     def room(f):  # Hz of clearance around [f, f + bw()]; negative = overlap
         d = min(f - lo, hi - (f + bw()))
@@ -731,7 +747,11 @@ def pick_tx_df(par, current=None):
     if current and room(current) >= 0:
         return current
     best = max(range(lo, hi - bw() + 1, 10), key=lambda f: (room(f), -abs(f - (current or 1500))))
-    return best if room(best) >= 0 else None
+    if room(best) >= 0:
+        return best
+    # nowhere clear: stay put, unless we are outside the allowed range (below
+    # df_lo the rig feeds back), then take the least crowded spot inside it
+    return best if current is not None and not lo <= current <= hi - bw() else None
 
 def tune_tx(par):
     """Before transmitting on parity `par`: hold Tx freq (so a Reply can't drag
@@ -1426,6 +1446,9 @@ class H(BaseHTTPRequestHandler):
                 return self._json({"error": str(e)[:80]}, 502)
         elif p == "/api/config":
             state["config"].update({k: v for k, v in body.items() if k in state["config"]})
+            c = state["config"]  # keep the offset range usable: 200 Hz up, room for a signal
+            c["df_lo"] = max(200, min(int(c["df_lo"]), int(c["df_hi"]) - 300))
+            save_config()
         else: return self._json({"error": "unknown"}, 404)
         self._json({"ok": True})
     def log_message(self, *a): pass
@@ -1435,6 +1458,7 @@ ap.add_argument("--mycall", default="KR4MZM"); ap.add_argument("--mygrid", defau
 ap.add_argument("--port", type=int, default=2237); ap.add_argument("--http", type=int, default=8080)
 ap.add_argument("--flrig", default="http://127.0.0.1:12345", help="FLRig XML-RPC URL (power + meters)")
 a = ap.parse_args()
+load_config()
 state["mycall"] = a.mycall.upper(); state["mygrid"] = a.mygrid.upper(); udp_port = a.port
 RIG["url"] = a.flrig
 def shutdown(signum, frame):

@@ -112,6 +112,8 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
 - **Clear offset** (ws-hunter build): before answering or calling CQ it ticks Hold
   Tx Freq and moves to the widest gap on the period it will transmit in, judged
   from recent decodes and the spectrum; it stays put while that spot is clear.
+  It never picks below the lowest offset in Settings (default 1300 Hz, for rigs
+  that feed back on low audio tones). Settings are saved in `hunter_config.json`.
 - **Someone else on frequency** (ws-hunter build): wide undecoded energy in the
   spectrum for two cycles running pauses new calls for 5 minutes.
 - **Radio power**: the status card sets TX power through FLRig's XML-RPC server
