@@ -36,7 +36,7 @@ def dec(msg, snr=-5, df=1500, t_ms=0):
 def fresh():
     st["target"] = None; st["cq"].clear(); st["msgs"].clear(); st["worked"] = {}; ENG["held"].clear()
     ENG["callers"].clear(); ENG["holds"].clear()
-    ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0)
+    ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0, arrived=None)
     ENG["occ"].clear(); ENG["spec"].clear(); ENG["noise_hist"].clear(); st["udp"].pop("tx_df", None)
     ENG["spec_pending"].clear(); ENG["qrm_first"] = None; ENG["tx_iv"].clear()
     ENG["active"].clear(); ENG["calls_to"].clear(); ENG["spec_hist"].clear(); ENG["rr73_again"].clear()
@@ -745,7 +745,8 @@ def fake_dial(hz):
     q, now_ms = SCAN["q"], ns["tod_ms"](time.time())
     if q:
         q.put((now_ms // 3750 * 3750, 3750, 0, 10, ft8))            # retuned part way: mixed bands
-        q.put(((now_ms // 3750 + 1) * 3750, 3750, 0, 10, ft8 if hz == 5357000 else flat()))
+        for k in (1, 2):  # the next period may start before the retune has settled: one more
+            q.put(((now_ms // 3750 + k) * 3750, 3750, 0, 10, ft8 if hz == 5357000 else flat()))
 real = ns["ws_set_mode"], ns["ws_set_dial"]
 ns["ws_set_mode"], ns["ws_set_dial"] = fake_mode, fake_dial
 SCAN["q"] = None
@@ -766,8 +767,60 @@ try:
 except urllib.error.HTTPError as e:
     refused = e.code == 409
 check("no scan in the middle of a QSO", refused and not SCAN["on"])
+try:
+    post("/api/scan/go", {"hz": 18100000, "mode": "FT8"}); refused = False
+except urllib.error.HTTPError as e:
+    refused = e.code == 409
+check("no band change from the scan in the middle of a QSO", refused)
 st["target"] = None
 st["udp"]["revision"] = ""
+
+# --- antenna tune on a new band: under FT8, then back; never where it can't confirm
+class FakeRig:
+    def __init__(self, follow=True): self.vfo, self.tuned_at, self.follow = 0, [], follow
+    def get_vfo(self): return str(self.vfo)
+    def tune(self): self.tuned_at.append(self.vfo)
+    def cat_string(self, c): return "FE FE 70 E0 1C 01 FD FE FE E0 70 1C 01 01 FD"
+rig = FakeRig()
+fake_fl = type("FL", (), {"rig": rig})()
+real_fl, real_dial = ns["flrig"], ns["ws_set_dial"]
+ns["flrig"] = lambda: fake_fl
+def dial_to(hz):
+    st["udp"]["dial"] = hz
+    if rig.follow: rig.vfo = hz
+ns["ws_set_dial"] = dial_to
+SCAN["freqs"]["list"] = ns["FREQS_BUILTIN"]
+ns["RIG"]["xcvr"] = "Xiegu-G90"
+fresh(); st["udp"].update(revision="261013-hunter", band="20m", dial=14080000, mode="FT4"); rig.vfo = 14080000
+ENG["tuned_band"] = "40m"; st["config"]["tune_new_band"] = True
+started = []
+real_start = ns["start_tune"]; ns["start_tune"] = lambda: started.append(1)
+st["running"] = True; ns["engine_tick"]()
+check("new band: the engine tunes before anything else", started and ENG["step"]["step"] == "tuning")
+ENG["tuned_band"] = "20m"; started.clear(); ns["engine_tick"]()
+check("same band (a mode change): no tune", not started)
+ns["start_tune"] = real_start
+ENG["tuned_band"] = "40m"; ENG["tuning"] = "starting"; ns["atu_tune"]()
+check("tune carrier 1 kHz under the band's FT8, then back to the operating frequency",
+      rig.tuned_at == [14073000] and st["udp"]["dial"] == 14080000 and rig.vfo == 14080000)
+check("...and the band counts as tuned", ENG["tuned_band"] == "20m" and not ENG["tuning"])
+rig.follow, rig.tuned_at = False, []; ENG["tuned_band"] = "40m"; ENG["tuning"] = "starting"; ns["atu_tune"]()
+check("rig not on the tune frequency: no tune carrier", rig.tuned_at == [] and not ENG["tuning"])
+check("a tune starts the listen over", time.time() - ENG["arrived"] < 30)
+ns["flrig"], ns["ws_set_dial"] = real_fl, real_dial
+# a new band: two full cycles (two even, two odd periods) heard before any transmission
+fresh(); st["running"] = True; ENG["tuned_band"] = "20m"
+st["udp"].update(band="17m", mode="FT8"); ns["set_band"]("20m")
+dec("CQ K4NEW EM85", snr=-3, t_ms=recent_tm(0)); ns["engine_tick"]()
+check("new band: listen, don't answer a CQ yet", ENG["step"]["step"] == "newband" and not st["target"])
+w = ns["new_band_wait"](time.time())
+check("...for two full cycles (four FT8 periods, the first whole one after arriving)", 60 <= w <= 75)
+ENG["arrived"] = time.time() - 80; ns["engine_tick"]()
+check("...then it hunts as usual", st["target"] and st["target"]["call"] == "K4NEW")
+st["udp"]["mode"] = "FT4"; ENG["arrived"] = None; ns["set_mode"]("FT8")
+check("a mode change on the same band doesn't start a listen", not ENG.get("arrived"))
+ENG["arrived"] = None
+ENG["tuned_band"] = None; st["udp"]["revision"] = ""; st["running"] = False
 fl.shutdown(); srv.shutdown()
 
 print("ALL PASS" if ok else "SOME FAILED")

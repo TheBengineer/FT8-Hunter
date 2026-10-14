@@ -21,6 +21,7 @@ state = {
                "auto_df": True, "df_lo": 1300, "df_hi": 2700,  # df_lo: rig feeds back below 1300 Hz
                "qrm_detect": True, "qrm_backoff_min": 5, "min_snr": -20,
                "watts_call": 10, "watts_qso": 20,
+               "tune_new_band": True, "tune_below_khz": 1,  # ATU tune this far under FT8 after a band change
                "scan_modes": ["FT8", "FT4", "FT2"],  # band scan: what to visit
                "scan_bands": ["160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m"]},  # TX power held on the radio: calling / once they answer
     "stats": {"cq_heard": 0, "calls_made": 0},
@@ -719,10 +720,13 @@ def set_band(new):
     """WS moved to another band: same reset as a mode change."""
     old = state["udp"].get("band")
     state["udp"]["band"] = new
+    if ENG.get("tuned_band") is None and new:
+        ENG["tuned_band"] = new  # at startup the band we are on is taken as tuned
     if old is None or old == new or new is None:
         return
     new_slot()
     if not SCAN["on"]:
+        ENG["arrived"] = time.time()  # listen before transmitting here (new_band_wait)
         log(f"band {old} -> {new}")
 
 def new_slot():
@@ -1068,6 +1072,14 @@ def engine_tick():
     prune(now)
     if not state["running"]:
         return at("stopped")
+    if ENG.get("tuning"):
+        return at("tuning", ENG["tuning"])
+    if need_tune():
+        start_tune()
+        return at("tuning", f"new band {band()}")
+    wait = new_band_wait(now)
+    if wait > 0:
+        return at("newband", f"listening on {band()}: {round(wait)} s more")
     t = state["target"]
     cfg = state["config"]
     if t and is_worked(t["call"]) and not t.get("again"):  # logged (seen in ADIF) without a QSO Logged packet
@@ -1875,6 +1887,8 @@ def scan_go(hz, md):
     if ws_set_mode(md):
         ws_set_dial(hz)
     log(f"tuned to {hz / 1e6:.4f} MHz {md} from the band scan")
+    if wait_dial(hz) and need_tune():
+        start_tune()  # a new band: tune the antenna before anything goes out
 
 def scan_state():
     now, last = time.time(), log_last()
@@ -1901,6 +1915,99 @@ def load_scan():
             scan_rate(rows, rows)  # labels by the current rules
     except (OSError, ValueError, KeyError, TypeError):
         pass
+
+# --- Antenna tune after a band change: before transmitting on a new band, move
+# just under its FT8 frequency (clear of everyone using FT8 above the dial),
+# start the rig's tuner, then go back to the operating frequency.
+TUNE_WAIT = 20  # s the tuner may take
+NEW_BAND_CYCLES = 2  # full cycles (an even and an odd period each) heard on a new band before transmitting
+def new_band_wait(now):
+    """Seconds still to listen after arriving on a band (or tuning there):
+    until NEW_BAND_CYCLES whole cycles have been heard, so the offset
+    picker has the last two periods of each parity before we transmit."""
+    t = ENG.get("arrived")
+    if not t:
+        return 0
+    per = period()
+    first = math.ceil(t / per) * per  # the first whole period after we got here
+    return first + 2 * NEW_BAND_CYCLES * per - now
+def need_tune():
+    b = band()
+    return bool(state["config"].get("tune_new_band") and has_ws_hunter() and b and ENG.get("tuned_band")
+                and b != ENG["tuned_band"] and not SCAN["on"] and RIG.get("xcvr") in CIV)
+
+def start_tune():
+    if ENG.get("tuning"):
+        return
+    ENG["tuning"] = "starting"
+    threading.Thread(target=atu_tune, daemon=True).start()
+
+def tune_freq(b):
+    """Where to tune on band b: tune_below_khz under its FT8 dial frequency."""
+    ft8 = next((khz for khz, m in SCAN["freqs"]["list"] if m == "FT8" and band_of(khz * 1000) == b), None)
+    return round((ft8 - state["config"].get("tune_below_khz", 1)) * 1000) if ft8 else None
+
+def wait_dial(hz, secs=6):
+    """Until both WS and the rig itself are on hz."""
+    end = time.time() + secs
+    while time.time() < end:
+        try:
+            if abs((state["udp"].get("dial") or 0) - hz) <= 100 and abs(int(float(flrig().rig.get_vfo())) - hz) <= 100:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.3)
+    return False
+
+def tuner_state(fl):
+    """The G90's tuner over CI-V 1C 01: 0 off, 1 on, 2 tuning; None = no answer
+    (it doesn't answer while tuning)."""
+    addr = CIV[RIG["xcvr"]][0]
+    rep = str(fl.rig.cat_string(f"xFE xFE x{addr:02X} xE0 x1C x01 xFD"))
+    m = re.search(rf"FE FE E0 {addr:02X} 1C 01 ([0-9A-F]{{2}}) FD", rep)
+    return int(m.group(1), 16) if m else None
+
+def atu_tune():
+    """Runs in its own thread while ENG["tuning"] holds the engine off."""
+    b, op = band(), state["udp"].get("dial")
+    t0 = time.time()
+    try:
+        hz = tune_freq(b)
+        if not (hz and op):
+            log(f"antenna tune: no FT8 frequency known for {b}; not tuning")
+            return
+        ENG["tuning"] = f"{b}: moving to {hz / 1e6:.4f} MHz"
+        halt_ws()
+        CTX["tx"].sendto(pack_set_bool(SET_TX_ENABLED, state["ws_id"], False), ws_dest())
+        ws_set_dial(hz)
+        if not wait_dial(hz) or band() != b:
+            log(f"antenna tune: the rig didn't reach {hz / 1e6:.4f} MHz; not tuning")
+            return
+        time.sleep(0.5)
+        fl = flrig()
+        ENG["tuning"] = f"{b}: tuning at {hz / 1e6:.4f} MHz"
+        fl.rig.tune()
+        time.sleep(1.5)
+        end, st = time.time() + TUNE_WAIT, None
+        while time.time() < end:
+            st = tuner_state(fl)
+            if st is not None and st != 2:
+                break
+            time.sleep(0.5)
+        log(f"antenna tuned on {b} at {hz / 1e6:.4f} MHz ({round(time.time() - t0)} s)" if st is not None and st != 2
+            else f"antenna tune on {b}: no word from the tuner after {TUNE_WAIT} s")
+    except Exception as e:
+        log(f"antenna tune: {e}")
+    finally:
+        try:
+            if op and band_of(op) == b:
+                ws_set_dial(op)  # back where we were going to operate
+                wait_dial(op)
+        except Exception:
+            pass
+        ENG["tuned_band"] = b  # tried once per band change: don't retry every period
+        ENG["arrived"] = time.time()  # nothing heard while tuning: listen from now
+        ENG["tuning"] = None
 
 class H(BaseHTTPRequestHandler):
     def _json(self, obj, code=200):
@@ -2058,8 +2165,8 @@ class H(BaseHTTPRequestHandler):
         elif p == "/api/scan/start":
             if not has_ws_hunter():
                 return self._json({"error": "needs the ws-hunter build of WS"}, 409)
-            if SCAN["on"]:
-                return self._json({"error": "already scanning"}, 409)
+            if SCAN["on"] or ENG.get("tuning"):
+                return self._json({"error": "already scanning" if SCAN["on"] else "tuning the antenna"}, 409)
             if answered():  # calling someone may be dropped; a QSO under way is not
                 return self._json({"error": f"in a QSO with {state['target']['call']}: scan when it is done"}, 409)
             c = state["config"]
@@ -2077,6 +2184,8 @@ class H(BaseHTTPRequestHandler):
             md = body.get("mode")
             if md not in MODES or not band_of(int(body.get("hz", 0))):
                 return self._json({"error": "bad frequency or mode"}, 400)
+            if answered() and band_of(int(body["hz"])) != band():  # a band change is deliberate, never mid-QSO
+                return self._json({"error": f"in a QSO with {state['target']['call']}: change band when it is done"}, 409)
             threading.Thread(target=scan_go, args=(int(body["hz"]), md), daemon=True).start()
         elif p == "/api/txdf":
             # manual Tx offset from the waterfall; the auto picker keeps it while it stays clear
@@ -2094,6 +2203,7 @@ class H(BaseHTTPRequestHandler):
             c["df_lo"] = max(200, min(int(c["df_lo"]), int(c["df_hi"]) - 300))
             for k in ("watts_call", "watts_qso"):
                 c[k] = max(1, min(int(c[k]), RIG.get("max", 100)))
+            c["tune_below_khz"] = max(0.5, min(float(c["tune_below_khz"]), 10.0))  # stay near the band's FT8
             save_config()
             RIG_WAKE.set()  # new power applies now
             if "cq_first" in body:

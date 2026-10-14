@@ -31,7 +31,9 @@ frequency.
 
 ```mermaid
 flowchart TD
-    tick([Every T/R period]) --> tgt{Calling or<br/>working a target?}
+    tick([Every T/R period]) --> nb{Just arrived on<br/>a new band? *}
+    nb -- yes --> tl[Tune the antenna under FT8,<br/>then listen 2 full cycles] --> wait
+    nb -- no --> tgt{Calling or<br/>working a target?}
     tgt -- yes --> fin{Logged, signed off,<br/>or out of tries?}
     fin -- no --> keep[Keep going: re-send the Reply<br/>until they answer] --> wait([next cycle])
     fin -- yes --> rel[Release target<br/>hold it if it never answered] --> wait
@@ -79,6 +81,24 @@ zoom it yourself. The worked / ignored list shows today's
 contacts and the stations that never answered, with time, band and mode. On a desktop the cards spread into two or
 three columns; move cards with the arrows or by dragging, and each stays in the
 column you put it in.
+
+### Changing band
+
+When WS moves to another band (from the band scan's **Go**, or by hand while the
+hunter runs), the hunter does two things before it transmits there.
+
+1. **It tunes the antenna** (Xiegu G90). It halts WS and moves 1 kHz below that
+   band's FT8 frequency, which keeps the carrier clear of everyone on FT8 above
+   the dial. It starts the rig's tuner, waits for it to finish, and goes back
+   to the operating frequency. If the radio can't be confirmed on the tune
+   frequency, nothing is sent.
+2. **It listens for two full cycles**: two even and two odd periods, 60 s in
+   FT8. The offset picker then has the last two periods of each parity, so its
+   first transmission on the band goes on a clear offset.
+
+Changing band is meant to be an occasional, deliberate move, so **Go** refuses
+to change band in the middle of a QSO. A mode change on the same band does neither. Both the tune and the distance below
+FT8 are in Settings.
 
 ### Band scan
 
