@@ -457,6 +457,13 @@ check("globe: me, contacts, target and traffic located",
 check("globe: a target we are only calling is not a QSO yet", not g["target"]["resp"])
 st["target"] = {"call": "K9ABC", "left": 5, "why": "called us"}
 check("globe: a station that called us is a QSO (orange) from the start", ns["globe"]()["target"]["resp"])
+ENG["callers"].clear(); ENG["callers"].append({"call": "W1AW", "msg": "KR4MZM W1AW FN31", "t": time.time()})
+ENG["callers"].append({"call": "K9ABC", "msg": "KR4MZM K9ABC EN52", "t": time.time()})
+check("globe: others answering us while in a QSO are listed (not the target)",
+      [c["call"] for c in ns["globe"]()["callers"]] == ["W1AW"])
+st["target"] = None; ENG["callers"].pop()
+check("globe: a single station answering us is not shown as 'also answering'", ns["globe"]()["callers"] == [])
+ENG["callers"].clear()
 
 # --- worked / ignored list in /api/state: time, band, mode, kind
 import json, urllib.request

@@ -77,7 +77,7 @@ details summary{font-weight:700;padding:4px}
 <div class="row" style="margin-top:8px"><button id="bWake" class="mini" style="flex:1;padding:8px;background:#3a4552">📱 Keep screen awake: off</button></div></div>
 <div class="card" data-id="globe"><h2>🌍 Globe <span class="small" id="gsum"></span></h2>
 <canvas id="globe" style="width:100%;aspect-ratio:1;display:block;touch-action:none;cursor:grab"></canvas>
-<div class="small" style="margin-top:4px"><span style="color:#c061ff">━ calling</span> · <span style="color:#ff7a3d">━ QSO</span> · <span style="color:#2ecc71">━ worked</span> · <span style="color:#7fa8ff99">━ traffic</span> · drag to turn, scroll or pinch to zoom; it drifts back to you</div></div>
+<div class="small" style="margin-top:4px"><span style="color:#c061ff">━ calling</span> · <span style="color:#ff7a3d">━ QSO</span> · <span style="color:#ffd54a">━ also answering</span> · <span style="color:#2ecc71">━ worked</span> · <span style="color:#7fa8ff99">━ traffic</span> · drag to turn, scroll or pinch to zoom; it drifts back to you</div></div>
 <div class="card" data-id="flow"><h2>🧭 Decision flow <span class="small" id="stepage"></span></h2><div class="flow" id="flow"></div>
 <div class="small" style="margin-top:6px">Checked top to bottom each period; the first “yes” wins.</div></div>
 <div class="card" data-id="dx"><h2>🎯 DX focus <span class="small" id="dxn"></span></h2><ul id="dxf"></ul>
@@ -345,6 +345,9 @@ function draw(ts){requestAnimationFrame(draw);
    ctx.strokeStyle=`rgba(127,168,255,${al.toFixed(3)})`;line(arcs('t'+t.a+t.b,t.a,t.b),R,cx,cy)}
  if(me){for(const w of G.worked){ctx.strokeStyle=w.here?'rgba(46,204,113,.85)':'rgba(46,204,113,.4)';ctx.lineWidth=(w.here?1.6:1)*dpr;
    const p=arcs('w'+w.ll,me,w.ll);line(p,R,cx,cy);comet(p,f,R,cx,cy,'#b8ffd2');dot(w.ll,R,cx,cy,2*dpr,'#2ecc71')}
+  for(const c of G.callers||[]){  // others answering us at the same time: yellow, waiting their turn
+   const p=arcs('c'+c.ll,me,c.ll);ctx.strokeStyle='rgba(255,213,74,.85)';ctx.lineWidth=2*dpr;line(p,R,cx,cy);
+   comet(p,1-f,R,cx,cy,'#fff1b8');dot(c.ll,R,cx,cy,3*dpr,'#ffd54a')}
   const T=G.target;if(T&&T.ll){  // purple while calling, orange once they answer (QSO in progress)
    const [c,cc]=T.resp?['#ff7a3d','#ffd2b8']:['#c061ff','#ead0ff'];
    const p=arcs('T'+T.ll,me,T.ll);ctx.strokeStyle=c;ctx.lineWidth=3.2*dpr;line(p,R,cx,cy);
@@ -355,7 +358,7 @@ let pollT=0;
 async function poll(){try{const r=await fetch('/api/globe');G=await r.json();pollT=performance.now();
  if(Object.keys(cache).length>800)cache={};
  if(G.me){if(!home){lon0=G.me[1];lat0=Math.max(-50,Math.min(50,G.me[0]))}home=G.me}
- document.getElementById('gsum').textContent=`· ${G.worked.length} worked · ${G.traffic.length} live`+(G.target?` · ${G.target.resp?'QSO with':'→'} ${G.target.call}`:'')}catch(e){}}
+ document.getElementById('gsum').textContent=`· ${G.worked.length} worked · ${G.traffic.length} live`+(G.target?` · ${G.target.resp?'QSO with':'→'} ${G.target.call}`:'')+((G.callers||[]).length?` · ${G.callers.length} waiting`:'')}catch(e){}}
 poll();setInterval(poll,5000);
 // Drag to turn; wheel or pinch to zoom (0.5x-12x); double-click / double-tap resets the zoom.
 const pts=new Map();let pinch=null;

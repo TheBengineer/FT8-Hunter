@@ -1221,6 +1221,14 @@ def globe():
     # called us: either way they are working us directly
     tgt = {"call": t["call"], "ll": locate(t["call"]),
            "resp": bool(t.get("resp")) or t.get("why") == "called us"} if t else None
+    # Others answering us while we work someone: the caller queue, without
+    # pruning it (that is the engine's job), shown only when more than one
+    # station is answering us at once.
+    waiting = [c for c in list(ENG["callers"]) if now - c["t"] <= cyc(6)
+               and not (t and same_call(c["call"], t["call"])) and not is_worked(c["call"])]
+    answering = len(waiting) + (1 if tgt and tgt["resp"] else 0)
+    callers = [{"call": c["call"], "ll": ll, "age": round(now - c["t"])}
+               for c in waiting for ll in [locate(c["call"])] if ll] if answering >= 2 else []
     traffic = []
     for p in sorted(list(PAIRS.values()), key=lambda p: -p["t"]):
         age = now - p["t"]
@@ -1230,7 +1238,7 @@ def globe():
         if a and b and a != b:
             traffic.append({"from": p["a"], "to": p["b"], "a": a, "b": b, "age": round(age),
                             "tome": is_me(p["b"])})
-    return {"me": me, "mycall": state["mycall"], "worked": worked[:300], "target": tgt,
+    return {"me": me, "mycall": state["mycall"], "worked": worked[:300], "target": tgt, "callers": callers,
             "traffic": traffic, "fade": TRAFFIC_SECS}
 
 def arm_tx(only_if_off=False):
