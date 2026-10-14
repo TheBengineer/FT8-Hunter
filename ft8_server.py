@@ -1101,6 +1101,44 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
         state["answering"][msg] = {"msg": msg, "snr": snr, "tome": to_me,
             "from": frm or msg, "seen": now, "t": time.strftime("%H:%M:%S")}
 
+# Radio via FLRig's XML-RPC server: TX power control, PTT and S-meter.
+# One multicall per poll (FLRig answers in ~0.5 s, serialised with its CAT polling).
+RIG = {"ok": False, "url": "http://127.0.0.1:12345", "err": ""}
+MAX_W = {"Xiegu-G90": 20, "Xiegu-X6100": 10, "IC-705": 10, "FT-818": 6, "FT-817": 5}  # rig.get_maxpwr often says 0
+
+def flrig():
+    import xmlrpc.client
+    class T(xmlrpc.client.Transport):
+        def make_connection(self, host):
+            c = super().make_connection(host); c.timeout = 3; return c
+    return xmlrpc.client.ServerProxy(RIG["url"], transport=T())  # one per call: not thread-safe
+
+def rig_poll():
+    import xmlrpc.client
+    while True:
+        try:
+            if not RIG["ok"]:
+                fl = flrig()
+                RIG["xcvr"] = str(fl.rig.get_xcvr())
+                RIG["max"] = int(float(fl.rig.get_maxpwr() or 0)) or MAX_W.get(RIG["xcvr"], 100)
+            m = xmlrpc.client.MultiCall(flrig())
+            m.rig.get_ptt(); m.rig.get_power(); m.rig.get_smeter()
+            ptt, power, sm = list(m())
+            # (the G90's power and SWR meters over CAT don't track reality, so they aren't shown)
+            RIG.update(ok=True, err="", t=time.time(), ptt=bool(int(ptt)), power=int(float(power)), s=float(sm))
+            if float(sm) > 0:
+                RIG["has_s"] = True  # some rigs (the G90) never report an S-meter over CAT
+        except Exception as e:
+            if RIG["ok"] or not RIG["err"]:
+                log(f"FLRig: {e}")
+            RIG.update(ok=False, err=str(e)[:80])
+        time.sleep(1 if RIG.get("ptt") else 2)
+
+def rx_level(now):
+    """Incoming signal, from WS: the strongest decode of the last period."""
+    snrs = [m["snr"] for m in list(state["msgs"]) if now - m["seen"] < cyc(1) + 3]
+    return {"best": max(snrs) if snrs else None, "n": len(snrs)}
+
 def globe():
     """Positions for the globe: me, today's contacts, the target, and recent
     traffic between other stations (both ends located)."""
@@ -1231,6 +1269,7 @@ class H(BaseHTTPRequestHandler):
                 "idle": max(0, round(ENG["idle_until"] - time.time())),
                 "cq_calling": max(0, round(ENG["cq_until"] - time.time())),
                 "mode": mode(), "period": period(),
+                "rig": {k: v for k, v in RIG.items() if k != "url"}, "rx": rx_level(now),
                 "step": ENG.get("step") or {"step": "stopped" if not state["running"] else "idle"},
                 "qrm": {"secs": max(0, round(ENG["qrm_until"] - time.time())), "why": ENG["qrm_why"]},
                 "txdf": {"current": u.get("tx_df"), **ENG.get("suggest", {})},
@@ -1297,6 +1336,14 @@ class H(BaseHTTPRequestHandler):
             self._json({"ok": True, "holder": holder, "ws_id": state["ws_id"],
                         "ws_addr": state["ws_addr"], "heard": heard,
                         "connected": heard > 0}); return
+        elif p == "/api/rig/power":
+            try:
+                w = max(1, min(int(body.get("watts", 0)), RIG.get("max", 100)))
+                flrig().rig.set_power(w)
+                RIG["power"] = w
+                log(f"TX power set to {w} W")
+            except Exception as e:
+                return self._json({"error": str(e)[:80]}, 502)
         elif p == "/api/config":
             state["config"].update({k: v for k, v in body.items() if k in state["config"]})
         else: return self._json({"error": "unknown"}, 404)
@@ -1306,8 +1353,10 @@ class H(BaseHTTPRequestHandler):
 ap = argparse.ArgumentParser()
 ap.add_argument("--mycall", default="KR4MZM"); ap.add_argument("--mygrid", default="EM84")
 ap.add_argument("--port", type=int, default=2237); ap.add_argument("--http", type=int, default=8080)
+ap.add_argument("--flrig", default="http://127.0.0.1:12345", help="FLRig XML-RPC URL (power + meters)")
 a = ap.parse_args()
 state["mycall"] = a.mycall.upper(); state["mygrid"] = a.mygrid.upper(); udp_port = a.port
+RIG["url"] = a.flrig
 def shutdown(signum, frame):
     """Service stop/restart: halt WS so it isn't left transmitting unattended."""
     if CTX["tx"] is not None and state.get("ws_addr"):
@@ -1318,6 +1367,7 @@ import signal
 signal.signal(signal.SIGTERM, shutdown)
 signal.signal(signal.SIGINT, shutdown)
 threading.Thread(target=watcher, daemon=True).start()
+threading.Thread(target=rig_poll, daemon=True).start()
 log(f"hunter ready as {state['mycall']} {state['mygrid']}")
 print(f"open http://0.0.0.0:{a.http}/")
 ThreadingHTTPServer(("0.0.0.0", a.http), H).serve_forever()

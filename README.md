@@ -110,6 +110,9 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
   from recent decodes and the spectrum; it stays put while that spot is clear.
 - **Someone else on frequency** (ws-hunter build): wide undecoded energy in the
   spectrum for two cycles running pauses new calls for 5 minutes.
+- **Radio power**: the status card sets TX power through FLRig's XML-RPC server
+  (`--flrig`, default `http://127.0.0.1:12345`), and shows the strongest decode
+  of the last period as the incoming signal.
 - **WRL Desktop bridge**: every WS packet is rebroadcast to `127.0.0.1:2238` — set
   WRL Desktop's UDP server to that port — and whatever WRL sends back is relayed to
   WS, so WRL logs as if it were talking to WS directly. (Two apps can't share 2237:

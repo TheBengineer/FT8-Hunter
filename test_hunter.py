@@ -445,7 +445,33 @@ check("book lists a station we gave up on as ignored, with its hold",
       book["W9NOP"]["kind"] == "ignored" and book["W9NOP"]["band"] == "20m" and book["W9NOP"]["hold_s"] > 0)
 check("a station that answered after its hold isn't listed as ignored", "W8LATE" not in book)
 check("worked count is for this band/mode only", api["worked"] == ["K1ABC"])
-srv.shutdown()
+
+# --- radio via FLRig XML-RPC: meters polled, TX power set and clamped
+from xmlrpc.server import SimpleXMLRPCServer
+RADIO = {"power": 16, "ptt": 1}
+fl = SimpleXMLRPCServer(("127.0.0.1", 0), logRequests=False, allow_none=True)
+fl.register_multicall_functions()
+for name, f in {"rig.get_xcvr": lambda: "Xiegu-G90", "rig.get_maxpwr": lambda: 0,
+                "rig.get_ptt": lambda: RADIO["ptt"], "rig.get_power": lambda: RADIO["power"],
+                "rig.get_pwrmeter": lambda: "15", "rig.get_swrmeter": lambda: "12", "rig.get_smeter": lambda: "0",
+                "rig.set_power": lambda w: RADIO.update(power=w) or 0}.items():
+    fl.register_function(f, name)
+threading.Thread(target=fl.serve_forever, daemon=True).start()
+ns["RIG"]["url"] = f"http://127.0.0.1:{fl.server_address[1]}"
+threading.Thread(target=ns["rig_poll"], daemon=True).start(); time.sleep(1.0)
+R = ns["RIG"]
+check("FLRig polled: rig, max power from the table, PTT, no S-meter",
+      R["ok"] and R["xcvr"] == "Xiegu-G90" and R["max"] == 20 and R["power"] == 16 and R["ptt"]
+      and not R.get("has_s"))
+def post(path, body):
+    req = urllib.request.Request(f"http://127.0.0.1:{srv.server_address[1]}{path}", json.dumps(body).encode(),
+                                 {"Content-Type": "application/json"})
+    return json.load(urllib.request.urlopen(req))
+post("/api/rig/power", {"watts": 50})
+check("TX power set through FLRig, clamped to the rig's max", RADIO["power"] == 20)
+post("/api/rig/power", {"watts": 5})
+check("TX power lowered", RADIO["power"] == 5)
+fl.shutdown(); srv.shutdown()
 
 print("ALL PASS" if ok else "SOME FAILED")
 sys.exit(0 if ok else 1)

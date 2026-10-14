@@ -42,6 +42,9 @@ li.skip{opacity:.55}li.tgt{background:#1d3a2a;border-radius:8px}
 .dot.run{background:#2ecc71}.small{font-size:.8rem;color:#9ab}
 details summary{font-weight:700;padding:4px}
 .sel{padding:8px;border-radius:8px;border:1px solid #334;background:#0f1419;color:#fff;font-size:.9rem}
+.meter{display:flex;align-items:center;gap:6px;margin-top:4px}.meter>span:first-child{min-width:64px}
+.meter .bar{flex:1;height:8px;background:#0f1419;border-radius:4px;overflow:hidden}
+.meter .bar i{display:block;height:100%;width:0;background:#ff6b6b;transition:width .3s}.meter>span:last-child{min-width:72px;text-align:right}
 .ago{margin-left:auto;font-variant-numeric:tabular-nums}
 /* drag a card by its grip to reorder; the order is remembered in this browser */
 .card{position:relative}
@@ -64,7 +67,13 @@ details summary{font-weight:700;padding:4px}
 <div class="small" id="ctxt" style="text-align:center;margin-top:2px">cycle</div>
 <div class="row"><button id="bS">Start</button><button id="bX" class="warn">Skip</button></div>
 <div class="row" style="margin-top:8px"><button id="bCQ" style="background:#1f9d4d">🔴 ARM TX</button></div>
-<div class="row" style="margin-top:8px"><button id="bT" style="background:#5a4a8a">🔌 Smoke test</button></div>
+<div id="rig" style="margin-top:8px;padding:8px;border:1px solid #26303c;border-radius:10px">
+<div class="row small"><b id="rigName">📻 radio</b><span id="rigSt" style="margin-left:auto"></span></div>
+<div class="row" style="margin-top:6px"><span class="small" style="min-width:64px">TX power</span>
+<button class="mini" id="pwDn">−</button><input id="pw" type="range" min="1" max="20" step="1" style="flex:1;margin:0;padding:0">
+<button class="mini" id="pwUp">+</button><b id="pwV" class="mono" style="min-width:42px;text-align:right">– W</b></div>
+<div class="meter" id="sRow" style="display:none"><span class="small">S-meter</span><div class="bar"><i id="mS" style="background:#2ecc71"></i></div><span class="mono small" id="vS">–</span></div>
+<div class="small" id="rxBest" style="margin-top:2px"></div></div>
 <div class="row" style="margin-top:8px"><button id="bWake" class="mini" style="flex:1;padding:8px;background:#3a4552">📱 Keep screen awake: off</button></div></div>
 <div class="card" data-id="globe"><h2>🌍 Globe <span class="small" id="gsum"></span></h2>
 <canvas id="globe" style="width:100%;aspect-ratio:1;display:block;touch-action:none;cursor:grab"></canvas>
@@ -154,7 +163,7 @@ function ansPrefs(save){const f={q:$('aQ'),age:$('aAge'),me:$('aMe')};
 ansPrefs(false);['aQ','aAge','aMe'].forEach(id=>$(id).addEventListener('input',()=>{ansPrefs(true);renderAns()}));
 setInterval(()=>{const now=srvNow();document.querySelectorAll('#ans .ago').forEach(el=>el.textContent=ago(Math.max(0,Math.round(now-el.dataset.seen))))},1000);
 async function tick(){const s=await api('/api/state');
-fillSettings(s.config);HELD=s.holds||{};flow(s.step);
+fillSettings(s.config);if(s.rig)rigView(s.rig,s.rx);HELD=s.holds||{};flow(s.step);
 $('dot').className='dot'+(s.running?' run':'');
 $('st').textContent=(s.running?'RUNNING':'STOPPED')+' · '+s.mycall+' '+s.mygrid;
 $('target').textContent=s.target?('🎯 '+s.target.call+' '+(s.target.grid||'')+' · '+(s.target.why||'')+' · '+(s.target.resp?'in QSO':Math.ceil(s.target.left/2)+' tries left')):(s.cq_calling?('📣 calling CQ · '+s.cq_calling+'s'):'no target');
@@ -193,8 +202,19 @@ async function call(c,g){await api('/api/call',{call:c,grid:g||''})}
 $('bS').onclick=async()=>{const s=await api('/api/state');await api(s.running?'/api/stop':'/api/start',{},'POST');tick()};
 $('bX').onclick=()=>api('/api/skip',{},'POST').then(tick);
 $('bCQ').onclick=()=>api('/api/cq',{},'POST').then(tick);
-$('bT').onclick=async()=>{const r=await api('/api/smoke',{},'POST');
-alert(r.connected?('✅ WS answered ('+r.heard+' pkts, id='+r.ws_id+')'):('❌ no reply from WS. Port held by: '+r.holder));tick()};
+// Radio (FLRig): TX power slider; S-meter only if the rig reports one over CAT.
+let pwBusy=0;
+function setPw(w){const el=$('pw');w=Math.max(+el.min,Math.min(+el.max,w));el.value=w;$('pwV').textContent=w+' W';
+ clearTimeout(setPw.t);pwBusy=Date.now();setPw.t=setTimeout(()=>api('/api/rig/power',{watts:w}).then(r=>{if(r.error)alert('FLRig: '+r.error)}),400)}
+$('pw').oninput=e=>setPw(+e.target.value);$('pwDn').onclick=()=>setPw(+$('pw').value-1);$('pwUp').onclick=()=>setPw(+$('pw').value+1);
+const bar=(id,f)=>$(id).style.width=Math.max(0,Math.min(100,f*100))+'%';
+function rigView(r,rx){
+ $('rigName').textContent='📻 '+(r.xcvr||'radio');
+ $('rigSt').innerHTML=!r.ok?`<span class="bad">FLRig not reachable</span>`:r.ptt?'<span class="bad">● TX</span>':'<span class="good">RX</span>';
+ ['pwDn','pwUp','pw'].forEach(id=>$(id).disabled=!r.ok);
+ if(r.ok){$('pw').max=r.max||100;if(Date.now()-pwBusy>4000){$('pw').value=r.power;$('pwV').textContent=r.power+' W'}}
+ $('sRow').style.display=r.has_s?'flex':'none';if(r.has_s){bar('mS',r.s/100);$('vS').textContent=r.ptt?'–':String(r.s)}
+ $('rxBest').textContent=rx&&rx.best!=null?`strongest decode last period: ${rx.best>0?'+':''}${rx.best} dB SNR (${rx.n} decodes)`:'no decodes last period'}
 $('bC').onclick=()=>api('/api/call',{call:$('mc').value,grid:$('mg').value}).then(tick);
 let sLoaded=false;
 function fillSettings(c){if(sLoaded)return;sLoaded=true;
