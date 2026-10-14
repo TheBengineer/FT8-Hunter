@@ -70,7 +70,7 @@ details summary{font-weight:700;padding:4px}
 <div class="row" style="margin-top:8px"><button id="bCQ" style="background:#1f9d4d">🔴 ARM TX</button></div>
 <div id="rig" style="margin-top:8px;padding:8px;border:1px solid #26303c;border-radius:10px">
 <div class="row small"><b id="rigName">📻 radio</b><span id="rigSt" style="margin-left:auto"></span></div>
-<div class="row" style="margin-top:6px"><span class="small" style="min-width:64px">TX power</span>
+<div class="row" style="margin-top:6px"><span class="small" style="min-width:64px" id="pwL" title="The slider sets the power for this stage: calling, or in a QSO once they answer">TX power</span>
 <button class="mini" id="pwDn">−</button><input id="pw" type="range" min="1" max="20" step="1" style="flex:1;margin:0;padding:0">
 <button class="mini" id="pwUp">+</button><b id="pwV" class="mono" style="min-width:42px;text-align:right">– W</b></div>
 <div class="meter" title="Output power from the rig's meter (the G90's is coarse: full or nothing)"><span class="small">Output</span><div class="bar" style="height:4px"><i id="mO" style="background:#ff9f43"></i></div><span class="mono small" id="vO">–</span></div>
@@ -109,6 +109,8 @@ details summary{font-weight:700;padding:4px}
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">CQ tries</span><input id="sCq" type="number" min="1" max="10" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Tail-end tries</span><input id="sTail" type="number" min="1" max="10" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Our transmissions in a QSO without hearing back before giving up">Replies without an answer</span><input id="sQso" type="number" min="1" max="20" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Power while calling and calling CQ">TX power calling (W)</span><input id="sWCall" type="number" min="1" max="100" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Power once a station answers us, for the rest of the QSO">TX power in QSO (W)</span><input id="sWQso" type="number" min="1" max="100" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Hold (min)</span><input id="sHold" type="number" min="1" max="60" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Listen every N idle</span><input id="sIdleN" type="number" min="1" max="20" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Listen secs</span><input id="sIdleS" type="number" min="15" max="300" step="15" style="max-width:90px;margin-top:0"></div>
@@ -220,13 +222,14 @@ $('bCQ').onclick=()=>api('/api/cq',{},'POST').then(tick);
 // Radio (FLRig): TX power slider; S-meter only if the rig reports one over CAT.
 let pwBusy=0;
 function setPw(w){const el=$('pw');w=Math.max(+el.min,Math.min(+el.max,w));el.value=w;$('pwV').textContent=w+' W';
- clearTimeout(setPw.t);pwBusy=Date.now();setPw.t=setTimeout(()=>api('/api/rig/power',{watts:w}).then(r=>{if(r.error)alert('FLRig: '+r.error)}),400)}
+ clearTimeout(setPw.t);pwBusy=Date.now();setPw.t=setTimeout(()=>api('/api/rig/power',{watts:w}).then(r=>{if(r.error)alert('FLRig: '+r.error);sLoaded=false}),400)}
 $('pw').oninput=e=>setPw(+e.target.value);$('pwDn').onclick=()=>setPw(+$('pw').value-1);$('pwUp').onclick=()=>setPw(+$('pw').value+1);
 const bar=(id,f)=>$(id).style.width=Math.max(0,Math.min(100,f*100))+'%';
 function rigView(r,rx){
  $('rigName').textContent='📻 '+(r.xcvr||'radio');
  $('rigSt').innerHTML=!r.ok?`<span class="bad">FLRig not reachable</span>`:r.ptt?'<span class="bad">● TX</span>':'<span class="good">RX</span>';
  ['pwDn','pwUp','pw'].forEach(id=>$(id).disabled=!r.ok);
+ $('pwL').textContent=r.qso?'TX in QSO':'TX calling';
  if(r.ok){$('pw').max=r.max||100;if(Date.now()-pwBusy>4000){$('pw').value=r.power;$('pwV').textContent=r.power+' W'}}
  bar('mO',r.ok&&r.ptt?(r.out||0)/(r.max||100):0);$('vO').textContent=r.ok&&r.ptt?Math.round(r.out||0)+' W':'–';
  $('sRow').style.display=r.has_s?'flex':'none';if(r.has_s){bar('mS',r.s/100);$('vS').textContent=r.ptt?'–':String(r.s)}
@@ -234,11 +237,11 @@ function rigView(r,rx){
 $('bC').onclick=()=>api('/api/call',{call:$('mc').value,grid:$('mg').value}).then(tick);
 let sLoaded=false;
 function fillSettings(c){if(sLoaded)return;sLoaded=true;
-$('sCq').value=c.cq_tries;$('sTail').value=c.tail_tries;$('sQso').value=c.qso_tries;$('sHold').value=c.hold_min;
+$('sCq').value=c.cq_tries;$('sTail').value=c.tail_tries;$('sQso').value=c.qso_tries;$('sWCall').value=c.watts_call;$('sWQso').value=c.watts_qso;$('sHold').value=c.hold_min;
 $('sIdleN').value=c.idle_every;$('sIdleS').value=c.idle_secs;$('sSpec').checked=c.special_first!==false;
 $('sCallCq').checked=c.call_cq!==false;$('sCqSecs').value=c.cq_secs;
 $('sAutoDf').checked=c.auto_df!==false;$('sDfLo').value=c.df_lo;$('sQrm').checked=c.qrm_detect!==false;$('sMinSnr').value=c.min_snr}
-$('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,qso_tries:+$('sQso').value,hold_min:+$('sHold').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value,special_first:$('sSpec').checked,call_cq:$('sCallCq').checked,cq_secs:+$('sCqSecs').value,auto_df:$('sAutoDf').checked,df_lo:+$('sDfLo').value,qrm_detect:$('sQrm').checked,min_snr:+$('sMinSnr').value},'POST');sLoaded=false;tick()};
+$('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,qso_tries:+$('sQso').value,watts_call:+$('sWCall').value,watts_qso:+$('sWQso').value,hold_min:+$('sHold').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value,special_first:$('sSpec').checked,call_cq:$('sCallCq').checked,cq_secs:+$('sCqSecs').value,auto_df:$('sAutoDf').checked,df_lo:+$('sDfLo').value,qrm_detect:$('sQrm').checked,min_snr:+$('sMinSnr').value},'POST');sLoaded=false;tick()};
 setInterval(tick,2000);tick();
 // T/R cycle bar (15 s FT8, 7.5 s FT4, 3.75 s FT2) + TX badge, updated locally every 200ms
 setInterval(()=>{const per=window._per||15,t=Date.now()/1000,pos=t%per,pct=pos/per*100;

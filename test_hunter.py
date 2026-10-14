@@ -630,9 +630,9 @@ threading.Thread(target=fl.serve_forever, daemon=True).start()
 ns["RIG"]["url"] = f"http://127.0.0.1:{fl.server_address[1]}"
 threading.Thread(target=ns["rig_poll"], daemon=True).start(); time.sleep(1.0)
 R = ns["RIG"]
-check("FLRig polled: rig, max power from the table, PTT, no S-meter (power not read mid-TX)",
-      R["ok"] and R["xcvr"] == "Xiegu-G90" and R["max"] == 20 and "power" not in R and R["ptt"]
-      and not R.get("has_s"))
+check("FLRig polled: rig, max power from the table, PTT, no S-meter",
+      R["ok"] and R["xcvr"] == "Xiegu-G90" and R["max"] == 20 and R["ptt"] and not R.get("has_s"))
+check("calling power (default 10 W) set on the radio", RADIO["power"] == 10 and R["want"] == 10)
 def post(path, body):
     req = urllib.request.Request(f"http://127.0.0.1:{srv.server_address[1]}{path}", json.dumps(body).encode(),
                                  {"Content-Type": "application/json"})
@@ -641,13 +641,28 @@ post("/api/rig/power", {"watts": 50})
 check("TX power set through FLRig, clamped to the rig's max", RADIO["power"] == 20)
 post("/api/rig/power", {"watts": 5})
 check("TX power lowered", RADIO["power"] == 5)
-check("chosen TX power saved", json.load(open(ns["CONFIG_FILE"]))["tx_watts"] == 5)
+check("slider sets and saves the calling power when not in a QSO",
+      json.load(open(ns["CONFIG_FILE"]))["watts_call"] == 5 and st["config"]["watts_qso"] == 20)
 RADIO["ptt"] = 0; time.sleep(2.5)
 check("power setting read from the radio over CI-V (FLRig's get_power is 0 on a G90)", R["power"] == 5)
 RADIO["power"] = 1                                  # something else turns it down
 deadline = time.time() + 20
 while RADIO["power"] != 5 and time.time() < deadline: time.sleep(0.5)
 check("power changed behind our back is set back to the chosen power", RADIO["power"] == 5)
+st["target"] = {"call": "K1PWR", "grid": "", "left": 9, "why": "CQ", "msg": "", "resp": False}
+time.sleep(2.5)
+check("still calling: calling power", RADIO["power"] == 5)
+dec(f"{st['mycall']} K1PWR -07"); time.sleep(0.8)
+check("they answered: QSO power at once", RADIO["power"] == 20)
+st["target"] = None; time.sleep(2.5)
+check("QSO over: back to calling power", RADIO["power"] == 5)
+st["target"] = {"call": "K1PWR", "grid": "", "left": 9, "why": "called us", "msg": "", "resp": False}
+post("/api/rig/power", {"watts": 15})
+check("slider in a QSO sets the QSO power", st["config"]["watts_qso"] == 15 and st["config"]["watts_call"] == 5)
+st["target"] = None
+post("/api/config", {"watts_call": 99})
+check("power settings clamped to the rig's max", st["config"]["watts_call"] == 20)
+post("/api/config", {"watts_call": 5}); time.sleep(2.5)
 check("G90 raw power values map to watts", ns["civ_watts"](0x17E, ns["CIV"]["Xiegu-G90"][1]) == 15
       and ns["civ_watts"](0x128, ns["CIV"]["Xiegu-G90"][1]) == 10 and ns["same_watts"](10, 11))
 RADIO["ptt"] = 1; time.sleep(2.5)

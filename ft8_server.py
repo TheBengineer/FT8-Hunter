@@ -20,7 +20,7 @@ state = {
                "call_cq": True, "cq_secs": 120, "cq_first": False,
                "auto_df": True, "df_lo": 1300, "df_hi": 2700,  # df_lo: rig feeds back below 1300 Hz
                "qrm_detect": True, "qrm_backoff_min": 5, "min_snr": -20,
-               "tx_watts": None},  # TX power chosen in the UI, held on the radio
+               "watts_call": 10, "watts_qso": 20},  # TX power held on the radio: calling / once they answer
     "stats": {"cq_heard": 0, "calls_made": 0},
 }
 # "CQ [TAG] CALL [GRID]"; TAG is DX, TEST, an activity (POTA...) or a
@@ -1290,6 +1290,8 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
             if t and same_call(frm, tgt):
                 # our target answered; WS auto-sequences from here. After their
                 # sign-off we only owe a 73, so release the target soon after.
+                if not t.get("resp"):
+                    RIG_WAKE.set()  # QSO power before our next transmission
                 t["resp"] = True
                 t["done"] = t.get("done") or signoff
                 # each reply buys qso_tries more of our transmissions (+1 period
@@ -1329,6 +1331,7 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
 # Radio via FLRig's XML-RPC server: TX power control, PTT and S-meter.
 # One multicall per poll (FLRig answers in ~0.5 s, serialised with its CAT polling).
 RIG = {"ok": False, "url": "http://127.0.0.1:12345", "err": ""}
+RIG_WAKE = threading.Event()  # poll now: e.g. the power for this QSO stage changed
 MAX_W = {"Xiegu-G90": 20, "Xiegu-X6100": 10, "IC-705": 10, "FT-818": 6, "FT-817": 5}  # rig.get_maxpwr often says 0
 
 def flrig():
@@ -1369,17 +1372,36 @@ def same_watts(a, b):
     table = CIV.get(RIG.get("xcvr"), (0, {}))[1]
     return a == b or (a in table and b in table and table[a] == table[b])
 
+def answered():
+    """Has the station we are working answered us (or called us first)?"""
+    t = state["target"]
+    return bool(t and (t.get("resp") or t.get("why") == "called us"))
+
+def want_watts():
+    """Low power while calling, more once someone answers: stations that hear
+    us at all get a stronger signal for the rest of the QSO."""
+    c = state["config"]
+    return c.get("watts_qso" if answered() else "watts_call")
+
 def hold_power(fl, now):
-    """Keep the radio at the power chosen in the UI: read its real setting
-    every few seconds while receiving, and set it back (logged) if something
-    else changed it."""
+    """Keep the radio at the power for this stage of the QSO: set it when the
+    stage changes, read its real setting every few seconds while receiving,
+    and set it back (logged) if something else changed it."""
+    want = want_watts()
+    if want and want != RIG.get("want"):
+        # going up can't wait for our transmission to end (it is for that
+        # transmission); going down can
+        if not RIG.get("ptt") or want > (RIG.get("want") or 0):
+            fl.rig.set_power(want)
+            log(f"TX power {want} W ({'in QSO' if answered() else 'calling'})")
+            RIG.update(want=want, power=want, pw_t=now, pw_off=0)
+        return
     if RIG.get("ptt") or now - RIG.get("pw_t", 0) < 6:
         return
     w = civ_power(fl)
     if w is None:
         return
     RIG.update(power=w, pw_t=now)
-    want = state["config"].get("tx_watts")
     if not want or same_watts(w, want):
         RIG["pw_off"] = 0
         return
@@ -1415,7 +1437,8 @@ def rig_poll():
             if RIG["ok"] or not RIG["err"]:
                 log(f"FLRig: {e}")
             RIG.update(ok=False, err=str(e)[:80])
-        time.sleep(1 if RIG.get("ptt") else 2)
+        RIG_WAKE.wait(1 if RIG.get("ptt") else 2)
+        RIG_WAKE.clear()
 
 def rx_level(now):
     """Incoming signal, from WS: the strongest decode of the last period."""
@@ -1580,7 +1603,7 @@ class H(BaseHTTPRequestHandler):
                 "idle": max(0, round(ENG["idle_until"] - time.time())),
                 "cq_calling": max(0, round(ENG["cq_until"] - time.time())),
                 "mode": mode(), "period": period(),
-                "rig": {k: v for k, v in RIG.items() if k != "url"}, "rx": rx_level(now),
+                "rig": {**{k: v for k, v in RIG.items() if k != "url"}, "qso": answered()}, "rx": rx_level(now),
                 "step": ENG.get("step") or {"step": "stopped" if not state["running"] else "idle"},
                 "qrm": {"secs": max(0, round(ENG["qrm_until"] - time.time())), "why": ENG["qrm_why"]},
                 "txdf": {"current": u.get("tx_df"), **ENG.get("suggest", {})},
@@ -1654,12 +1677,13 @@ class H(BaseHTTPRequestHandler):
                         "connected": heard > 0}); return
         elif p == "/api/rig/power":
             try:
+                # the slider sets the power for the stage we are in now
                 w = max(1, min(int(body.get("watts", 0)), RIG.get("max", 100)))
                 flrig().rig.set_power(w)
-                RIG.update(power=w, pw_t=time.time(), pw_off=0)
-                state["config"]["tx_watts"] = w
+                RIG.update(power=w, want=w, pw_t=time.time(), pw_off=0)
+                state["config"]["watts_qso" if answered() else "watts_call"] = w
                 save_config()
-                log(f"TX power set to {w} W")
+                log(f"TX power {'in QSO' if answered() else 'calling'} set to {w} W")
             except Exception as e:
                 return self._json({"error": str(e)[:80]}, 502)
         elif p == "/api/txdf":
@@ -1676,7 +1700,10 @@ class H(BaseHTTPRequestHandler):
             state["config"].update({k: v for k, v in body.items() if k in state["config"]})
             c = state["config"]  # keep the offset range usable: 200 Hz up, room for a signal
             c["df_lo"] = max(200, min(int(c["df_lo"]), int(c["df_hi"]) - 300))
+            for k in ("watts_call", "watts_qso"):
+                c[k] = max(1, min(int(c[k]), RIG.get("max", 100)))
             save_config()
+            RIG_WAKE.set()  # new power applies now
             if "cq_first" in body:
                 log("CQ first mode " + ("on: running our own CQ" if c["cq_first"] else "off: hunting"))
         else: return self._json({"error": "unknown"}, 404)

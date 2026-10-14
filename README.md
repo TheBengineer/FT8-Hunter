@@ -133,7 +133,10 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
   spectrum for two cycles running pauses new calls for 5 minutes.
 - **Radio power**: the status card sets TX power through FLRig's XML-RPC server
   (`--flrig`, default `http://127.0.0.1:12345`), and shows the strongest decode
-  of the last period as the incoming signal. The chosen power is saved and held:
+  of the last period as the incoming signal. Power has two settings: **calling**
+  (default 10 W, also used for CQ) and **in QSO** (default 20 W), switched up as
+  soon as the station answers and back down once the QSO is over. The slider sets
+  the one for the stage you're in; both are also in Settings. The power is held:
   if the radio's setting changes behind the hunter's back it is set back (and
   logged). On the G90, FLRig's `get_power` reads 0, so the setting is read with a
   raw CI-V query instead. A thin bar shows output power while transmitting (the
