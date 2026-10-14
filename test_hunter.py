@@ -40,6 +40,14 @@ def fresh():
     ENG["active"].clear(); ENG["calls_to"].clear(); ENG["spec_hist"].clear(); ENG["rr73_again"].clear()
     CTX["tx"].sent.clear()
 
+def recent_tm(par, back=0):
+    """Start (UTC ms of day) of the last ended FT8 period of parity `par`,
+    or `back` same-parity periods before it."""
+    t = (ns["tod_ms"](time.time()) // 15000 - 1) * 15000
+    if (t // 15000) % 2 != par:
+        t -= 15000
+    return (t - back * 30000) % 86400000
+
 def ps(s):
     b = s.encode(); return struct.pack(">i", len(b)) + b
 
@@ -303,31 +311,35 @@ check("empty band -> middle of the allowed 1300-2700 range", f is not None and 1
 check("a clear offset below the lowest allowed is moved up", pick(1, current=900) >= 1300)
 for i, df in enumerate(range(300, 2700, 80)):  # crowd the odd period except one hole
     if not 1800 <= df < 2000:
-        dec(f"W{i}AA K{i}BB -10", df=df, t_ms=15000)
+        dec(f"W{i}AA K{i}BB -10", df=df, t_ms=recent_tm(1))
 f = pick(1)
 check("picks the only clear gap (1800-2000)", f is not None and 1800 <= f and f + 50 <= 2000)
 check("even period unaffected by odd-period crowd", 1900 <= pick(0) <= 2050)
 check("keeps current offset while clear", pick(1, current=1850) == 1850)
 check("moves off an occupied current offset", pick(1, current=700) != 700)
 for i, df in enumerate(range(1800, 2000, 40)):
-    dec(f"W{i}CC K{i}DD -10", df=df, t_ms=15000)
+    dec(f"W{i}CC K{i}DD -10", df=df, t_ms=recent_tm(1))
 check("fully crowded period -> no pick", pick(1) is None)
 f = pick(1, current=800)
 check("crowded but below the lowest offset -> least-bad spot inside the range", f is not None and 1300 <= f)
+fresh(); dec("K1OLD W2LEFT -10", df=1900, t_ms=recent_tm(1, back=2))  # 3 odd periods ago
+check("a frequency given up two cycles ago is free again", 1900 <= pick(1, current=1900) < 1950)
+fresh(); dec("K1NOW W2STAY -10", df=1900, t_ms=recent_tm(1, back=1))  # the odd period before last
+check("...but one used in the last two cycles is not", pick(1, current=1900) != 1900)
 st["config"]["df_lo"] = 300
 fresh(); check("lowest offset setting is honoured (300 -> mid-band)", 1400 <= pick(1) <= 1500)
 st["config"]["df_lo"] = 1300
 
 # answering a station on the even period moves us to a clear odd offset
 fresh(); st["udp"]["revision"] = "260926-hunter"; st["udp"]["tx_df"] = 1500
-dec("K1CQ W2BUSY -05", df=1480, t_ms=15000)       # odd period traffic on our offset
-dec("CQ K4PRK EM85", snr=-3, df=900, t_ms=0)       # even-period CQ: we answer on odd
+dec("K1CQ W2BUSY -05", df=1480, t_ms=recent_tm(1))       # odd period traffic on our offset
+dec("CQ K4PRK EM85", snr=-3, df=900, t_ms=recent_tm(0))       # even-period CQ: we answer on odd
 ns["engine_tick"]()
 s = CTX["tx"].sent
 check("answer: hold + offset change before the Reply",
       s.index(SET_HOLD) < s.index(REPLY) and s.index(SET_TX_DF) < s.index(REPLY))
 fresh(); st["udp"]["revision"] = ""; st["udp"]["tx_df"] = 1500
-dec("CQ K4PRK EM85", snr=-3, df=900, t_ms=0); ns["engine_tick"]()
+dec("CQ K4PRK EM85", snr=-3, df=900, t_ms=recent_tm(0)); ns["engine_tick"]()
 check("stock WS: no control messages, suggestion only",
       CTX["tx"].sent == [REPLY] and ENG["suggest"]["par"] == 1)
 
@@ -427,6 +439,9 @@ ex = bytes.fromhex(row["ex"])
 check("waterfall rows carry excess over the baseline",
       len(wf["rows"]) == 40 and len(ex) == 300 and (ex[182] - 20) / 4 > 1 and abs((ex[100] - 20) / 4) < 2)
 check("waterfall shows the weak signal as occupied", any(a <= 1800 < b for a, b in wf["occupied"][1]))
+handle(spectrum(noisy(), t_ms=T0 + 18 * 15000)); handle(spectrum(noisy(), t_ms=T0 + 19 * 15000))
+handle(spectrum(noisy(), t_ms=T0 + 20 * 15000)); handle(spectrum(noisy(), t_ms=T0 + 21 * 15000))
+check("...and free again once it has been gone two cycles", not any(1780 <= f <= 1860 for f in ENG["spec"][1]["hot"]))
 
 # --- a station we just logged that repeats its R-report never got our RR73
 fresh(); st["running"] = True

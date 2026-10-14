@@ -726,13 +726,18 @@ def new_slot():
         ENG[k].clear()
     ENG["cq_until"] = 0
 
+RECENT_PERIODS = 2  # same-parity periods the offset picker looks back
 def occupied(par, now):
-    """Occupied audio intervals [lo, hi) on one T/R parity: recent decodes plus,
-    on the ws-hunter build, spectrum bins well above the noise floor."""
+    """Occupied audio intervals [lo, hi) on one T/R parity, from its last two
+    periods only (someone who left a frequency before that has given it up):
+    decodes plus, on the ws-hunter build, spectrum bins above the quiet level."""
+    tr = int(period() * 1000)
+    # period start ages: the last two of a parity start under 5 periods ago
+    recent = lambda tm: (tod_ms(now) - tm) % 86400000 < (2 * RECENT_PERIODS + 1) * tr
     iv = [(o["df"] - GUARD, o["df"] + bw() + GUARD) for o in list(ENG["occ"])
-          if o["par"] == par and now - o["t"] < 120]
+          if o["par"] == par and o.get("tm") is not None and recent(o["tm"])]
     sp = ENG["spec"].get(par)
-    if sp and now - sp["t"] < 120:
+    if sp and now - sp["t"] < cyc(2 * RECENT_PERIODS):
         iv += [(f - GUARD, f + sp["bin"] + GUARD) for f in sp["hot"]]
     return iv
 
@@ -841,10 +846,10 @@ def spec_baseline(tr_ms, nbins):
     k = len(rows) // 4
     return [sorted(col)[k] for col in zip(*rows)]
 
-def spec_excess(par, now, n=4):
+def spec_excess(par, now, n=RECENT_PERIODS):
     """(latest, average) excess over the baseline in dB per bin, for the last
-    n spectra of parity `par` (3 minutes at most), with their bin layout."""
-    hist = [h for h in list(ENG["spec_hist"]) if h["par"] == par and now - h["t"] < 180]
+    n spectra of parity `par` (none older than that), with their bin layout."""
+    hist = [h for h in list(ENG["spec_hist"]) if h["par"] == par and now - h["t"] < cyc(2 * n) + 5]
     if not hist:
         return None
     last = hist[-1]
@@ -858,7 +863,7 @@ WEAK_DB, NEW_DB, STRONG_DB = 1.2, 3.0, 8.0  # see weak_hot
 def weak_hot(par, now):
     """Bins with someone transmitting on parity `par`, decodable or not.
     Bin noise is ~0.5 dB about its baseline, so a run of 3+ bins (30 Hz)
-    that is up 1.2 dB on average over the last periods, or 3 dB in the
+    that is up 1.2 dB on average over the last two periods, or 3 dB in the
     latest, is a signal (a -20 dB FT8 signal is ~+2 dB); so is any single
     bin 8 dB up. Catches stations too weak to decode here who would still
     be on top of us at the far end."""

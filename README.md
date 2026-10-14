@@ -120,7 +120,9 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
   WS's Status that the next message really is the CQ.
 - **Clear offset** (ws-hunter build): before answering or calling CQ it ticks Hold
   Tx Freq and moves to the widest gap on the period it will transmit in, judged
-  from recent decodes and the spectrum; it stays put while that spot is clear.
+  from the decodes and spectrum of that period's last two cycles only (a station
+  that gave up a frequency before then no longer counts); it stays put while
+  that spot is clear.
   The spectrum test compares each 10 Hz bin with its usual quiet level (learned
   over the last few minutes, so the receiver's passband slope doesn't count), so
   a station too weak to decode here, about -20 dB and up, still marks its spot
