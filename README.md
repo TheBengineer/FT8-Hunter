@@ -13,6 +13,10 @@ Each T/R period (15 s FT8, 7.5 s FT4, 3.75 s FT2) it does the first of these tha
 4. Tail-end a station signing off.
 5. Call CQ for a while, then stop and listen.
 
+**CQ first** (the 📣 button) turns the hunter into a runner: it calls CQ and works
+everyone who answers, still leaves its CQ for an activator if "Activations first"
+is on, and skips steps 3 and 4.
+
 CQs are ranked by chance of a contact: SNR, minus 3 dB for each station already
 calling them, plus 3 if heard last period.
 

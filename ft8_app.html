@@ -37,7 +37,7 @@ li.skip{opacity:.55}li.tgt{background:#1d3a2a;border-radius:8px}
 .flow .pass .q{border-color:#2a6cb6;color:#cde}.flow .pass .a{opacity:.35}
 .flow .cur .q{background:#2a6cb6;border-color:#2a6cb6;color:#fff}
 .flow .cur .a{background:#1f9d4d;border-color:#1f9d4d;color:#fff;font-weight:700}.flow .cur .ar{color:#2ecc71}
-.flow .ahead{opacity:.35}.flow .det{display:block;font-weight:400;font-size:.72rem;opacity:.9}
+.flow .ahead{opacity:.35}.flow .off .q,.flow .off .a{text-decoration:line-through;opacity:.4}.flow .det{display:block;font-weight:400;font-size:.72rem;opacity:.9}
 .dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#666;margin-right:6px}
 .dot.run{background:#2ecc71}.small{font-size:.8rem;color:#9ab}
 details summary{font-weight:700;padding:4px}
@@ -66,6 +66,7 @@ details summary{font-weight:700;padding:4px}
 <div id="cbar" style="height:100%;width:0%;background:#2a6cb6"></div></div>
 <div class="small" id="ctxt" style="text-align:center;margin-top:2px">cycle</div>
 <div class="row"><button id="bS">Start</button><button id="bX" class="warn">Skip</button></div>
+<div class="row" style="margin-top:8px"><button id="bCqFirst" style="background:#3a4552" title="Run our own CQ: answer callers and activators only">📣 CQ first: off</button></div>
 <div class="row" style="margin-top:8px"><button id="bCQ" style="background:#1f9d4d">🔴 ARM TX</button></div>
 <div id="rig" style="margin-top:8px;padding:8px;border:1px solid #26303c;border-radius:10px">
 <div class="row small"><b id="rigName">📻 radio</b><span id="rigSt" style="margin-left:auto"></span></div>
@@ -129,12 +130,17 @@ const STEPS=[['stopped','Hunter running?','Stopped'],
  ['tail','Station signing off?','Tail-end it'],
  ['cq_end','Our CQ run just ended?','Stop TX and listen'],
  ['cq_start','CQ calling enabled?','Start a CQ run']];
-function flow(st){const id=(st||{}).step||'stopped',det=(st||{}).detail||'';
+// CQ first mode: the hunter runs its own CQ; plain CQs and tail-ends are skipped
+let CQF=false;
+function cqFirstView(on){CQF=on;const b=$('bCqFirst');b.textContent='📣 CQ first: '+(on?'on':'off');b.style.background=on?'#b8860b':'#3a4552'}
+$('bCqFirst').onclick=()=>{cqFirstView(!CQF);api('/api/config',{cq_first:CQF},'POST').then(tick)};
+function flow(st,cfg){const id=(st||{}).step||'stopped',det=(st||{}).detail||'';
+ const off=cfg&&cfg.cq_first?{cq:1,tail:1}:{};
  let cur=STEPS.findIndex(x=>x[0]===id);if(cur<0)cur=STEPS.length; // idle: every check said no
  let html=STEPS.map(([sid,q,a],i)=>{
-  const cls=i<cur?'pass':i===cur?'cur':'ahead';
+  const cls=(i<cur?'pass':i===cur?'cur':'ahead')+(off[sid]?' off':'');
   // the first check is inverted: "running? yes" continues down, "no" stops
-  const ans=i<cur?(i===0?'yes':'no'):i===cur?(i===0?'no':'yes'):'';
+  const ans=off[sid]?'CQ first: skipped':i<cur?(i===0?'yes':'no'):i===cur?(i===0?'no':'yes'):'';
   return `<div class="r ${cls}"><div class="q">${q}<span class="ans">${ans}</span></div><div class="ar">→</div>`+
    `<div class="a">${a}${i===cur&&det?`<span class="det">${det}</span>`:''}</div></div>`}).join('');
  html+=`<div class="r ${cur===STEPS.length?'cur':'ahead'}"><div></div><div></div><div class="a">Idle until next period${cur===STEPS.length&&det?`<span class="det">${det}</span>`:''}</div></div>`;
@@ -164,7 +170,7 @@ function ansPrefs(save){const f={q:$('aQ'),age:$('aAge'),me:$('aMe')};
 ansPrefs(false);['aQ','aAge','aMe'].forEach(id=>$(id).addEventListener('input',()=>{ansPrefs(true);renderAns()}));
 setInterval(()=>{const now=srvNow();document.querySelectorAll('#ans .ago').forEach(el=>el.textContent=ago(Math.max(0,Math.round(now-el.dataset.seen))))},1000);
 async function tick(){const s=await api('/api/state');
-fillSettings(s.config);if(s.rig)rigView(s.rig,s.rx);HELD=s.holds||{};flow(s.step);
+fillSettings(s.config);cqFirstView(!!s.config.cq_first);if(s.rig)rigView(s.rig,s.rx);HELD=s.holds||{};flow(s.step,s.config);
 $('dot').className='dot'+(s.running?' run':'');
 $('st').textContent=(s.running?'RUNNING':'STOPPED')+' · '+s.mycall+' '+s.mygrid;
 $('target').textContent=s.target?('🎯 '+s.target.call+' '+(s.target.grid||'')+' · '+(s.target.why||'')+' · '+(s.target.resp?'in QSO':Math.ceil(s.target.left/2)+' tries left')):(s.cq_calling?('📣 calling CQ · '+s.cq_calling+'s'):'no target');

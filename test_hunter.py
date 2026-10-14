@@ -231,6 +231,21 @@ check("CQ run over -> halt and listen", CTX["tx"].sent == [HALT] and ENG["idle_u
 st["config"]["call_cq"] = False
 fresh(); ns["engine_tick"]()
 check("call_cq off -> no CQ", not ENG["cq_until"] and not CTX["tx"].sent)
+# --- CQ first mode: run our own CQ; answer callers and activators only
+st["config"]["cq_first"] = True
+fresh(); dec("CQ K9XYZ EN52", snr=5); ns["engine_tick"]()
+check("CQ first: a plain CQ is not answered, we call CQ instead (even with call_cq off)",
+      st["target"] is None and ENG["cq_until"] > time.time())
+dec("JA1AAA VK2BBB RR73"); ns["engine_tick"]()
+check("CQ first: no tail-ending", st["target"] is None)
+dec("KR4MZM N5CAL EM15"); ns["engine_tick"]()
+check("CQ first: a caller is answered", st["target"] and st["target"]["call"] == "N5CAL")
+fresh(); ns["engine_tick"](); dec("CQ POTA K4PRK EM85"); ns["engine_tick"]()
+check("CQ first: an activator still interrupts our CQ", st["target"] and st["target"]["call"] == "K4PRK")
+st["config"]["special_first"] = False
+fresh(); ns["engine_tick"](); dec("CQ POTA K4PRK EM85"); ns["engine_tick"]()
+check("CQ first with activations-first off: activators skipped too", st["target"] is None and ENG["cq_until"])
+st["config"].update(special_first=True, cq_first=False)
 st["udp"]["revision"] = ""
 
 # --- politeness / success strategies

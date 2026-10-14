@@ -17,7 +17,7 @@ state = {
     "config": {"max_cycles": 3, "cooldown": 2, "cq_only": True,
                "cq_tries": 3, "tail_tries": 2, "hold_min": 10,
                "idle_every": 4, "idle_secs": 60, "special_first": True,
-               "call_cq": True, "cq_secs": 120,
+               "call_cq": True, "cq_secs": 120, "cq_first": False,
                "auto_df": True, "df_lo": 1300, "df_hi": 2700,  # df_lo: rig feeds back below 1300 Hz
                "qrm_detect": True, "qrm_backoff_min": 5, "min_snr": -20},
     "stats": {"cq_heard": 0, "calls_made": 0},
@@ -964,7 +964,11 @@ def engine_tick():
         return at("listen", f"{round(ENG['idle_until'] - now)} s left")
     # CQ callers: activations first (if enabled), then best chance of a
     # contact; fall through to the next if one can't be answered.
-    cands = [e for e in list(state["cq"].values()) if not cq_skip(e, now)]
+    # CQ first mode: we run the frequency. Only activators (when they come
+    # first) are worth leaving our CQ for; other CQs and sign-offs are not.
+    cq_first = cfg.get("cq_first", False)
+    cands = [e for e in list(state["cq"].values()) if not cq_skip(e, now)
+             and not (cq_first and not (e.get("special") and cfg.get("special_first", True)))]
     cands.sort(key=cq_rank)
     for e in cands:
         if acquire(e["call"], e["grid"], e["msg"], tries=cfg.get("cq_tries", 3),
@@ -980,7 +984,7 @@ def engine_tick():
     # "A B ..." makes WS call B, the sender. RR73/RRR usually comes from the
     # station running the frequency, who is about to be free; prefer those.
     best = None
-    for m in list(state["msgs"]):
+    for m in ([] if cq_first else list(state["msgs"])):
         if now - m.get("seen", 0) >= cyc(2):
             continue
         to, frm, rest = addressing(m["msg"])
@@ -1003,7 +1007,7 @@ def engine_tick():
         ENG["idle_until"] = now + cfg.get("idle_secs", 60)
         log(f"CQ run over, listening {cfg.get('idle_secs', 60)}s")
         return at("cq_end", f"listening {cfg.get('idle_secs', 60)} s")
-    if cfg.get("call_cq", True):  # last resort: call CQ ourselves
+    if cq_first or cfg.get("call_cq", True):  # last resort (or first): call CQ ourselves
         start_cq(cfg.get("cq_secs", 120))
         return at("cq_start", f"{cfg.get('cq_secs', 120)} s run")
     # spare cycle: every idle_every idle cycles, rest to catch the off sequence
@@ -1449,6 +1453,8 @@ class H(BaseHTTPRequestHandler):
             c = state["config"]  # keep the offset range usable: 200 Hz up, room for a signal
             c["df_lo"] = max(200, min(int(c["df_lo"]), int(c["df_hi"]) - 300))
             save_config()
+            if "cq_first" in body:
+                log("CQ first mode " + ("on: running our own CQ" if c["cq_first"] else "off: hunting"))
         else: return self._json({"error": "unknown"}, 404)
         self._json({"ok": True})
     def log_message(self, *a): pass
