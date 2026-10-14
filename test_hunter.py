@@ -385,10 +385,21 @@ check("muted (transmit) periods kept out of the noise floor once it is known",
       sum(1 for x in ENG["noise_hist"] if x < -40) == 2 and len(ENG["noise_hist"]) == 8)
 for i in range(12, 16): handle(spectrum(quiet, t_ms=i * 15000))
 settle(); check("normal band after our transmissions: no backoff", ENG["qrm_until"] == 0)
-fresh(); ns["note_tx"](True)
-handle(spectrum(quiet, t_ms=ns["tod_ms"](time.time()) // 15000 * 15000))
+fresh(); ns["note_tx"](True); ENG["tx_iv"][-1][0] -= 20  # on air for 20 s now
+handle(spectrum(quiet, t_ms=ns["tod_ms"](time.time() - 10) // 15000 * 15000))
 check("spectrum of a period we are transmitting in is ignored", not ENG["spec_pending"])
 ns["note_tx"](False); ENG["tx_iv"].clear()
+# regression: transmitting every other period, PTT up right at the start of
+# ours and the drop reported late, threw away every receive period too
+fresh(); tod0 = ns["tod_ms"](time.time()) // 30000 * 30000 - 60000  # even periods start here
+base = time.time() - (ns["tod_ms"](time.time()) - tod0) / 1000
+for k in (1, 3):                                   # our odd periods: 0.0 s to 14.6 s
+    ENG["tx_iv"].append([base + k * 15 + 0.0, base + k * 15 + 14.6])
+handle(spectrum(quiet, t_ms=tod0 + 30000))
+check("receive period between two of our transmissions is kept", len(ENG["spec_hist"]) == 1)
+handle(spectrum(quiet, t_ms=tod0 + 45000))
+check("...but our own transmit period is not", len(ENG["spec_hist"]) == 1)
+ENG["tx_iv"].clear()
 st["udp"]["revision"] = ""
 
 # --- weak signals: a learned per-bin baseline, so a passband slope isn't a

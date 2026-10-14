@@ -787,11 +787,14 @@ def note_tx(txing):
         iv[-1][1] = now
 
 def overlaps_tx(t_ms, tr_ms, margin_ms=1000):
-    """Did any of our transmissions overlap this period (+ audio latency)?"""
+    """Did any of our transmissions reach more than margin_ms into this
+    period? Not padded outward: PTT comes up right at the start of our next
+    period and Status reports the drop late, so padding would count every
+    receive period between two of ours as transmitted (no waterfall)."""
     end = t_ms + tr_ms
     for on, off in list(ENG["tx_iv"]):
-        a, b = tod_ms(on) - margin_ms, tod_ms(off if off else time.time()) + margin_ms
-        if a < end and b > t_ms:
+        a, b = tod_ms(on), tod_ms(off if off else time.time())
+        if a < end - margin_ms and b > t_ms + margin_ms:
             return True
     return False
 
