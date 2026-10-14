@@ -147,8 +147,8 @@ async function api(p,b,m){const r=await fetch(p,{method:m||(b?'POST':'GET'),head
 function snrC(s){return s>=0?'good':s>=-12?'mid':'bad'}
 // engine steps in the order engine_tick checks them: [id, question, yes-action]
 const STEPS=[['stopped','Hunter running?','Stopped'],
- ['tuning','New band, antenna not tuned yet?','Tune the antenna under FT8'],
  ['newband','Just arrived on this band?','Listen 2 cycles for a clear offset'],
+ ['tuning','New band, antenna not tuned yet?','Tune the antenna under FT8'],
  ['target','Calling or working a target?','Work the target'],
  ['caller','Station calling me?','Answer the caller'],
  ['qrm','Someone else on frequency?','Back off: no new calls'],

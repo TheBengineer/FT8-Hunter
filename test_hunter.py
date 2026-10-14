@@ -38,7 +38,7 @@ def fresh():
     ENG["callers"].clear(); ENG["holds"].clear()
     ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0, arrived=None)
     ENG["occ"].clear(); ENG["spec"].clear(); ENG["noise_hist"].clear(); st["udp"].pop("tx_df", None)
-    ENG["spec_pending"].clear(); ENG["qrm_first"] = None; ENG["tx_iv"].clear()
+    ENG["spec_pending"].clear(); ENG["qrm_first"] = None; ENG["tx_iv"].clear(); ENG["tune_iv"].clear()
     ENG["active"].clear(); ENG["calls_to"].clear(); ENG["spec_hist"].clear(); ENG["rr73_again"].clear()
     CTX["tx"].sent.clear()
 
@@ -795,8 +795,11 @@ fresh(); st["udp"].update(revision="261013-hunter", band="20m", dial=14080000, m
 ENG["tuned_band"] = "40m"; st["config"]["tune_new_band"] = True
 started = []
 real_start = ns["start_tune"]; ns["start_tune"] = lambda: started.append(1)
-st["running"] = True; ns["engine_tick"]()
-check("new band: the engine tunes before anything else", started and ENG["step"]["step"] == "tuning")
+ENG["arrived"] = time.time() - 5; st["running"] = True; ns["engine_tick"]()
+check("new band: listen first, no tune needed for that", not started and ENG["step"]["step"] == "newband")
+ENG["arrived"] = time.time() - 80; ns["engine_tick"]()
+check("...then tune before the first transmission", started and ENG["step"]["step"] == "tuning")
+ENG["arrived"] = None
 ENG["tuned_band"] = "20m"; started.clear(); ns["engine_tick"]()
 check("same band (a mode change): no tune", not started)
 ns["start_tune"] = real_start
@@ -806,7 +809,11 @@ check("tune carrier 1 kHz under the band's FT8, then back to the operating frequ
 check("...and the band counts as tuned", ENG["tuned_band"] == "20m" and not ENG["tuning"])
 rig.follow, rig.tuned_at = False, []; ENG["tuned_band"] = "40m"; ENG["tuning"] = "starting"; ns["atu_tune"]()
 check("rig not on the tune frequency: no tune carrier", rig.tuned_at == [] and not ENG["tuning"])
-check("a tune starts the listen over", time.time() - ENG["arrived"] < 30)
+per = ns["period"](); tr = int(per * 1000); p0 = time.time() // per * per; t = ns["tod_ms"](p0)
+ENG["tune_iv"].clear(); ENG["tune_iv"].append([p0 + 1.5, p0 + per - 1.5])
+check("the period spent tuning is left out of the offset picker", t not in ns["heard_periods"]((t // tr) % 2, time.time() + 2 * tr / 1000))
+check("...and a tune doesn't start the listen over", not ENG.get("arrived"))
+ENG["tune_iv"].clear()
 ns["flrig"], ns["ws_set_dial"] = real_fl, real_dial
 # a new band: two full cycles (two even, two odd periods) heard before any transmission
 fresh(); st["running"] = True; ENG["tuned_band"] = "20m"

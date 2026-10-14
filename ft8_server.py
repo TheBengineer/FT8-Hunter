@@ -335,6 +335,7 @@ ENG = {"holds": {}, "held": {}, "callers": deque(maxlen=20), "parity": {0: 0, 1:
        "spec_hist": deque(maxlen=60),     # recent spectra relative to their own floor: waterfall + weak signals
        "qrm_first": None,
        "tx_iv": deque(maxlen=50),          # our transmissions [on, off] (epoch s)
+       "tune_iv": deque(maxlen=5),         # antenna tunes [on, off]: off the dial, nothing heard
        "qrm_until": 0, "qrm_n": 0, "qrm_why": "",
        "active": {},    # base call -> last time heard sending to someone (0 = signed off)
        "rr73_again": {},  # base call -> RR73s re-sent after the QSO was logged
@@ -833,7 +834,7 @@ def overlaps_tx(t_ms, tr_ms, margin_ms=1000):
     period and Status reports the drop late, so padding would count every
     receive period between two of ours as transmitted (no waterfall)."""
     end = t_ms + tr_ms
-    for on, off in list(ENG["tx_iv"]):
+    for on, off in list(ENG["tx_iv"]) + list(ENG["tune_iv"]):
         a, b = tod_ms(on), tod_ms(off if off else time.time())
         if a < end - margin_ms and b > t_ms + margin_ms:
             return True
@@ -1074,12 +1075,12 @@ def engine_tick():
         return at("stopped")
     if ENG.get("tuning"):
         return at("tuning", ENG["tuning"])
-    if need_tune():
-        start_tune()
-        return at("tuning", f"new band {band()}")
     wait = new_band_wait(now)
     if wait > 0:
         return at("newband", f"listening on {band()}: {round(wait)} s more")
+    if need_tune():  # only now, just before the first transmission on this band
+        start_tune()
+        return at("tuning", f"new band {band()}")
     t = state["target"]
     cfg = state["config"]
     if t and is_worked(t["call"]) and not t.get("again"):  # logged (seen in ADIF) without a QSO Logged packet
@@ -1887,8 +1888,6 @@ def scan_go(hz, md):
     if ws_set_mode(md):
         ws_set_dial(hz)
     log(f"tuned to {hz / 1e6:.4f} MHz {md} from the band scan")
-    if wait_dial(hz) and need_tune():
-        start_tune()  # a new band: tune the antenna before anything goes out
 
 def scan_state():
     now, last = time.time(), log_last()
@@ -1916,9 +1915,10 @@ def load_scan():
     except (OSError, ValueError, KeyError, TypeError):
         pass
 
-# --- Antenna tune after a band change: before transmitting on a new band, move
-# just under its FT8 frequency (clear of everyone using FT8 above the dial),
-# start the rig's tuner, then go back to the operating frequency.
+# --- Antenna tune after a band change. Listening needs no tune, so a new band
+# is heard first (new_band_wait); then, just before the first transmission
+# there, move just under its FT8 frequency (clear of everyone using FT8 above
+# the dial), start the rig's tuner, then go back to the operating frequency.
 TUNE_WAIT = 20  # s the tuner may take
 NEW_BAND_CYCLES = 2  # full cycles (an even and an odd period each) heard on a new band before transmitting
 def new_band_wait(now):
@@ -1971,6 +1971,8 @@ def atu_tune():
     """Runs in its own thread while ENG["tuning"] holds the engine off."""
     b, op = band(), state["udp"].get("dial")
     t0 = time.time()
+    iv = [t0, None]
+    ENG["tune_iv"].append(iv)  # the offset picker skips the periods we were off the dial
     try:
         hz = tune_freq(b)
         if not (hz and op):
@@ -2006,7 +2008,7 @@ def atu_tune():
         except Exception:
             pass
         ENG["tuned_band"] = b  # tried once per band change: don't retry every period
-        ENG["arrived"] = time.time()  # nothing heard while tuning: listen from now
+        iv[1] = time.time()
         ENG["tuning"] = None
 
 class H(BaseHTTPRequestHandler):

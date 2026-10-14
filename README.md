@@ -32,7 +32,7 @@ frequency.
 ```mermaid
 flowchart TD
     tick([Every T/R period]) --> nb{Just arrived on<br/>a new band? *}
-    nb -- yes --> tl[Tune the antenna under FT8,<br/>then listen 2 full cycles] --> wait
+    nb -- yes --> tl[Listen 2 full cycles,<br/>then tune the antenna under FT8] --> wait
     nb -- no --> tgt{Calling or<br/>working a target?}
     tgt -- yes --> fin{Logged, signed off,<br/>or out of tries?}
     fin -- no --> keep[Keep going: re-send the Reply<br/>until they answer] --> wait([next cycle])
@@ -87,14 +87,18 @@ column you put it in.
 When WS moves to another band (from the band scan's **Go**, or by hand while the
 hunter runs), the hunter does two things before it transmits there.
 
-1. **It tunes the antenna** (Xiegu G90). It halts WS and moves 1 kHz below that
-   band's FT8 frequency, which keeps the carrier clear of everyone on FT8 above
-   the dial. It starts the rig's tuner, waits for it to finish, and goes back
-   to the operating frequency. If the radio can't be confirmed on the tune
-   frequency, nothing is sent.
-2. **It listens for two full cycles**: two even and two odd periods, 60 s in
+1. **It listens for two full cycles**: two even and two odd periods, 60 s in
    FT8. The offset picker then has the last two periods of each parity, so its
-   first transmission on the band goes on a clear offset.
+   first transmission on the band goes on a clear offset. Listening needs no
+   tune, so the antenna is left alone until now.
+2. **It tunes the antenna** (Xiegu G90), just before the first transmission.
+   It halts WS and moves 1 kHz below that band's FT8 frequency, which keeps the
+   carrier clear of everyone on FT8 above the dial. It starts the rig's tuner,
+   waits for it to finish, and goes back to the operating frequency. If the
+   radio can't be confirmed on the tune frequency, nothing is sent. The periods
+   spent tuning are left out of the offset picker, like periods we transmit in.
+
+With the hunter stopped, nothing is tuned.
 
 Changing band is meant to be an occasional, deliberate move, so **Go** refuses
 to change band in the middle of a QSO. A mode change on the same band does neither. Both the tune and the distance below
