@@ -162,6 +162,7 @@ CTY = {"exact": {}, "prefix": {}}  # call/prefix -> (country, continent, lat, lo
 GRIDS = {}  # base call -> grid, learned from decodes and the log (for the globe)
 PAIRS = {}  # frozenset of two base calls -> {"a", "b", "t"}: who is working whom (globe)
 TRAFFIC_SECS = 300  # traffic lines fade out over this long
+RECENT = {}  # (call, band, mode) -> epoch time, last 24 h: the globe keeps them past UTC midnight
 GRID_RE = re.compile(r"^[A-R]{2}\d{2}([A-X]{2})?$")
 CTY_PATHS = ("~/ws-hunter-app/share/ws/cty.dat", "~/ws/usr/share/ws/cty.dat",
              "~/ws-wide/usr/share/ws/cty.dat", "/usr/share/wsjtx/cty.dat")
@@ -226,7 +227,8 @@ def load_worked():
     as (call, band, mode) so a station can be worked again on another band or
     mode. Returns ({(call, band, mode): epoch time}, {path: mtime})."""
     import datetime
-    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
+    utc = datetime.datetime.now(datetime.timezone.utc)
+    today, yesterday = utc.strftime("%Y%m%d"), (utc - datetime.timedelta(days=1)).strftime("%Y%m%d")
     paths = [os.path.expanduser("~/.local/share/WS/wsjtx_log.adi"),
              os.path.expanduser("~/.local/share/WSJT-X/wsjtx_log.adi"),
              os.path.expanduser("~/.wsjtx/wsjtx_log.adi")]
@@ -239,7 +241,7 @@ def load_worked():
         # split into records, keep calls with qso_date == today
         for rec in txt.split("<eor"):
             md = re.search(r"<qso_date:\d+>(\d{8})", rec)
-            if md and md.group(1) != today:
+            if md and md.group(1) != today and md.group(1) != yesterday:
                 continue
             mc = re.search(r"<call:\d+>([A-Za-z0-9/]+)", rec)
             if not mc:
@@ -256,7 +258,12 @@ def load_worked():
             if md and mt:
                 ts = datetime.datetime.strptime(md.group(1) + mt.group(1)[:4], "%Y%m%d%H%M").replace(
                     tzinfo=datetime.timezone.utc).timestamp()
-            w[(mc.group(1).upper(), band_, mm.group(1).upper() if mm else None)] = ts
+            key = (mc.group(1).upper(), band_, mm.group(1).upper() if mm else None)
+            if ts and time.time() - ts < 86400:
+                RECENT[key] = ts
+            if md and md.group(1) != today:
+                continue  # yesterday's: only for the globe
+            w[key] = ts
             mg = re.search(r"<gridsquare:\d+>(\w+)", rec, re.I)
             if mg:
                 note_grid(mc.group(1), mg.group(1)[:4])
@@ -571,7 +578,8 @@ def unhold(call):
     ENG["held"].pop(slot_key(call), None)  # they answered after all
 
 def add_worked(call, band_=None, mode_=None):
-    state["worked"][(call.upper(), band_ or band(), mode_ or mode())] = time.time()
+    key = (call.upper(), band_ or band(), mode_ or mode())
+    state["worked"][key] = RECENT[key] = time.time()
 
 def is_worked(call):
     """Worked today on this band and mode. A log entry missing its band or
@@ -1099,7 +1107,9 @@ def globe():
     now, here = time.time(), (band(), mode())
     me = grid_to_latlon(state["mygrid"]) if state["mygrid"] else locate(state["mycall"])
     seen, worked = set(), []
-    for (c, b, m), ts in sorted(list(state["worked"].items()), key=lambda kv: -(kv[1] or 0)):
+    for k in [k for k, ts in list(RECENT.items()) if now - ts > 86400]:
+        RECENT.pop(k, None)
+    for (c, b, m), ts in sorted(list({**RECENT, **state["worked"]}.items()), key=lambda kv: -(kv[1] or 0)):
         ll = locate(c)
         if ll and (c, b, m) not in seen:
             seen.add((c, b, m))

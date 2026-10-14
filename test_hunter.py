@@ -418,8 +418,13 @@ check("traffic pairs keep both ends and skip hashed calls",
       ns["PAIRS"][frozenset(("K9ABC", "W1AW"))]["b"] == "K9ABC" and not any("." in p["a"] + p["b"] for p in ns["PAIRS"].values()))
 ns["PAIRS"][frozenset(("K9ABC", "JA1XYZ"))] = {"a": "JA1XYZ", "b": "K9ABC", "t": time.time() - 400}
 check("traffic older than the fade time is dropped", not any(x["from"] == "JA1XYZ" for x in ns["globe"]()["traffic"]))
+ns["RECENT"][("VK2OLD", "20m", "FT8")] = time.time() - 3600 * 5  # yesterday UTC, 5 h ago
+ns["RECENT"][("ZL1GONE", "20m", "FT8")] = time.time() - 3600 * 30
+ns["CTY"]["prefix"]["VK"] = ("Australia", "OC", -23.7, 132.3); ns["CTY"]["prefix"]["ZL"] = ("New Zealand", "OC", -41.8, 174.0)
+calls = [w["call"] for w in ns["globe"]()["worked"]]
+check("globe keeps contacts from the last 24 h past UTC midnight, not older", "VK2OLD" in calls and "ZL1GONE" not in calls)
 check("globe: me, contacts, target and traffic located",
-      g["me"] and g["worked"][0]["call"] == "JA1XYZ" and g["target"]["call"] == "K9ABC" and g["target"]["ll"]
+      g["me"] and "JA1XYZ" in [w["call"] for w in g["worked"]] and g["target"]["call"] == "K9ABC" and g["target"]["ll"]
       and any({x["from"], x["to"]} == {"K9ABC", "W1AW"} for x in g["traffic"])
       and any(x["tome"] and x["b"] == g["me"] for x in g["traffic"]))
 
