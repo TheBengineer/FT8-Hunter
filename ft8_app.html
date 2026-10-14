@@ -77,7 +77,7 @@ details summary{font-weight:700;padding:4px}
 <div class="row" style="margin-top:8px"><button id="bWake" class="mini" style="flex:1;padding:8px;background:#3a4552">📱 Keep screen awake: off</button></div></div>
 <div class="card" data-id="globe"><h2>🌍 Globe <span class="small" id="gsum"></span></h2>
 <canvas id="globe" style="width:100%;aspect-ratio:1;display:block;touch-action:none;cursor:grab"></canvas>
-<div class="small" style="margin-top:4px"><span style="color:#c061ff">━ calling</span> · <span style="color:#ff7a3d">━ QSO</span> · <span style="color:#2ecc71">━ worked</span> · <span style="color:#7fa8ff99">━ traffic</span> · drag to turn; it drifts back to you</div></div>
+<div class="small" style="margin-top:4px"><span style="color:#c061ff">━ calling</span> · <span style="color:#ff7a3d">━ QSO</span> · <span style="color:#2ecc71">━ worked</span> · <span style="color:#7fa8ff99">━ traffic</span> · drag to turn, scroll or pinch to zoom; it drifts back to you</div></div>
 <div class="card" data-id="flow"><h2>🧭 Decision flow <span class="small" id="stepage"></span></h2><div class="flow" id="flow"></div>
 <div class="small" style="margin-top:6px">Checked top to bottom each period; the first “yes” wins.</div></div>
 <div class="card" data-id="dx"><h2>🎯 DX focus <span class="small" id="dxn"></span></h2><ul id="dxf"></ul>
@@ -284,7 +284,7 @@ all.forEach(c=>{const mv=document.createElement('div');mv.className='mv';
 // from world-atlas (TopoJSON); without the internet it's a plain sphere.
 (()=>{
 const cv=document.getElementById('globe'),ctx=cv.getContext('2d'),D=Math.PI/180;
-let G={worked:[],traffic:[]},coast=[],lon0=0,lat0=20,drag=null,last=0,spin=true,home=null,zoom=1,px=0,py=0;
+let G={worked:[],traffic:[]},coast=[],lon0=0,lat0=20,drag=null,last=0,spin=true,home=null,zoom=1,px=0,py=0,uz=1;  // uz: the viewer's own zoom (wheel / pinch)
 const SWING=50,SWING_S=120;  // sway ±50° either side of home, once every 2 minutes
 const ZMIN=.6,ZMAX=8,TILT=35;  // QSO close-up: 0.6x (long haul) to 8x, looking at the arc from up to 35° to one side
 fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json').then(r=>r.json()).then(t=>{
@@ -332,7 +332,7 @@ function draw(ts){requestAnimationFrame(draw);
   const k=Math.min(1,dt/1200),d=((tl-lon0)%360+540)%360-180;lon0+=d*k;lat0+=(tla-lat0)*k;
   zoom+=((fc?fc.zoom:1)-zoom)*k;px+=((fc?fc.px:0)-px)*k;py+=((fc?fc.py:0)-py)*k}
  const dpr=devicePixelRatio||1,W=cv.offsetWidth*dpr;if(cv.width!==W){cv.width=cv.height=W}
- const R=W*0.36*zoom,cx=W/2-R*px,cy=W/2+R*py;ctx.clearRect(0,0,W,W);
+ const R=W*0.36*zoom*uz,cx=W/2-R*px,cy=W/2+R*py;ctx.clearRect(0,0,W,W);
  const g=ctx.createRadialGradient(cx-R*.3,cy-R*.3,R*.1,cx,cy,R);g.addColorStop(0,'#1d3550');g.addColorStop(1,'#0b1622');
  ctx.fillStyle=g;ctx.beginPath();ctx.arc(cx,cy,R,0,7);ctx.fill();
  ctx.strokeStyle='#2a3f55';ctx.lineWidth=dpr;ctx.stroke();
@@ -357,11 +357,24 @@ async function poll(){try{const r=await fetch('/api/globe');G=await r.json();pol
  if(G.me){if(!home){lon0=G.me[1];lat0=Math.max(-50,Math.min(50,G.me[0]))}home=G.me}
  document.getElementById('gsum').textContent=`· ${G.worked.length} worked · ${G.traffic.length} live`+(G.target?` · ${G.target.resp?'QSO with':'→'} ${G.target.call}`:'')}catch(e){}}
 poll();setInterval(poll,5000);
-cv.addEventListener('pointerdown',e=>{drag={x:e.clientX,y:e.clientY,lon:lon0,lat:lat0};spin=false;cv.setPointerCapture(e.pointerId);cv.style.cursor='grabbing'});
-cv.addEventListener('pointermove',e=>{if(!drag)return;const k=180/cv.offsetWidth;
+// Drag to turn; wheel or pinch to zoom (0.5x-12x); double-click / double-tap resets the zoom.
+const pts=new Map();let pinch=null;
+const setZ=z=>{uz=Math.max(.5,Math.min(12,z))};
+const gap=()=>{const [a,b]=[...pts.values()];return Math.hypot(a.x-b.x,a.y-b.y)||1};
+let lastTap=0;
+cv.addEventListener('pointerdown',e=>{if(e.pointerType==='touch'&&!pts.size){const t=performance.now();if(t-lastTap<300)uz=1;lastTap=t}
+ pts.set(e.pointerId,{x:e.clientX,y:e.clientY});cv.setPointerCapture(e.pointerId);spin=false;
+ if(pts.size===2){drag=null;pinch={d:gap(),z:uz}}
+ else if(pts.size===1){drag={x:e.clientX,y:e.clientY,lon:lon0,lat:lat0};cv.style.cursor='grabbing'}});
+cv.addEventListener('pointermove',e=>{if(!pts.has(e.pointerId))return;pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+ if(pinch&&pts.size===2){setZ(pinch.z*gap()/pinch.d);return}
+ if(!drag)return;const k=180/cv.offsetWidth/Math.max(1,zoom*uz);   // finer turning when zoomed in
  lon0=drag.lon-(e.clientX-drag.x)*k;lat0=Math.max(-80,Math.min(80,drag.lat+(e.clientY-drag.y)*k))});
-const up=()=>{if(!drag)return;drag=null;cv.style.cursor='grab';setTimeout(()=>{spin=true},4000)};
+const up=e=>{pts.delete(e.pointerId);if(pts.size<2)pinch=null;if(pts.size)return;
+ drag=null;cv.style.cursor='grab';clearTimeout(up.t);up.t=setTimeout(()=>{spin=true},4000)};
 cv.addEventListener('pointerup',up);cv.addEventListener('pointercancel',up);
+cv.addEventListener('wheel',e=>{e.preventDefault();setZ(uz*Math.exp(-e.deltaY*(e.deltaMode?0.05:0.0015)))},{passive:false});
+cv.addEventListener('dblclick',()=>{uz=1});
 })();
 </script>
 <script src="/nosleep.js"></script>

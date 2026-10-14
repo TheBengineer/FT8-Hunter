@@ -65,7 +65,8 @@ the steps it passed marked "no". Each CQ shows why it is or isn't being called
 (on hold, in QSO, pileup size, stale, weak, region/DX-only), and calls on hold
 are underlined wherever they appear. A spinning globe draws today's contacts as
 arcs from your station, the current target in bold and other stations' live
-traffic faintly; during a QSO it zooms in on that QSO's arc. The worked / ignored list shows today's
+traffic faintly; during a QSO it zooms in on that QSO's arc. Scroll or pinch to
+zoom it yourself. The worked / ignored list shows today's
 contacts and the stations that never answered, with time, band and mode. On a desktop the cards spread into two or
 three columns; move cards with the arrows or by dragging, and each stays in the
 column you put it in.
@@ -85,8 +86,9 @@ Offline tests (no radio needed): `python3 test_hunter.py`
 
 ### WS build with hunter controls
 
-Stock WS has no UDP command to set the Tx offset or Enable Tx, so the hunter can
-only *suggest* a clear offset and falls back to an xdotool click to arm TX. The
+Stock WS has no UDP command to set the Tx offset, Enable Tx or clear the DX call,
+so the hunter can only *suggest* a clear offset, falls back to an xdotool click to
+arm TX, and can't reliably switch WS from the last station back to CQ. The
 [ws-hunter](https://github.com/TheBengineer/ws-hunter) fork of WS adds those
 controls plus a per-cycle spectrum feed; the hunter detects it automatically.
 
@@ -104,7 +106,9 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
   DF, `~` mode marker, message) exactly matches a prior decode — same as clicking a
   line in the decode window. Params come from live Type 2 packets, never guessed.
 - **TX control**: WS auto-sequences once armed. The hunter sends Halt Tx (type 8)
-  when a target times out or is skipped.
+  when a target times out or is skipped. To call CQ it sends ClearDX (ws-hunter
+  type 28, which empties DX Call and selects Tx6) and then Enable Tx, and checks
+  WS's Status that the next message really is the CQ.
 - **Clear offset** (ws-hunter build): before answering or calling CQ it ticks Hold
   Tx Freq and moves to the widest gap on the period it will transmit in, judged
   from recent decodes and the spectrum; it stays put while that spot is clear.

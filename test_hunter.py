@@ -18,7 +18,7 @@ class FakeSock:
 
 
 REPLY, HALT, CONFIGURE = 4, 8, 15
-SET_TX_PERIOD, SET_TX_DF, SET_HOLD, SET_TX_ENABLED = 19, 24, 25, 26
+SET_TX_PERIOD, SET_TX_DF, SET_HOLD, SET_TX_ENABLED, CLEAR_DX = 19, 24, 25, 26, 28
 ok = True
 def check(name, cond):
     global ok
@@ -196,6 +196,27 @@ s = CTX["tx"].sent
 check("ws-hunter build -> period, hold, offset, then CQ + Enable Tx over UDP",
       s[0] == HALT and s[1] == SET_TX_PERIOD and SET_HOLD in s and SET_TX_DF in s
       and s[-2:] == [CONFIGURE, SET_TX_ENABLED])
+st["udp"]["revision"] = "261013-hunter"
+fresh(); ns["engine_tick"]()
+s = CTX["tx"].sent
+check("ClearDX build -> CQ selected with ClearDX, never Configure, then Enable Tx",
+      s[-2:] == [CLEAR_DX, SET_TX_ENABLED] and CONFIGURE not in s)
+check("revision gate: 261013 build has ClearDX, 260926 does not",
+      ns["has_ws_hunter"]("261013") and (st["udp"].update(revision="260926-hunter")
+      or not ns["has_ws_hunter"]("261013")) and ns["has_ws_hunter"]())
+st["udp"]["revision"] = "261013-hunter"
+# WS left on the last station (Tx1) during our CQ run: re-select CQ, twice at most
+fresh(); ns["engine_tick"](); ENG["cq_start"] = time.time() - 10
+st["udp"].update(tx_enabled=True, tx_msg="<XQ3SK> KR4MZM/AG", tx_t=time.time()); CTX["tx"].sent.clear()
+ns["engine_tick"]()
+check("CQ run with WS not on CQ -> ClearDX + Enable Tx again", CTX["tx"].sent == [CLEAR_DX, SET_TX_ENABLED])
+for _ in range(3):
+    ENG["cq_start"] = time.time() - 10; ns["engine_tick"]()
+check("re-selecting CQ gives up after two tries", CTX["tx"].sent.count(CLEAR_DX) == 2)
+fresh(); ns["engine_tick"](); ENG["cq_start"] = time.time() - 10
+st["udp"].update(tx_enabled=True, tx_msg="CQ KR4MZM/AG"); CTX["tx"].sent.clear(); ns["engine_tick"]()
+check("CQ run with WS on CQ and armed -> left alone", CTX["tx"].sent == [])
+st["udp"].update(tx_enabled=False, tx_msg="", tx_t=0)
 dec("JA1AAA VK2BBB RR73"); ns["engine_tick"]()
 check("tail-end traffic does not interrupt our CQ", st["target"] is None and ENG["cq_until"])
 dec("CQ POTA K4PRK EM85"); ns["engine_tick"]()
@@ -373,6 +394,12 @@ def status(mode_name, tx_df=1500):
     body = struct.pack(">Q", 14074000) + ps(mode_name) + ps("") + ps("-10") + ps(mode_name)
     body += bytes([0, 0, 0]) + struct.pack(">II", 1500, tx_df)
     send(1, body)
+body = struct.pack(">Q", 14074000) + ps("FT8") + ps("XQ3SK") + ps("-10") + ps("FT8")
+body += bytes([1, 0, 0]) + struct.pack(">II", 1500, 1500) + ps("KR4MZM/AG") + ps("FM18") + ps("")
+body += bytes([1]) + ps("") + bytes([0, 0]) + struct.pack(">II", 20, 15) + ps("Default") + ps("<XQ3SK> KR4MZM/AG")
+send(1, body)
+check("Status: Tx message, watchdog and Enable Tx parsed",
+      st["udp"]["tx_msg"] == "<XQ3SK> KR4MZM/AG" and st["udp"]["watchdog"] and st["udp"]["tx_enabled"])
 fresh(); dec("CQ K9XYZ EN52", snr=5)
 status("FT8"); check("FT8: 15 s periods", ns["period"]() == 15.0 and ns["parity"](15000) == 1)
 status("FT4")

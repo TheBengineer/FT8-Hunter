@@ -95,7 +95,7 @@ def pack_replay(id_):
     return struct.pack(">II", 0xADBCCBDA, 2) + struct.pack(">I", 7) + pack_str(id_)
 
 # ws-hunter build only (see TheBengineer/ws-hunter, Network/NetworkMessage.hpp)
-SET_TX_PERIOD, SET_TX_DF, SET_HOLD_TX_FREQ, SET_TX_ENABLED, SPECTRUM = 19, 24, 25, 26, 27
+SET_TX_PERIOD, SET_TX_DF, SET_HOLD_TX_FREQ, SET_TX_ENABLED, SPECTRUM, CLEAR_DX = 19, 24, 25, 26, 27, 28
 def pack_set_bool(mtype, id_, value):
     """ws-hunter station-control message carrying one bool."""
     return struct.pack(">III", 0xADBCCBDA, 2, mtype) + pack_str(id_) + struct.pack(">B", 1 if value else 0)
@@ -103,9 +103,30 @@ def pack_set_bool(mtype, id_, value):
 def pack_set_u32(mtype, id_, value):
     return struct.pack(">III", 0xADBCCBDA, 2, mtype) + pack_str(id_) + struct.pack(">I", value)
 
-def has_ws_hunter():
-    """True when WS reports the ws-hunter build in its Heartbeat revision."""
-    return "hunter" in state["udp"].get("revision", "")
+def has_ws_hunter(since="260926"):
+    """True when WS reports a ws-hunter build in its Heartbeat revision, from
+    the `since` build (yymmdd) on. ClearDX arrived in 261013."""
+    m = re.match(r"(\d{6})-hunter", state["udp"].get("revision", ""))
+    return bool(m) and m.group(1) >= since
+
+def pack_id_only(mtype, id_):
+    return struct.pack(">III", 0xADBCCBDA, 2, mtype) + pack_str(id_)
+
+def select_cq():
+    """Point WS at its CQ message. ClearDX (ws-hunter 261013+) empties DX Call
+    and selects Tx6; older builds only get Configure, which regenerates the
+    messages but leaves the last DX call (and its Tx1) in place."""
+    if has_ws_hunter("261013"):
+        CTX["tx"].sendto(pack_id_only(CLEAR_DX, state["ws_id"]), ws_dest())
+    else:
+        CTX["tx"].sendto(pack_configure(state["ws_id"]), ws_dest())
+
+def enable_tx():
+    """Enable Tx: a UDP command on the ws-hunter build, else a click."""
+    if has_ws_hunter():
+        CTX["tx"].sendto(pack_set_bool(SET_TX_ENABLED, state["ws_id"], True), ws_dest())
+        return "Enable Tx via UDP"
+    return arm_tx()
 
 def alltxt_time_ms(tstr):
     # "261009_221230" -> ms since midnight (decode times fall on whole seconds)
@@ -446,6 +467,20 @@ def udp_listener():
                         state["udp"]["tx_t"] = time.time()
                         if p + 9 <= len(data):  # Decoding bool, Rx DF u32, Tx DF u32
                             state["udp"]["rx_df"], state["udp"]["tx_df"] = struct.unpack(">II", data[p+1:p+9])
+                            # DE call, DE grid, DX grid, Tx watchdog, Sub-mode, Fast mode,
+                            # Special op u8, Freq tol u32, T/R u32, Config name, Tx message
+                            try:  # absent from older senders
+                                q = p + 9
+                                for _ in range(3):
+                                    _, q = read_qstr(data, q)
+                                wd = bool(data[q]); q += 1
+                                _, q = read_qstr(data, q)
+                                q += 1 + 1 + 4 + 4
+                                _, q = read_qstr(data, q)
+                                state["udp"]["tx_msg"], _ = read_qstr(data, q)
+                                state["udp"]["watchdog"] = wd
+                            except (struct.error, ValueError, IndexError):
+                                pass
                 except Exception as e:
                     log_err("Status", e)
             if mtype == SPECTRUM:
@@ -536,6 +571,15 @@ def tail_alltxt():
             handle_decode(msg, snr, tx, myll, seen, cycle)
         except Exception as e:
             log_err("ALL.TXT", e)
+
+def read_qstr(data, p):
+    """QDataStream QByteArray/utf8 string at p: (text, next offset). Null is ''."""
+    ln = struct.unpack(">I", data[p:p+4])[0]; p += 4
+    if ln == 0xFFFFFFFF:
+        return "", p
+    if p + ln > len(data):
+        raise ValueError("string past end")
+    return data[p:p+ln].decode("utf-8", "replace"), p + ln
 
 def ws_dest():
     return state["ws_addr"] or ("127.0.0.1", udp_port)
@@ -910,6 +954,7 @@ def engine_tick():
             return at("activator" if special else "cq", f"{e['call']} ({e['snr']:+d})")
     if now < ENG["cq_until"]:
         # our own CQ keeps running; WS repeats it each period
+        cq_check(now)
         return at("mycq", f"{round(ENG['cq_until'] - now)} s left")
     # no CQ: tail-end a station signing off, never one mid-QSO. A Reply to
     # "A B ..." makes WS call B, the sender. RR73/RRR usually comes from the
@@ -948,6 +993,27 @@ def engine_tick():
         log(f"listening {cfg.get('idle_secs', 60)}s (off-sequence watch)")
     return at("idle", "CQ calling is off")
 
+def cq_check(now):
+    """During our CQ run, make sure WS really is set to call CQ: Enable Tx on
+    and (ClearDX builds) the CQ message selected. Re-select twice at most."""
+    u = state["udp"]
+    if not has_ws_hunter() or now - ENG.get("cq_start", now) < 4 or now - u.get("tx_t", 0) > 20:
+        return
+    msg = u.get("tx_msg", "").strip()
+    bad = not u.get("tx_enabled") or (has_ws_hunter("261013") and msg and not msg.startswith("CQ"))
+    if not bad:
+        return
+    if ENG.get("cq_fix", 0) >= 2:
+        if ENG["cq_fix"] == 2:
+            ENG["cq_fix"] = 3
+            log(f"WS still not calling CQ (Enable Tx {'on' if u.get('tx_enabled') else 'off'}, next: {msg or '?'})")
+        return
+    ENG["cq_fix"] = ENG.get("cq_fix", 0) + 1
+    ENG["cq_start"] = now
+    log(f"WS not set to call CQ (Enable Tx {'on' if u.get('tx_enabled') else 'off'}, next: {msg or '?'}); re-selecting")
+    select_cq()
+    enable_tx()
+
 def start_cq(secs):
     """Reset WS's message stack to its default CQ and enable Tx. Halt first so
     Enable Tx is known to be off: on stock WS the fallback is a toggle click."""
@@ -960,16 +1026,14 @@ def start_cq(secs):
         if has_ws_hunter():
             CTX["tx"].sendto(pack_set_bool(SET_TX_PERIOD, state["ws_id"], par == 0), ws_dest())
         tune_tx(par)
-        CTX["tx"].sendto(pack_configure(state["ws_id"]), ws_dest())
-        if has_ws_hunter():
-            CTX["tx"].sendto(pack_set_bool(SET_TX_ENABLED, state["ws_id"], True), ws_dest())
-            how = "Enable Tx via UDP"
-        else:
+        select_cq()
+        if not has_ws_hunter():
             time.sleep(1.0)  # let WS act on Halt + Configure before clicking
-            how = arm_tx()
+        how = enable_tx()
     except Exception as e:
         log(f"CQ start failed: {e}"); return
     ENG["cq_until"] = time.time() + secs
+    ENG["cq_start"], ENG["cq_fix"] = time.time(), 0
     log(f"calling CQ for {secs}s ({how})")
 
 def pileup(call, now=None):
@@ -1278,6 +1342,7 @@ class H(BaseHTTPRequestHandler):
                         "revision": u.get("revision", ""), "ws_hunter": has_ws_hunter(),
                         "dxcall": u["dxcall"], "rx_count": u["rx_count"],
                         "tx_enabled": u.get("tx_enabled", False),
+                        "tx_msg": u.get("tx_msg", ""), "watchdog": u.get("watchdog", False),
                         "transmitting": u.get("transmitting", False) if u.get("tx_t", 0) and time.time() - u.get("tx_t", 0) < 20 else False,
                         "by_type": u.get("by_type", {}),
                         "fwd_port": state.get("fwd_port", 2238),
@@ -1304,13 +1369,17 @@ class H(BaseHTTPRequestHandler):
             state["running"] = False
             state["target"] = None; ENG["callers"].clear()
             try:
-                CTX["tx"].sendto(pack_configure(state["ws_id"]), ws_dest())
-                time.sleep(2)  # let Status report back before toggle check
-                log(f"CQ mode: stack reset + {arm_tx(only_if_off=True)}")
+                select_cq()
+                if has_ws_hunter():
+                    how = enable_tx()
+                else:
+                    time.sleep(2)  # let Status report back before toggle check
+                    how = arm_tx(only_if_off=True)
+                log(f"CQ mode: stack reset + {how}")
             except Exception as e:
                 log(f"CQ reset failed: {e}")
         elif p == "/api/arm":
-            log(f"arm TX: {arm_tx()}")
+            log(f"arm TX: {enable_tx()}")
         elif p == "/api/call" and body.get("call"):
             c = body["call"].upper(); g = body.get("grid", "").upper()
             # the exact CQ line last decoded for this call
