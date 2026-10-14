@@ -10,7 +10,9 @@ ns = {"__name__": "hunter", "__file__": os.path.join(HERE, "ft8_server.py")}
 exec(src, ns)
 st, ENG, CTX = ns["state"], ns["ENG"], ns["CTX"]
 import tempfile
-ns["CONFIG_FILE"] = os.path.join(tempfile.mkdtemp(), "hunter_config.json")  # never the real settings
+_tmp = tempfile.mkdtemp()
+ns["CONFIG_FILE"] = os.path.join(_tmp, "hunter_config.json")  # never the real settings
+ns["SCAN_FILE"], ns["FREQ_FILE"] = os.path.join(_tmp, "scan.json"), os.path.join(_tmp, "freqs.json")
 
 
 class FakeSock:
@@ -685,6 +687,87 @@ check("lowest offset saved from Settings and loaded again after a restart",
 post("/api/config", {"df_lo": 50}); lo1 = st["config"]["df_lo"]
 post("/api/config", {"df_lo": 2690}); lo2 = st["config"]["df_lo"]
 check("lowest offset kept between 200 Hz and 300 Hz under the top", lo1 == 200 and lo2 == 2400)
+
+# --- band scan
+SCAN = ns["SCAN"]
+src = """      {14074000, Modes::FT8, IARURegions::ALL, "","", QDateTime(), QDateTime(), true},
+      {14090000, Modes::FT8, IARURegions::ALL, "","", QDateTime(), QDateTime(), false}, // DXpedition
+      {14084000, Modes::FT2, IARURegions::ALL, "","", QDateTime(), QDateTime(), true}, // provisional
+      {3568000, Modes::FT4, IARURegions::R3, "","", QDateTime(), QDateTime(), false},
+      {3575000, Modes::FT4, IARURegions::ALL, "","", QDateTime(), QDateTime(), true},
+      {3578000, Modes::FT2, IARURegions::R3, "","", QDateTime(), QDateTime(), false},
+      {5357000, Modes::FT8, IARURegions::ALL, "","", QDateTime(), QDateTime(), true},
+      {5357000, Modes::FT2, IARURegions::ALL, "","", QDateTime(), QDateTime(), true},
+      {50313000, Modes::FT8, IARURegions::ALL, "","", QDateTime(), QDateTime(), true},"""
+check("WS frequency list: preferred entries, another region's only when alone, HF only",
+      ns["parse_freq_list"](src, "R2") == [(3575.0, "FT4"), (3578.0, "FT2"), (5357.0, "FT2"), (5357.0, "FT8"),
+                                           (14074.0, "FT8"), (14084.0, "FT2")])
+SCAN["freqs"]["list"] = ns["FREQS_BUILTIN"]
+pts = ns["scan_points"]({"60m", "20m"}, {"FT8", "FT4", "FT2"})
+check("one stop per dial frequency (60m serves all three modes)",
+      [(p["hz"], len(p["modes"])) for p in pts] == [(5357000, 3), (14074000, 1), (14080000, 1), (14084000, 1)])
+check("Configure can switch WS's mode", b"FT2" in ns["pack_configure"]("WS", "", "", False, mode="FT2"))
+
+random.seed(3)
+shape = [(-8 if i < 25 else 0) - (max(0, i - 180) * 0.06) for i in range(300)]  # receiver passband
+flat = lambda: [10 + shape[i] + random.gauss(0, 0.4) for i in range(300)]
+met = lambda db, bw_=50: ns["scan_metrics"](db, 0, 10, bw_)
+ft8 = flat()
+for c in (80, 95, 120, 150, 170, 200, 230):
+    for i in range(c, c + 5): ft8[i] += 6
+lump = flat()
+for i in range(60, 140): lump[i] += 8
+cw = flat(); cw[150] += 15
+f2 = flat()
+for i in range(100, 117): f2[i] += 5
+dense = flat()
+for c in range(10, 270, 9):  # 20m FT8 on a busy evening: traffic everywhere
+    for i in range(c, c + 6): dense[i] += 10
+rows = [met(flat()), met(ft8), met(lump), met([x + 12 for x in flat()]), met(cw), met(f2, 167), met(dense)]
+ns["scan_rate"](rows, rows)
+check("scan: seven 50 Hz signals counted, the passband slope is not one",
+      rows[1]["signals"] == 7 and rows[0]["signals"] == 0 and rows[1]["label"] == "active")
+check("scan: a broad lump is wideband QRM, not signals (nor its edges)",
+      rows[2]["signals"] == 0 and rows[2]["label"] == "QRM" and rows[0]["label"] == "quiet")
+check("scan: a band 10+ dB noisier than the rest is noisy", rows[3]["label"] == "noisy" and rows[3]["noise"] >= 10)
+check("scan: dense FT traffic is busy, not QRM", rows[6]["label"] == "busy" and not rows[6]["qrm"])
+check("scan: a carrier is a carrier, an FT2 signal one signal",
+      rows[4]["carriers"] and not rows[4]["signals"] and rows[5]["signals"] == 1)
+
+# a whole scan: the spectrum of the period the rig retuned in is thrown away
+fresh(); st["running"] = True; SCAN["rows"].clear()
+st["udp"].update(mode="FT8", dial=14074000, revision="261013-hunter")
+seen = []
+def fake_mode(m, wait=8.0):
+    seen.append(m); st["udp"]["mode"] = m; return True
+def fake_dial(hz):
+    st["udp"]["dial"] = hz; seen.append(hz)
+    q, now_ms = SCAN["q"], ns["tod_ms"](time.time())
+    if q:
+        q.put((now_ms // 3750 * 3750, 3750, 0, 10, ft8))            # retuned part way: mixed bands
+        q.put(((now_ms // 3750 + 1) * 3750, 3750, 0, 10, ft8 if hz == 5357000 else flat()))
+real = ns["ws_set_mode"], ns["ws_set_dial"]
+ns["ws_set_mode"], ns["ws_set_dial"] = fake_mode, fake_dial
+SCAN["q"] = None
+ns["scan_run"](pts[:2])
+ns["ws_set_mode"], ns["ws_set_dial"] = real
+r60, r20 = SCAN["rows"]["5357000 FT4"], SCAN["rows"]["14074000 FT8"]
+check("scan visits each stop in FT2, then puts WS back where it was",
+      seen == ["FT2", 5357000, 14074000, "FT8", 14074000] and st["udp"]["mode"] == "FT8")
+check("scan measures the clean period after each retune", r60["signals"] == 7 and r20["signals"] == 0)
+check("hunter paused for the scan and resumed after", st["running"] and not SCAN["on"])
+st["worked"] = {}
+sc = json.load(urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}/api/scan"))
+check("scan results served per mode, without the internal shape",
+      len(sc["rows"]) == 4 and all("_shape" not in r for r in sc["rows"]) and sc["rows"][0]["mode"] == "FT2")
+st["target"] = {"call": "K1QSO", "grid": "", "left": 9, "why": "called us", "msg": "", "resp": True}
+try:
+    post("/api/scan/start", {}); refused = False
+except urllib.error.HTTPError as e:
+    refused = e.code == 409
+check("no scan in the middle of a QSO", refused and not SCAN["on"])
+st["target"] = None
+st["udp"]["revision"] = ""
 fl.shutdown(); srv.shutdown()
 
 print("ALL PASS" if ok else "SOME FAILED")

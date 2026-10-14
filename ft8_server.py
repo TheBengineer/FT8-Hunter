@@ -20,7 +20,9 @@ state = {
                "call_cq": True, "cq_secs": 120, "cq_first": False,
                "auto_df": True, "df_lo": 1300, "df_hi": 2700,  # df_lo: rig feeds back below 1300 Hz
                "qrm_detect": True, "qrm_backoff_min": 5, "min_snr": -20,
-               "watts_call": 10, "watts_qso": 20},  # TX power held on the radio: calling / once they answer
+               "watts_call": 10, "watts_qso": 20,
+               "scan_modes": ["FT8", "FT4", "FT2"],  # band scan: what to visit
+               "scan_bands": ["160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m"]},  # TX power held on the radio: calling / once they answer
     "stats": {"cq_heard": 0, "calls_made": 0},
 }
 # "CQ [TAG] CALL [GRID]"; TAG is DX, TEST, an activity (POTA...) or a
@@ -78,13 +80,13 @@ def pack_reply(id_, t_ms, snr, dt, df, msg, mode="~"):
     pkt += pack_str(msg) + struct.pack(">B", 0) + struct.pack(">B", 0)
     return pkt
 
-def pack_configure(id_, dx_call=" ", dx_grid=" ", generate=True):
+def pack_configure(id_, dx_call=" ", dx_grid=" ", generate=True, mode=""):
     """Type 15 Configure: blank dx_call + generate=True resets WS message
     stack to its default CQ (empty string is ignored upstream, so send a space).
-    Other fields = no-change sentinels."""
+    A mode ("FT2") switches WS to it. Other fields = no-change sentinels."""
     M = 0xFFFFFFFF
     pkt = struct.pack(">II", 0xADBCCBDA, 2) + struct.pack(">I", 15) + pack_str(id_)
-    pkt += pack_str("") + struct.pack(">I", M) + pack_str("")
+    pkt += pack_str(mode) + struct.pack(">I", M) + pack_str("")
     pkt += struct.pack(">B", 0) + struct.pack(">I", M) + struct.pack(">I", M)
     pkt += pack_str(dx_call) + pack_str(dx_grid) + struct.pack(">B", 1 if generate else 0)
     return pkt
@@ -453,7 +455,8 @@ def udp_listener():
                     log_err("QSO Logged parse", e)
             if mtype == 1:  # Status body: DialFreq u64, Mode, DXcall, Report,
                 try:           # TxMode, TxEnabled?, Transmitting?, ...
-                    set_band(band_of(struct.unpack(">Q", data[off:off+8])[0]))
+                    state["udp"]["dial"] = struct.unpack(">Q", data[off:off+8])[0]
+                    set_band(band_of(state["udp"]["dial"]))
                     p = off + 8  # dialfreq u64
                     strs = []
                     for _ in range(4):  # Mode, DXcall, Report, TxMode
@@ -491,7 +494,10 @@ def udp_listener():
                     log_err("Status", e)
             if mtype == SPECTRUM:
                 try:
-                    handle_spectrum(data, off)
+                    if SCAN["on"]:
+                        scan_spectrum(data, off)
+                    else:
+                        handle_spectrum(data, off)
                 except Exception as e:
                     log_err("Spectrum", e)
             if mtype == 2 and CTX["tx"] is not None:  # live Decode: exact params!
@@ -512,6 +518,8 @@ def udp_listener():
                         set_decparams(dmsg, {"t_ms": t_ms, "snr": dsnr,
                             "dt": ddt, "df": ddf, "mode": dmode})
                         state["udp"]["last_decode"] = time.time()
+                        if t_ms in SCAN["by_tm"]:
+                            SCAN["by_tm"][t_ms]["decodes"] += 1  # FT2 heard while scanning
                         handle_decode(dmsg, dsnr, CTX["tx"], CTX["myll"],
                                       CTX["seen"], CTX["cycle"], t_ms)
                 except Exception as e:
@@ -623,6 +631,9 @@ def band_of(hz):
     mhz = hz / 1e6
     return next((b for b, lo, hi in BANDS if lo <= mhz <= hi), None)
 
+def band_of_name(name):
+    return any(b == name for b, lo, hi in BANDS)
+
 def band():
     return state["udp"].get("band")
 
@@ -701,7 +712,8 @@ def set_mode(new):
     if old is None or old == new:
         return
     new_slot()
-    log(f"mode {old} -> {new}: {period()} s periods")
+    if not SCAN["on"]:
+        log(f"mode {old} -> {new}: {period()} s periods")
 
 def set_band(new):
     """WS moved to another band: same reset as a mode change."""
@@ -710,7 +722,8 @@ def set_band(new):
     if old is None or old == new or new is None:
         return
     new_slot()
-    log(f"band {old} -> {new}")
+    if not SCAN["on"]:
+        log(f"band {old} -> {new}")
 
 def new_slot():
     """Decodes, CQs and occupancy from the old band/mode no longer apply.
@@ -826,11 +839,7 @@ def handle_spectrum(data, off):
     """ws-hunter SpectrumSummary: period QTime ms, T/R ms, start Hz, bin Hz,
     floor dB, step dB, levels. Marks hot bins for the offset picker right
     away; the busy-frequency check waits for that period's decodes."""
-    t_ms, tr_ms, start, bin_hz = struct.unpack(">IIII", data[off:off+16])
-    floor, step = struct.unpack(">dd", data[off+16:off+32])
-    n = struct.unpack(">I", data[off+32:off+36])[0]
-    levels = data[off+36:off+36+n]
-    db = [floor + v * step for v in levels]
+    t_ms, tr_ms, start, bin_hz, db = parse_spectrum(data, off)
     freqs = [start + i * bin_hz for i in range(len(db))]
     band = sorted(d for f, d in zip(freqs, db) if 200 <= f < 2800)
     if not band or overlaps_tx(t_ms, tr_ms):
@@ -1555,6 +1564,344 @@ def arm_tx(only_if_off=False):
     except Exception as e:
         return f"arm failed: {e}"
 
+# --- Band scan: visit the published FT8/FT4/FT2 dial frequencies and take
+# one clean ws-hunter spectrum on each, to see which bands are busy. WS runs
+# FT2 meanwhile (3.75 s periods, so a spectrum every 3.75 s); the period in
+# which the rig retuned mixes two bands and is thrown away.
+SET_DIAL = 20
+SCAN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scan_results.json")
+FREQ_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scan_freqs.json")
+# WS's default frequency list (models/FrequencyList.cpp), downloaded so new or
+# moved FT2 frequencies arrive without a hunter update; the fork is the fallback
+FREQ_URLS = ["https://raw.githubusercontent.com/wa1hco/ws-suite-inhibit/HEAD/models/FrequencyList.cpp",
+             "https://raw.githubusercontent.com/TheBengineer/ws-hunter/hunter/models/FrequencyList.cpp"]
+FREQ_RE = re.compile(r"\{\s*(\d+)\s*,\s*Modes::(FT8|FT4|FT2)\s*,\s*IARURegions::(\w+)\s*,[^}]*?(true|false)\s*\}")
+# (kHz, mode) as in that list for region 2, HF only, if it can't be fetched
+FREQS_BUILTIN = [(1840, "FT8"), (1843, "FT2"), (3573, "FT8"), (3575, "FT4"), (3578, "FT2"),
+                 (5357, "FT8"), (5357, "FT4"), (5357, "FT2"), (7074, "FT8"), (7047.5, "FT4"), (7052, "FT2"),
+                 (10136, "FT8"), (10140, "FT4"), (10144, "FT2"), (14074, "FT8"), (14080, "FT4"), (14084, "FT2"),
+                 (18100, "FT8"), (18104, "FT4"), (18108, "FT2"), (21074, "FT8"), (21140, "FT4"), (21144, "FT2"),
+                 (24915, "FT8"), (24919, "FT4"), (24923, "FT2"), (28074, "FT8"), (28180, "FT4"), (28184, "FT2")]
+SCAN_SETTLE = 0.6  # s after the dial command before a period counts as clean
+SCAN = {"on": False, "stop": False, "goto": None, "i": 0, "n": 0, "cur": None, "t0": 0, "err": "",
+        "q": None, "by_tm": {}, "rows": {}, "freqs": {"src": "built-in", "t": 0, "list": FREQS_BUILTIN}}
+
+def ws_region():
+    """IARU region set in WS (R1, R2, R3), default R2."""
+    try:
+        m = re.search(r"^Region=.*?(R[123])", open(os.path.expanduser("~/.config/WS.ini"), errors="ignore").read(), re.M)
+        return m.group(1) if m else "R2"
+    except OSError:
+        return "R2"
+
+def parse_freq_list(src, region):
+    """FT8/FT4/FT2 dial frequencies in WS's FrequencyList.cpp, one per band
+    and mode: a preferred entry for all regions or ours first; another
+    region's when that is all there is (80m FT2 is listed for R3 only)."""
+    best = {}
+    for hz, md, reg, pref in FREQ_RE.findall(src):
+        hz = int(hz)
+        b = band_of(hz)
+        if not b or hz > 30e6:  # HF: what the G90 and most portable rigs cover
+            continue
+        rank = (pref == "true", reg in ("ALL", region))
+        if (b, md) not in best or rank > best[(b, md)][0]:
+            best[(b, md)] = (rank, hz)
+    return sorted((hz / 1000, md) for (b, md), (rank, hz) in best.items())
+
+def load_freqs(fetch=True):
+    """Scan frequencies: the cached download, refreshed once a day."""
+    try:
+        c = json.load(open(FREQ_FILE))
+        SCAN["freqs"] = {"src": c["src"], "t": c["t"], "list": [tuple(x) for x in c["list"]]}
+    except (OSError, ValueError, KeyError):
+        pass
+    if not fetch or time.time() - SCAN["freqs"]["t"] < 86400:
+        return
+    import urllib.request
+    for url in FREQ_URLS:
+        try:
+            src = urllib.request.urlopen(url, timeout=10).read().decode("latin-1")
+            fl = parse_freq_list(src, ws_region())
+            if sum(1 for _, m in fl if m == "FT2") < 5:
+                raise ValueError("no FT2 frequencies in it")
+            SCAN["freqs"] = {"src": url.split("/")[3] + " " + time.strftime("%Y-%m-%d", time.gmtime()),
+                             "t": time.time(), "list": fl}
+            with open(FREQ_FILE, "w") as f:
+                json.dump(SCAN["freqs"], f)
+            log(f"scan frequencies: {len(fl)} from {url.split('/')[3]}")
+            return
+        except Exception as e:
+            log(f"scan frequencies from {url.split('/')[3]}: {str(e)[:60]}")
+
+def scan_points(bands, modes):
+    """One stop per dial frequency (60m's 5357 kHz serves all three modes)."""
+    pts = {}
+    for khz, md in SCAN["freqs"]["list"]:
+        b = band_of(khz * 1000)
+        if b in bands and md in modes:
+            pts.setdefault(round(khz * 1000), {"hz": round(khz * 1000), "band": b, "modes": []})["modes"].append(md)
+    return [pts[k] for k in sorted(pts)]
+
+def parse_spectrum(data, off):
+    """ws-hunter SpectrumSummary -> (period start ms, T/R ms, start Hz, bin Hz, dB per bin)."""
+    t_ms, tr_ms, start, bin_hz = struct.unpack(">IIII", data[off:off+16])
+    floor, step = struct.unpack(">dd", data[off+16:off+32])
+    n = struct.unpack(">I", data[off+32:off+36])[0]
+    return t_ms, tr_ms, start, bin_hz, [floor + v * step for v in data[off+36:off+36+n]]
+
+def pct(xs, p):
+    xs = sorted(xs)
+    return xs[min(len(xs) - 1, int(p * len(xs)))] if xs else 0.0
+
+SIG_DB, SIG_PEAK_DB, CARRIER_DB = 2.0, 4.0, 6.0  # see scan_metrics
+def scan_metrics(db, start, bin_hz, sig_bw=50):
+    """Rough band quality from one averaged spectrum. Each bin is compared
+    with the local quiet level (the 25th percentile within +-150 Hz), which
+    follows the receiver's passband and broad humps but not a 50-170 Hz
+    wide FT signal. Runs of bins 2+ dB above it, 30-300 Hz wide and 4+ dB
+    at the peak, with about the same level on both sides, are FT-like
+    signals (the edge of a broad lump is up on one side only); 1-2 bins
+    6+ dB up are carriers (birdies, CW). Wideband interference shows
+    instead as a raised noise floor and a lumpy quiet level, judged across
+    the scan (scan_rate); the quiet level's shape over 300-2700 Hz is kept
+    for that."""
+    f = [start + i * bin_hz for i in range(len(db))]
+    mid = [i for i, x in enumerate(f) if 300 <= x < 2700]
+    if len(mid) < 30:
+        return None
+    w = max(3, 150 // bin_hz)
+    base = [pct(db[max(0, i - w):i + w + 1], .25) for i in range(len(db))]
+    ex = [d - b for d, b in zip(db, base)]
+    sigs, carriers, run = [], [], []
+    def close(run):
+        if not run:
+            return
+        width, peak = len(run) * bin_hz, max(ex[i] for i in run)
+        # the quiet level over 300 Hz each side: a signal has noise on both
+        # sides (a neighbour doesn't fill 300 Hz), the edge of a broad lump doesn't
+        k = max(3, 300 // bin_hz)
+        side = [pct(db[max(0, run[0] - k - 2):max(0, run[0] - 2)] or [db[run[0]]], .25),
+                pct(db[run[-1] + 3:run[-1] + k + 3] or [db[run[-1]]], .25)]
+        if abs(side[0] - side[1]) >= max(3.0, peak / 2):
+            return
+        if 30 <= width <= 300 and peak >= SIG_PEAK_DB:
+            sigs.append((f[run[0]], f[run[-1]] + bin_hz, round(peak, 1),
+                         max(1, round(width / (sig_bw + 20)))))  # stations side by side
+        elif width < 30 and peak >= CARRIER_DB:
+            carriers.append((f[run[0]], f[run[-1]] + bin_hz, round(peak, 1)))
+    for i, x in enumerate(f):
+        if 200 <= x < 2900 and ex[i] >= SIG_DB:
+            run.append(i)
+        else:
+            close(run); run = []
+    close(run)
+    floor = pct([db[i] for i in mid], .2)
+    n = sum(s[3] for s in sigs)
+    return {"floor": round(floor, 1), "_shape": [round(base[i] - floor, 1) for i in mid], "signals": n,
+            "strength": round(pct([s[2] for s in sigs], .5), 1) if sigs else None,
+            "busy": round(sum(s[1] - s[0] for s in sigs) / 2400, 2),  # share of the passband with signals
+            "sigs": [s[:3] for s in sigs], "carriers": carriers,
+            # dB over the quietest tenth, 0.5 dB steps, 200-3000 Hz: the row's little chart
+            "lv": bytes(max(0, min(255, round(2 * (d - floor)))) for d, x in zip(db, f) if 200 <= x < 3000).hex(),
+            "lv_start": max(200, start), "bin": bin_hz}
+
+QRM_HUMP_DB, NOISY_DB, WEAK_SIG_DB = 4.0, 10.0, 6.0
+def scan_rate(rows, known):
+    """Label one scan's rows busy / active / quiet / QRM / noisy.
+    QRM is wideband interference: a lump in the quiet level. The receiver's
+    own passband shape is the same on every band, so the median quiet-level
+    shape over every scanned frequency (`known`, older scans included) is
+    taken off first; 'hump' is how far the top tenth of what is left sits
+    above the bottom tenth. Dense FT traffic lifts the quiet level too, so
+    the hump only counts where signals cover under 30% of the passband.
+    'noise' is the floor above the scan's median floor: the low bands are
+    naturally noisier, and a band 10 dB over the rest with only weak
+    signals on it is 'noisy'."""
+    n = len(rows[0]["_shape"])
+    shapes = [r["_shape"] for r in known if len(r.get("_shape", ())) == n]
+    shape = [sorted(c)[len(c) // 2] for c in zip(*shapes)]
+    typical = pct([r["floor"] for r in rows], .5)
+    for r in rows:
+        res = [a - b for a, b in zip(r["_shape"], shape)]
+        r["hump"] = round(pct(res, .9) - pct(res, .1), 1)
+        r["noise"] = round(r["floor"] - typical, 1)
+        r["qrm"] = r["hump"] >= QRM_HUMP_DB and r["busy"] < 0.3
+        weak = r["signals"] < 3 or (r["strength"] or 0) < WEAK_SIG_DB
+        r["label"] = ("QRM" if r["qrm"] and r["signals"] < 3 else "noisy" if r["noise"] >= NOISY_DB and weak
+                      else "busy" if r["signals"] >= 10 else "active" if r["signals"] >= 3 else "quiet")
+
+LOG_LAST = {"mt": None, "last": {}}
+def log_last():
+    """{(band, mode): (last QSO epoch, QSOs in the last 24 h)} over the whole log."""
+    import datetime
+    paths = [p for p in (os.path.expanduser("~/.local/share/WS/wsjtx_log.adi"),
+                         os.path.expanduser("~/.local/share/WSJT-X/wsjtx_log.adi")) if os.path.exists(p)]
+    mt = tuple(os.path.getmtime(p) for p in paths)
+    if mt == LOG_LAST["mt"]:
+        return LOG_LAST["last"]
+    last, now = {}, time.time()
+    for p in paths:
+        for rec in open(p, errors="ignore").read().split("<eor"):
+            md = re.search(r"<qso_date:\d+>(\d{8})", rec, re.I)
+            mt_ = re.search(r"<time_on:\d+>(\d{4})", rec, re.I)
+            mb = re.search(r"<band:\d+>(\w+)", rec, re.I)
+            mm = re.search(r"<submode:\d+>(\w+)", rec, re.I) or re.search(r"<mode:\d+>(\w+)", rec, re.I)
+            if not (md and mt_ and mb and mm):
+                continue
+            ts = datetime.datetime.strptime(md.group(1) + mt_.group(1), "%Y%m%d%H%M").replace(
+                tzinfo=datetime.timezone.utc).timestamp()
+            k = (mb.group(1).lower(), mm.group(1).upper())
+            t0, n = last.get(k, (0, 0))
+            last[k] = (max(t0, ts), n + (now - ts < 86400))
+    LOG_LAST.update(mt=mt, last=last)
+    return last
+
+def ws_set_mode(m, wait=8.0):
+    """Switch WS's mode (Configure) and wait for Status to report it."""
+    if mode_raw() == m:
+        return True
+    CTX["tx"].sendto(pack_configure(state["ws_id"], "", "", False, mode=m), ws_dest())
+    end = time.time() + wait
+    while time.time() < end:
+        if mode_raw() == m:
+            time.sleep(0.5)  # WS may jump to that mode's frequency first: let it, then set ours
+            return True
+        time.sleep(0.1)
+    return False
+
+def ws_set_dial(hz):
+    CTX["tx"].sendto(struct.pack(">III", 0xADBCCBDA, 2, SET_DIAL) + pack_str(state["ws_id"])
+                     + struct.pack(">Q", int(hz)), ws_dest())
+
+def mode_raw():
+    return state["udp"].get("mode")
+
+def scan_spectrum(data, off):
+    """UDP thread, while scanning: spectra go to the scan instead of the hunter."""
+    q = SCAN["q"]
+    if q is not None:
+        q.put(parse_spectrum(data, off))
+
+def scan_measure(pt, per_ms):
+    """Tune to one point and return the first spectrum of a period that
+    started after the retune, or None."""
+    import queue
+    while not SCAN["q"].empty():
+        SCAN["q"].get_nowait()
+    ws_set_dial(pt["hz"])
+    t_tune = time.time()
+    ready = tod_ms(t_tune + SCAN_SETTLE)
+    end = t_tune + 3 * per_ms / 1000 + 4
+    while time.time() < end and not SCAN["stop"]:
+        try:
+            t_ms, tr_ms, start, bin_hz, db = SCAN["q"].get(timeout=0.5)
+        except queue.Empty:
+            if time.time() - t_tune > 2 and abs((state["udp"].get("dial") or 0) - pt["hz"]) > 100:
+                ws_set_dial(pt["hz"])  # the dial command was lost
+                t_tune, ready = time.time(), tod_ms(time.time() + SCAN_SETTLE)
+            continue
+        if tr_ms != per_ms or (t_ms - ready) % 86400000 > 43200000:
+            continue  # started before the retune had settled
+        if abs((state["udp"].get("dial") or 0) - pt["hz"]) > 100:
+            continue  # WS isn't there (yet)
+        return t_ms, start, bin_hz, db
+    return None
+
+def scan_run(points):
+    import queue
+    u = state["udp"]
+    orig_hz, orig_mode, was_running = u.get("dial"), mode_raw(), state["running"]
+    SCAN.update(on=True, stop=False, goto=None, i=0, n=len(points), t0=time.time(), err="", cur=None,
+                q=queue.Queue(), by_tm={})
+    if was_running:
+        state["running"] = False; state["target"] = None; ENG["cq_until"] = 0
+    halt_ws()
+    CTX["tx"].sendto(pack_set_bool(SET_TX_ENABLED, state["ws_id"], False), ws_dest())
+    log(f"band scan: {len(points)} frequencies" + (", hunter paused" if was_running else ""))
+    done = []
+    try:
+        if not ws_set_mode("FT2"):
+            raise RuntimeError("WS did not switch to FT2")
+        per = int(MODES["FT2"][0] * 1000)
+        for pt in points:
+            if SCAN["stop"]:
+                break
+            SCAN["cur"] = pt
+            if u.get("transmitting"):
+                halt_ws()
+            got = scan_measure(pt, per)
+            SCAN["i"] += 1
+            if not got:
+                continue
+            t_ms, start, bin_hz, db = got
+            m = scan_metrics(db, start, bin_hz, max(MODES[md][1] for md in pt["modes"]))
+            if not m:
+                continue
+            row = {**pt, **m, "t": time.time(), "decodes": 0}
+            SCAN["by_tm"][t_ms] = row  # FT2 decodes of that period arrive after we move on
+            for md in pt["modes"]:
+                SCAN["rows"][f"{pt['hz']} {md}"] = row
+            done.append(row)
+            scan_rate(done, {id(r): r for r in SCAN["rows"].values()}.values())
+    except Exception as e:
+        SCAN["err"] = str(e)[:80]
+        log(f"band scan: {e}")
+    finally:
+        SCAN.update(on=False, cur=None, q=None)
+        hz, md = SCAN["goto"] or (orig_hz, orig_mode)
+        try:
+            if md:
+                ws_set_mode(md)
+            if hz:
+                ws_set_dial(hz)
+        except Exception as e:
+            log(f"band scan: could not tune back: {e}")
+        if was_running:
+            state["running"] = True
+        try:
+            with open(SCAN_FILE, "w") as f:
+                json.dump(list(SCAN["rows"].items()), f)
+        except OSError:
+            pass
+        log(f"band scan done: {len(done)} of {len(points)} measured in {round(time.time() - SCAN['t0'])} s"
+            + (f", now on {hz / 1e6:.4f} MHz {md}" if hz and md else "") + (", hunter resumed" if was_running else ""))
+
+def scan_go(hz, md):
+    """Tune WS to a scanned frequency and mode (after a running scan stops)."""
+    if SCAN["on"]:
+        SCAN["goto"], SCAN["stop"] = (hz, md), True
+        return
+    if ws_set_mode(md):
+        ws_set_dial(hz)
+    log(f"tuned to {hz / 1e6:.4f} MHz {md} from the band scan")
+
+def scan_state():
+    now, last = time.time(), log_last()
+    rows = []
+    for key, r in list(SCAN["rows"].items()):
+        md = key.split()[1]
+        lt, n24 = last.get((r["band"], md), (0, 0))
+        rows.append({k: v for k, v in r.items() if k != "modes" and k[0] != "_"} | {
+            "mode": md, "age": round(now - r["t"]), "worked_ago": round(now - lt) if lt else None,
+            "worked_24h": n24, "here": r["hz"] == state["udp"].get("dial") and md == mode_raw()})
+    rows.sort(key=lambda r: (r["hz"], r["mode"]))
+    cur = SCAN["cur"]
+    return {"on": SCAN["on"], "i": SCAN["i"], "n": SCAN["n"], "err": SCAN["err"],
+            "cur": cur and {"band": cur["band"], "modes": cur["modes"], "hz": cur["hz"]},
+            "eta": round((SCAN["n"] - SCAN["i"]) * 2 * MODES["FT2"][0]) if SCAN["on"] else 0,
+            "src": SCAN["freqs"]["src"], "freqs": [list(x) for x in SCAN["freqs"]["list"]],
+            "ws_hunter": has_ws_hunter(), "rows": rows}
+
+def load_scan():
+    try:
+        SCAN["rows"] = {k: v for k, v in json.load(open(SCAN_FILE))}
+        rows = list({id(r): r for r in SCAN["rows"].values() if "_shape" in r}.values())
+        if rows:
+            scan_rate(rows, rows)  # labels by the current rules
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+
 class H(BaseHTTPRequestHandler):
     def _json(self, obj, code=200):
         b = json.dumps(obj).encode()
@@ -1577,6 +1924,8 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(b); return
         if self.path == "/api/globe":
             return self._json(globe())
+        if self.path == "/api/scan":
+            return self._json(scan_state())
         if self.path == "/api/waterfall":
             return self._json(waterfall())
         if self.path == "/api/debug/spectrum":
@@ -1706,6 +2055,29 @@ class H(BaseHTTPRequestHandler):
                 log(f"TX power {'in QSO' if answered() else 'calling'} set to {w} W")
             except Exception as e:
                 return self._json({"error": str(e)[:80]}, 502)
+        elif p == "/api/scan/start":
+            if not has_ws_hunter():
+                return self._json({"error": "needs the ws-hunter build of WS"}, 409)
+            if SCAN["on"]:
+                return self._json({"error": "already scanning"}, 409)
+            if answered():  # calling someone may be dropped; a QSO under way is not
+                return self._json({"error": f"in a QSO with {state['target']['call']}: scan when it is done"}, 409)
+            c = state["config"]
+            c["scan_bands"] = [b for b in body.get("bands", c["scan_bands"]) if band_of_name(b)]
+            c["scan_modes"] = [m for m in body.get("modes", c["scan_modes"]) if m in MODES]
+            save_config()
+            pts = scan_points(set(c["scan_bands"]), set(c["scan_modes"]))
+            if not pts:
+                return self._json({"error": "pick at least one band and mode"}, 400)
+            SCAN["on"] = True  # before the thread starts: a second click is refused
+            threading.Thread(target=scan_run, args=(pts,), daemon=True).start()
+        elif p == "/api/scan/stop":
+            SCAN["stop"] = True
+        elif p == "/api/scan/go":
+            md = body.get("mode")
+            if md not in MODES or not band_of(int(body.get("hz", 0))):
+                return self._json({"error": "bad frequency or mode"}, 400)
+            threading.Thread(target=scan_go, args=(int(body["hz"]), md), daemon=True).start()
         elif p == "/api/txdf":
             # manual Tx offset from the waterfall; the auto picker keeps it while it stays clear
             if not has_ws_hunter():
@@ -1749,6 +2121,8 @@ signal.signal(signal.SIGTERM, shutdown)
 signal.signal(signal.SIGINT, shutdown)
 threading.Thread(target=watcher, daemon=True).start()
 threading.Thread(target=rig_poll, daemon=True).start()
+load_scan()
+threading.Thread(target=load_freqs, daemon=True).start()
 log(f"hunter ready as {state['mycall']} {state['mygrid']}")
 print(f"open http://0.0.0.0:{a.http}/")
 ThreadingHTTPServer(("0.0.0.0", a.http), H).serve_forever()

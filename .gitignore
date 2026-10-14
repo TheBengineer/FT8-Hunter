@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 hunter_config.json
+scan_results.json
+scan_freqs.json

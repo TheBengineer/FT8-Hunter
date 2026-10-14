@@ -80,6 +80,50 @@ contacts and the stations that never answered, with time, band and mode. On a de
 three columns; move cards with the arrows or by dragging, and each stays in the
 column you put it in.
 
+### Band scan
+
+The 📶 Band scan card (ws-hunter build) checks which bands have traffic. Choose
+the bands and modes and press **Scan bands**. The hunter visits each published
+FT8 / FT4 / FT2 dial frequency (60m's 5357 kHz once, for all three modes). It
+takes one clean spectrum at each and then puts WS back on the mode and frequency
+it started on. WS runs FT2 during the scan, which gives a spectrum every 3.75 s.
+The period in which the rig retuned is thrown away, so each stop takes about
+7.5 s, and the full 27-stop HF scan takes about 3½ minutes. Hunting pauses for
+the scan and resumes after it. A scan won't start in the middle of a QSO.
+
+The frequencies come from WS's own default list (`models/FrequencyList.cpp`). The
+hunter downloads it from GitHub once a day and caches it in `scan_freqs.json`.
+That way new or moved FT2 frequencies arrive without a hunter update. If the
+download fails, the hunter uses the same list built in. (Older WS settings keep
+the frequency table they were saved with. In WS, Settings → Frequencies →
+right-click → Reset loads the FT2 entries, but it also drops any frequencies you
+added yourself.)
+
+Each result shows the following:
+
+- **Signals** are FT-like signals: runs of bins 2+ dB above the local quiet
+  level (the 25th percentile within ±150 Hz), 30–300 Hz wide, 4+ dB at the
+  peak, with the same level on both sides. The count and median strength are
+  shown. Narrow 1–2 bin spikes count as carriers (birdies, CW) instead.
+- **QRM** is wideband interference: a lump in the quiet level. The radio's own
+  passband shape is the same on every band, so the median shape across all
+  scanned frequencies is subtracted first. Whatever lump is left belongs to that
+  band. Dense FT traffic also lifts the quiet level, so the lump only counts
+  where signals cover under 30% of the passband.
+- **Noise** is the floor compared with the scan's median. The low bands are
+  naturally noisier. A frequency 10+ dB over the rest with only weak signals
+  (under 6 dB) is labelled **noisy**.
+- **Labels:** QRM with fewer than 3 signals is labelled QRM. Otherwise the label
+  is busy (10+ signals), active (3+) or quiet.
+- **Worked** shows how long ago you last logged a QSO on that band and mode
+  (from the whole WS log), and how many in the last 24 h.
+- A small chart shows dB over the floor from 200 to 3000 Hz, with the signals
+  and carriers marked. FT2 stops also count what WS decoded.
+
+Sort the results by band, by activity or by least recently worked. **Go** tunes
+WS to that frequency and mode. Results are kept in `scan_results.json` across
+restarts.
+
 ## Run
 
 ```bash
