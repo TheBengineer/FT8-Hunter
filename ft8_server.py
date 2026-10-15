@@ -9,6 +9,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import deque
 from urllib.parse import urlparse
 
+SIGNOFF_CATALOG = [
+    # fit after our call (6 characters)
+    "GL 73", "TU 73", "HH 73", "FB 73", "VY 73", "OM 73", "TNX 73", "CUL 73", "73 GL", "73 TU", "73 CUL",
+    # 7-13 characters: only sent with "Our call in sign-off" off
+    "TNX QSO GL 73", "TU FER QSO 73", "TNX FB QSO 73", "FB QSO TU 73", "CUL ES GL 73", "HPE CUAGN 73",
+    "CU AGN 73 GL", "TNX ES 73 GL", "VY 73 ES GL", "GL GD DX 73", "TU 73 GD DX", "73 ES GUD DX",
+    "GUD DX ES 73", "BCNU ES GL 73", "TNX RPT GL 73", "FB SIGS TU 73", "TNX OM GL 73", "TU OM GL 73",
+    "QSL TU 73 GL", "TNX 4 QSO 73",
+]
 state = {
     "running": False, "mycall": "", "mygrid": "",
     "target": None, "cq": {}, "answering": {},
@@ -21,7 +30,9 @@ state = {
                "auto_df": True, "df_lo": 1300, "df_hi": 2700,  # df_lo: rig feeds back below 1300 Hz
                "qrm_detect": True, "qrm_backoff_min": 5, "min_snr": -20,
                "watts_call": 10, "watts_qso": 20,
-               "signoff": ["GL 73", "TU 73", "HH 73"],  # our final 73, one per QSO at random ("73" = standard)
+               # our final 73, one per QSO at random ("73" = standard). FT8 free text
+               # is 13 characters: with our call first only 6 are left for the text
+               "signoff": list(SIGNOFF_CATALOG), "signoff_id": True,
                "tune_new_band": True, "tune_below_khz": 1,  # ATU tune this far under FT8 after a band change
                "scan_modes": ["FT8", "FT4", "FT2"],  # band scan: what to visit
                "scan_bands": ["160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m"]},  # TX power held on the radio: calling / once they answer
@@ -120,19 +131,21 @@ def pack_free_text(id_, text, send=False):
 
 FREE_TEXT_RE = re.compile(r"[A-Z0-9 +\-./?]{1,13}")  # what an FT8 free-text message can carry
 def signoff_text():
-    """Our final transmission for this QSO: '<mycall> <text>' with a text from
-    the sign-off list, e.g. 'KR4MZM GL73'. Our call stays in it (station ID at
-    the end of the contact); FT8 free text only holds 13 characters, so theirs
-    can't fit too. None means WS's standard 'THEM US 73'."""
-    picks = [str(x).strip().upper() for x in state["config"].get("signoff") or []]
-    picks = [x for x in picks if x]
-    if not picks:
-        return None
-    pick = signoff_fix(random.choice(picks))
-    msg = f"{base_call(state['mycall'])} {pick}"
-    if pick in (None, "73") or not FREE_TEXT_RE.fullmatch(msg):
-        return None
-    return msg
+    """Our final transmission for this QSO, a text from the sign-off catalog
+    picked at random. With "signoff_id" (default) our call goes first, e.g.
+    'KR4MZM GL 73', so the contact ends with our ID; FT8 free text holds 13
+    characters, so then only texts of 6 or fewer fit and theirs can't fit at
+    all. None means WS's standard 'THEM US 73'."""
+    mine = base_call(state["mycall"])
+    with_id = state["config"].get("signoff_id", True)
+    fits = []
+    for x in state["config"].get("signoff") or []:
+        f = signoff_fix(x)
+        if f:
+            msg = f"{mine} {f}" if with_id else f
+            fits.append(None if f == "73" else msg if FREE_TEXT_RE.fullmatch(msg) else False)
+    fits = [m for m in fits if m is not False]
+    return random.choice(fits) if fits else None
 
 def signoff_fix(text):
     """WS logs the QSO when it sends a 73, but only if '73' is a word of its
@@ -2325,13 +2338,13 @@ class H(BaseHTTPRequestHandler):
             c["tune_below_khz"] = max(0.5, min(float(c["tune_below_khz"]), 10.0))  # stay near the band's FT8
             if isinstance(c["signoff"], str):
                 c["signoff"] = [x for x in re.split(r"[,\n]", c["signoff"]) if x.strip()]
-            raw = [" ".join(str(x).upper().split()) for x in c["signoff"] if str(x).strip()][:20]
-            c["signoff"] = [f for x in raw if (f := signoff_fix(x)) and
-                            (f == "73" or FREE_TEXT_RE.fullmatch(f"{base_call(state['mycall'])} {f}"))]
+            raw = [" ".join(str(x).upper().split()) for x in c["signoff"] if str(x).strip()][:100]
+            c["signoff"] = list(dict.fromkeys(f for x in raw if (f := signoff_fix(x)) and FREE_TEXT_RE.fullmatch(f)))
             bad = [x for x in raw if signoff_fix(x) not in c["signoff"]]
             if bad:
-                log(f"sign-off not usable (needs a 73 for WS to log the QSO; FT8 free text: 13 characters "
-                    f"with our call, A-Z 0-9 +-./?): {', '.join(bad)}")
+                log(f"sign-off not usable (needs a 73 for WS to log the QSO; FT8 free text: 13 characters, "
+                    f"A-Z 0-9 +-./?): {', '.join(bad)}")
+            c["signoff_id"] = bool(c["signoff_id"])
             save_config()
             RIG_WAKE.set()  # new power applies now
             if "cq_first" in body:
