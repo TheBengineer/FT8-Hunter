@@ -698,6 +698,41 @@ check("book lists a station we gave up on as ignored, with its hold",
 check("a station that answered after its hold isn't listed as ignored", "W8LATE" not in book)
 check("worked count is for this band/mode only", api["worked"] == ["K1ABC"])
 
+# --- manual (contest) mode: the hunter ranks, the operator starts each QSO
+def mpost(path, body):
+    req = urllib.request.Request(f"http://127.0.0.1:{srv.server_address[1]}{path}", json.dumps(body).encode(),
+                                 {"Content-Type": "application/json"})
+    try:
+        return json.load(urllib.request.urlopen(req))
+    except urllib.error.HTTPError as e:
+        return json.load(e)
+import urllib.error
+fresh(); st["running"] = True; mpost("/api/config", {"manual": True})
+dec("CQ K9XYZ EN52", snr=5); dec("CQ POTA K4PRK EM85", snr=-8); dec("JA1AAA VK2BBB RR73", snr=0)
+dec(f"{st['mycall']} N5CAL EM15", snr=-12); ns["engine_tick"]()
+check("manual: nothing is called on its own (not a caller, CQ, activator or tail-end)",
+      st["target"] is None and not ENG["cq_until"] and REPLY not in CTX["tx"].sent and ENG["step"]["step"] == "manual")
+sug = json.load(urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}/api/state"))["suggest"]
+check("manual: suggestions in the hunter's order: caller, activator, CQ, tail-end",
+      [(x["call"], x["why"]) for x in sug] == [("N5CAL", "called us"), ("K4PRK", "POTA"), ("K9XYZ", "CQ"), ("VK2BBB", "tail-end")])
+r = mpost("/api/work", {"msg": "CQ POTA K4PRK EM85"})
+check("manual: a tap starts the QSO", r.get("ok") and st["target"]["call"] == "K4PRK" and st["target"]["picked"]
+      and REPLY in CTX["tx"].sent)
+dec(f"{st['mycall']} W2NEW FN20", snr=-3)
+check("manual: a new caller doesn't take over while we call the picked station", st["target"]["call"] == "K4PRK")
+dec(f"{st['mycall']} K4PRK -10")
+r = mpost("/api/work", {"msg": "CQ K9XYZ EN52"})
+check("manual: no new pick in the middle of a QSO", "error" in r and st["target"]["call"] == "K4PRK")
+CTX["tx"].sent.clear(); dec(f"{st['mycall']} K4PRK RR73"); ns["engine_tick"](); ns["engine_tick"]()
+check("manual: the picked QSO is finished and released, nothing new started",
+      st["target"] is None and ns["is_worked"]("K4PRK") and REPLY not in CTX["tx"].sent)
+r = mpost("/api/work", {"msg": "CQ NOT1HEARD EN52"})
+check("manual: a message not on offer is refused", "error" in r and st["target"] is None)
+mpost("/api/config", {"manual": False}); ns["engine_tick"]()
+check("manual off: the hunter picks again", st["target"] is not None)
+fresh()
+st["running"] = False
+
 # --- radio via FLRig XML-RPC: meters polled, TX power set and clamped
 from xmlrpc.server import SimpleXMLRPCServer
 RADIO = {"power": 16, "ptt": 1, "swr": 40}

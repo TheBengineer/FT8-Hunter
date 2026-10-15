@@ -19,6 +19,15 @@ Each T/R period (15 s FT8, 7.5 s FT4, 3.75 s FT2) it does the first of these tha
 everyone who answers, still leaves its CQ for an activator if "Activations first"
 is on, and skips steps 3 and 4.
 
+**Manual (contest)** (the ✋ button) is for contests and awards that don't accept
+automated contacts (ARRL contests, DXCC, WAS; WW Digi): each QSO must be started
+by the operator. The hunter starts nothing on its own. It lists what it would
+work next, in the order above, and you tap **work** on one. The hunter then
+works that QSO to the end (repeats, power, sign-off, another 73 for an RRR it
+missed) and waits for your next tap. A new pick is refused mid-QSO; finish it or
+Skip first. A station that didn't copy our 73 shows up in the list for you to
+answer again. Check the rules of the contest you enter.
+
 CQs are ranked by chance of a contact: SNR, minus 3 dB for each station already
 calling them, plus 3 if heard last period.
 

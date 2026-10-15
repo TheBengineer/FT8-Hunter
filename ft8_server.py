@@ -2,7 +2,7 @@
 """FT8 hunter daemon: UDP watcher + stdlib JSON API + serves webapp. No deps.
 Run: python3 ft8_server.py --mycall KR4MZM --mygrid EM84 --port 2237 --http 8080
 API: GET /api/state -> {running, target, cq[], answering[], worked[], log[], config, stats}
-     POST /api/start|stop|call|skip|config   Webapp: GET /
+     POST /api/start|stop|call|work|skip|config   Webapp: GET /
 """
 import argparse, json, socket, struct, threading, time, re, os, math, random
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +23,7 @@ state = {
                "cq_tries": 3, "tail_tries": 2, "qso_tries": 7, "hold_min": 10,
                "idle_every": 4, "idle_secs": 60, "special_first": True,
                "call_cq": True, "cq_secs": 120, "cq_first": False,
+               "manual": False,  # contest mode: the hunter ranks, the operator taps to start each QSO
                "auto_df": True, "df_lo": 1300, "df_hi": 2700,  # df_lo: rig feeds back below 1300 Hz
                "qrm_detect": True, "qrm_backoff_min": 5, "min_snr": -20,
                "watts_call": 10, "watts_qso": 20,
@@ -1139,7 +1140,7 @@ def engine_tick():
     if t:
         t["left"] -= 1
         if t["left"] <= 0:
-            waiting = fresh_callers(now)
+            waiting = [] if cfg.get("manual") else fresh_callers(now)  # manual: no one is next until picked
             if not (t.get("done") and waiting):
                 halt_ws()  # with a caller waiting, the next Reply takes over TX instead
             if t.get("done"):
@@ -1167,6 +1168,12 @@ def engine_tick():
                 else f"calling, {(t['left'] + 1) // 2} tries left"
             return at("target", f"{t['call']}: {how}")
     check_qrm(now)  # spectra wait for their decodes; we may transmit meanwhile
+    if cfg.get("manual"):
+        # Contest rules (ARRL, WW Digi): each QSO started by the operator. The
+        # hunter finishes the QSO they started; the next one waits for a tap.
+        ENG["busy"] = 0
+        n = len(suggestions(now))
+        return at("manual", f"{n} to pick from" if n else "nothing to pick yet")
     # stations calling us, first-come-first-serve, working through all of them
     waiting = fresh_callers(now)
     while waiting:
@@ -1213,23 +1220,10 @@ def engine_tick():
     # no CQ: tail-end a station signing off, never one mid-QSO. A Reply to
     # "A B ..." makes WS call B, the sender. RR73/RRR usually comes from the
     # station running the frequency, who is about to be free; prefer those.
-    best = None
-    for m in ([] if cq_first else list(state["msgs"])):
-        if now - m.get("seen", 0) >= cyc(2):
-            continue
-        to, frm, rest = addressing(m["msg"])
-        if not frm or "." in frm or is_me(to) or is_me(frm):
-            continue
-        if not rest or rest[-1] not in SIGNOFF:
-            continue
-        if is_worked(frm) or on_hold(frm) or m["snr"] < cfg.get("min_snr", -20):
-            continue
-        key = (rest[-1] == "73", -m["snr"])
-        if best is None or key < best[2]:
-            best = (m, frm, key)
-    if best and acquire(best[1], "", best[0]["msg"], tries=cfg.get("tail_tries", 2), why="tail-end"):
+    best = ([] if cq_first else tail_cands(now))[:1]
+    if best and acquire(best[0][1], "", best[0][0]["msg"], tries=cfg.get("tail_tries", 2), why="tail-end"):
         ENG["busy"] += 1
-        return at("tail", best[1])
+        return at("tail", best[0][1])
     ENG["busy"] = 0
     if ENG["cq_until"]:  # our CQ run just ended: stop and listen before the next
         ENG["cq_until"] = 0
@@ -1246,6 +1240,46 @@ def engine_tick():
         ENG["idle_until"] = now + cfg.get("idle_secs", 60)
         log(f"listening {cfg.get('idle_secs', 60)}s (off-sequence watch)")
     return at("idle", "CQ calling is off")
+
+def tail_cands(now):
+    """Stations signing off in the last two periods, best first: (decode, call)."""
+    out = []
+    for m in list(state["msgs"]):
+        if now - m.get("seen", 0) >= cyc(2):
+            continue
+        to, frm, rest = addressing(m["msg"])
+        if not frm or "." in frm or is_me(to) or is_me(frm):
+            continue
+        if not rest or rest[-1] not in SIGNOFF:
+            continue
+        if is_worked(frm) or on_hold(frm) or m["snr"] < state["config"].get("min_snr", -20):
+            continue
+        out.append(((rest[-1] == "73", -m["snr"]), m, frm))
+    out.sort(key=lambda x: x[0])
+    return [(m, frm) for _, m, frm in out]
+
+def suggestions(now=None):
+    """Manual (contest) mode: what the hunter would work next, in its own
+    order (callers, activators, best CQs, tail-ends). Nothing starts until the
+    operator taps one; see /api/work."""
+    now = now or time.time()
+    cfg, t = state["config"], state["target"]
+    out, seen = [], {base_call(t["call"])} if t else set()
+    def add(call, msg, why, tries):
+        p = state["decparams"].get(msg)
+        if p and base_call(call) not in seen:
+            seen.add(base_call(call))
+            out.append({"call": call, "msg": msg, "why": why, "snr": p["snr"], "tries": tries})
+    for c in fresh_callers(now):
+        if c.get("again"):
+            add(c["call"], c["msg"], ("73" if c["msg"].split()[-1] == "RRR" else "RR73") + " again", 1)
+        else:
+            add(c["call"], c["msg"], "called us", cfg.get("cq_tries", 3))
+    for e in sorted([e for e in list(state["cq"].values()) if not cq_skip(e, now)], key=cq_rank):
+        add(e["call"], e["msg"], e["tag"] if e.get("special") else "CQ", cfg.get("cq_tries", 3))
+    for m, frm in tail_cands(now):
+        add(frm, m["msg"], "tail-end", cfg.get("tail_tries", 2))
+    return out[:12]
 
 def cq_check(now):
     """During our CQ run, make sure WS really is set to call CQ: Enable Tx on
@@ -1423,14 +1457,15 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                     if again:
                         ENG["callers"].appendleft(entry)
                         log(f"{frm} didn't copy our {'73' if rest[-1] == 'RRR' else 'RR73'}, "
-                            f"sending it again: {msg}")
+                            + ("tap to send it again: " if state["config"].get("manual") else "sending it again: ")
+                            + msg)
                     elif late:
                         ENG["callers"].appendleft(entry)
                         log(f"late reply, answering next: {msg}")
                     else:
                         ENG["callers"].append(entry)
                         log(f"caller queued: {msg}")
-                    if t and not t.get("resp"):  # never abandon a QSO in progress
+                    if t and not t.get("resp") and not state["config"].get("manual"):  # never abandon a QSO in progress
                         halt_ws()
                         log(f"dropping {tgt} for caller {frm}")
                         state["target"] = None
@@ -2253,6 +2288,7 @@ class H(BaseHTTPRequestHandler):
             par = ENG["parity"]
             return self._json({"running": state["running"], "mycall": state["mycall"],
                 "mygrid": state["mygrid"], "target": state["target"], "cq": cq[:40],
+                "suggest": suggestions(now) if state["config"].get("manual") else [],
                 "answering": ans[:80], "now": now, "worked": worked, "book": book[:200], "band": band(),
                 "msgs": msgs, "mytx": list(state["mytx"])[:15], "dxfocus": dxf,
                 "holds": holds, "callers": [c["call"] for c in list(ENG["callers"])],
@@ -2318,6 +2354,31 @@ class H(BaseHTTPRequestHandler):
             if acquire(e["call"], g or e["grid"], e["msg"],
                        tries=state["config"].get("cq_tries", 3), why="manual"):
                 log(f"manual call {e['msg']}")
+        elif p == "/api/work":
+            # manual (contest) mode: the operator picked one of the suggestions
+            s_ = next((x for x in suggestions() if x["msg"] == body.get("msg")), None)
+            t = state["target"]
+            if not state["running"]:
+                return self._json({"error": "start the hunter first"}, 409)
+            if not s_:
+                return self._json({"error": "no longer on offer (not heard lately, worked or on hold)"}, 409)
+            if ENG.get("tuning"):
+                return self._json({"error": "tuning the antenna: try again in a moment"}, 409)
+            if t and t.get("resp") and not t.get("done"):
+                return self._json({"error": f"in a QSO with {t['call']}: finish or skip it first"}, 409)
+            if t and t.get("done"):
+                add_worked(t["call"])  # signing off: our 73 has gone, the next Reply takes over TX
+            for c in [c for c in list(ENG["callers"]) if same_call(c["call"], s_["call"])]:
+                ENG["callers"].remove(c)
+            if not acquire(s_["call"], "", s_["msg"], tries=s_["tries"], why=s_["why"]):
+                return self._json({"error": "no decode details for that message"}, 409)
+            if s_["why"].endswith("again"):
+                state["target"]["again"] = True
+                k = base_call(s_["call"])
+                ENG["rr73_again"][k] = ENG["rr73_again"].get(k, 0) + 1
+            state["target"]["picked"] = True
+            log(f"picked by the operator: {s_['msg']}")
+            at("target", f"{s_['call']}: picked")
         elif p == "/api/smoke":
             # Replay poke to WSJT-X's own port: WS answers with decode backlog + Status
             before = state["udp"].get("ws_rx", 0)
@@ -2398,6 +2459,12 @@ class H(BaseHTTPRequestHandler):
                     f"with our call, so 6 for the text; A-Z 0-9 +-./?): {', '.join(bad)}")
             save_config()
             RIG_WAKE.set()  # new power applies now
+            if "manual" in body:
+                if c["manual"] and ENG["cq_until"]:  # our own CQ run was the hunter's choice: end it
+                    ENG["cq_until"] = 0
+                    halt_ws()
+                log("manual (contest) mode " + ("on: tap a station to start each QSO" if c["manual"]
+                                                else "off: the hunter picks"))
             if "cq_first" in body:
                 log("CQ first mode " + ("on: running our own CQ" if c["cq_first"] else "off: hunting"))
         else: return self._json({"error": "unknown"}, 404)

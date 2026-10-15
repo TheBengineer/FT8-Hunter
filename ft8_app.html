@@ -72,6 +72,8 @@ details summary{font-weight:700;padding:4px}
 <div id="cbar" style="height:100%;width:0%;background:#2a6cb6"></div></div>
 <div class="small" id="ctxt" style="text-align:center;margin-top:2px">cycle</div>
 <div class="row"><button id="bS">Start</button><button id="bX" class="warn">Skip</button></div>
+<div class="row" style="margin-top:8px"><button id="bManual" style="background:#3a4552" title="Contest rules: each QSO started by the operator. The hunter ranks stations; tap one to start it, and the hunter finishes that QSO">✋ Manual (contest): off</button></div>
+<div id="pickBox" style="display:none;margin-top:6px"><div class="small" id="pickNote">Tap a station to start the QSO</div><ul id="pick"></ul></div>
 <div class="row" style="margin-top:8px"><button id="bCqFirst" style="background:#3a4552" title="Run our own CQ: answer callers and activators only">📣 CQ first: off</button></div>
 <div class="row" style="margin-top:8px"><button id="bCQ" style="background:#1f9d4d">🔴 ARM TX</button></div>
 <div id="rig" style="margin-top:8px;padding:8px;border:1px solid #26303c;border-radius:10px">
@@ -157,6 +159,7 @@ const STEPS=[['stopped','Hunter running?','Stopped'],
  ['newband','Just arrived on this band?','Listen 2 cycles for a clear offset'],
  ['tuning','New band, antenna not tuned yet?','Tune the antenna under FT8'],
  ['target','Calling or working a target?','Work the target'],
+ ['manual','Manual (contest) mode?','Wait for the operator to pick'],
  ['caller','Station calling me?','Answer the caller'],
  ['qrm','Someone else on frequency?','Back off: no new calls'],
  ['listen','Listen pause?','Listen'],
@@ -170,13 +173,25 @@ const STEPS=[['stopped','Hunter running?','Stopped'],
 let CQF=false;
 function cqFirstView(on){CQF=on;const b=$('bCqFirst');b.textContent='📣 CQ first: '+(on?'on':'off');b.style.background=on?'#b8860b':'#3a4552'}
 $('bCqFirst').onclick=()=>{cqFirstView(!CQF);api('/api/config',{cq_first:CQF},'POST').then(tick)};
+// Manual (contest) mode: the hunter ranks stations; nothing new starts without a tap
+let MAN=false;
+function manualView(on){MAN=on;const b=$('bManual');b.textContent='✋ Manual (contest): '+(on?'on':'off');b.style.background=on?'#7a3fb8':'#3a4552';$('pickBox').style.display=on?'block':'none'}
+$('bManual').onclick=()=>{manualView(!MAN);api('/api/config',{manual:MAN},'POST').then(tick)};
+async function pick(i){const e=(window._pick||[])[i];if(!e)return;const r=await api('/api/work',{msg:e.msg});
+ $('pickNote').textContent=r.error?'⚠️ '+r.error:'Calling '+e.call;tick()}
+function pickView(s){window._pick=s.suggest||[];if(!MAN)return;
+ const busy=s.target&&s.target.resp&&!s.target.done;
+ if(!$('pickNote').textContent.startsWith('⚠️')||!window._pick.length)$('pickNote').textContent=!s.running?'Start the hunter to pick stations':busy?'In a QSO with '+s.target.call+': pick the next when it is done':'Tap a station to start the QSO';
+ $('pick').innerHTML=window._pick.map((e,i)=>`<li><span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="badge${/again|called/.test(e.why)?' me':/^(POTA|SOTA|WWFF|IOTA|BOTA|LOTA)$/.test(e.why)?' act':''}">${e.why}</span>`
+  +`<span class="mono" style="flex:1">${mark(e.msg)}</span><button class="mini" ${busy||!s.running?'disabled':''} onclick="pick(${i})">work</button></li>`).join('')||'<li>— nothing to pick yet —</li>'}
 function flow(st,cfg){const id=(st||{}).step||'stopped',det=(st||{}).detail||'';
- const off=cfg&&cfg.cq_first?{cq:1,tail:1}:{};
+ const off=cfg&&cfg.manual?{caller:'manual: tap',qrm:'manual: off',listen:'manual: off',activator:'manual: tap',cq:'manual: tap',tail:'manual: tap',mycq:'manual: off',cq_end:'manual: off',cq_start:'manual: off'}
+  :cfg&&cfg.cq_first?{cq:'CQ first: skipped',tail:'CQ first: skipped',manual:'off'}:{manual:'off'};
  let cur=STEPS.findIndex(x=>x[0]===id);if(cur<0)cur=STEPS.length; // idle: every check said no
  let html=STEPS.map(([sid,q,a],i)=>{
   const cls=(i<cur?'pass':i===cur?'cur':'ahead')+(off[sid]?' off':'');
   // the first check is inverted: "running? yes" continues down, "no" stops
-  const ans=off[sid]?'CQ first: skipped':i<cur?(i===0?'yes':'no'):i===cur?(i===0?'no':'yes'):'';
+  const ans=off[sid]?off[sid]:i<cur?(i===0?'yes':'no'):i===cur?(i===0?'no':'yes'):'';
   return `<div class="r ${cls}"><div class="q">${q}<span class="ans">${ans}</span></div><div class="ar">→</div>`+
    `<div class="a">${a}${i===cur&&det?`<span class="det">${det}</span>`:''}</div></div>`}).join('');
  html+=`<div class="r ${cur===STEPS.length?'cur':'ahead'}"><div></div><div></div><div class="a">Idle until next period${cur===STEPS.length&&det?`<span class="det">${det}</span>`:''}</div></div>`;
@@ -206,7 +221,7 @@ function ansPrefs(save){const f={q:$('aQ'),age:$('aAge'),me:$('aMe')};
 ansPrefs(false);['aQ','aAge','aMe'].forEach(id=>$(id).addEventListener('input',()=>{ansPrefs(true);renderAns()}));
 setInterval(()=>{const now=srvNow();document.querySelectorAll('#ans .ago').forEach(el=>el.textContent=ago(Math.max(0,Math.round(now-el.dataset.seen))))},1000);
 async function tick(){const s=await api('/api/state');
-window._cfg=s.config;window._me=s.mycall;fillSettings(s.config);cqFirstView(!!s.config.cq_first);if(s.rig)rigView(s.rig,s.rx);swrView(s.swr);HELD=s.holds||{};flow(s.step,s.config);
+window._cfg=s.config;window._me=s.mycall;fillSettings(s.config);cqFirstView(!!s.config.cq_first);manualView(!!s.config.manual);pickView(s);if(s.rig)rigView(s.rig,s.rx);swrView(s.swr);HELD=s.holds||{};flow(s.step,s.config);
 $('dot').className='dot'+(s.running?' run':'');
 $('st').textContent=(s.running?'RUNNING':'STOPPED')+' · '+s.mycall+' '+s.mygrid;
 $('target').textContent=s.target?('🎯 '+s.target.call+' '+(s.target.grid||'')+' · '+(s.target.why||'')+' · '+(s.target.resp?'in QSO':Math.ceil(s.target.left/2)+' tries left')):(s.cq_calling?('📣 calling CQ · '+s.cq_calling+'s'):'no target');
