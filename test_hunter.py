@@ -629,16 +629,14 @@ check("worked count is for this band/mode only", api["worked"] == ["K1ABC"])
 
 # --- radio via FLRig XML-RPC: meters polled, TX power set and clamped
 from xmlrpc.server import SimpleXMLRPCServer
-RADIO = {"power": 16, "ptt": 1, "swr": 0x104}
+RADIO = {"power": 16, "ptt": 1, "swr": 40}
 def cat(c):
-    if "x15 x12" in c:  # SWR meter: reads 0 off the air
-        return "FE FE 70 E0 15 12 FD FE FE E0 70 15 12 %02X %02X FD" % divmod(RADIO["swr"] if RADIO["ptt"] else 0, 256)
     return "FE FE 70 E0 14 0A FD FE FE E0 70 14 0A %02X %02X FD" % divmod(ns["CIV"]["Xiegu-G90"][1][RADIO["power"]], 256)
 fl = SimpleXMLRPCServer(("127.0.0.1", 0), logRequests=False, allow_none=True)
 fl.register_multicall_functions()
 for name, f in {"rig.get_xcvr": lambda: "Xiegu-G90", "rig.get_maxpwr": lambda: 0,
                 "rig.get_ptt": lambda: RADIO["ptt"], "rig.get_power": lambda: RADIO["power"],
-                "rig.get_pwrmeter": lambda: "15", "rig.get_swrmeter": lambda: "12", "rig.get_smeter": lambda: "0",
+                "rig.get_pwrmeter": lambda: "15", "rig.get_swrmeter": lambda: str(RADIO["swr"] if RADIO["ptt"] else 0), "rig.get_smeter": lambda: "0",
                 "rig.set_power": lambda w: RADIO.update(power=w) or 0,
                 "rig.cat_string": cat}.items():
     fl.register_function(f, name)
@@ -684,22 +682,25 @@ check("G90 raw power values map to watts", ns["civ_watts"](0x17E, ns["CIV"]["Xie
 RADIO["ptt"] = 1; time.sleep(2.5)
 check("output power shown while transmitting", R["out"] == 15)
 SWR = ns["SWR"]; SWR["on"] -= 10  # on the air for a while
-check("raw SWR meter shown live while transmitting", ns["swr_state"]()["live"] == 0x104)
+check("SWR meter shown live while transmitting", ns["swr_state"]()["live"] == 40)
 RADIO["ptt"] = 0; time.sleep(2.5)
 last = SWR["log"][-1] if SWR["log"] else {}
-check("one SWR record per transmission: raw reading, band, power", last.get("raw") == 0x104 and last.get("watts") == 5
+check("one SWR record per transmission: reading, band, power", last.get("raw") == 40 and last.get("watts") == 5
       and ns["swr_state"]()["live"] is None)
 check("too few transmissions on a band and power to judge yet", ns["swr_state"]()["last"]["vs"]["level"] == "learning")
 for k in range(4):
-    SWR["log"].append({"id": k, "t": "", "secs": 13, "band": last["band"], "khz": 0, "mode": "FT8", "watts": 5, "raw": 0x104 + k})
-SWR["log"].append({"id": 9, "t": "", "secs": 13, "band": last["band"], "khz": 0, "mode": "tune", "watts": 5, "raw": 0x25F})
+    SWR["log"].append({"id": k, "t": "", "secs": 13, "band": last["band"], "khz": 0, "mode": "FT8", "watts": 5, "raw": 40 + k})
+SWR["log"].append({"id": 9, "t": "", "secs": 13, "band": last["band"], "khz": 0, "mode": "tune", "watts": 5, "raw": 100})
 judge = ns["swr_judge"]
-check("SWR reading against the usual for that band and power: normal", judge(0x104, last["band"], 5)["level"] == "normal")
-check("...higher than usual", judge(0x140, last["band"], 5)["level"] == "higher")
-check("...much higher (check the antenna); tunes don't count toward usual", judge(0x190, last["band"], 5)["level"] == "much higher"
-      and judge(0x104, last["band"], 5)["n"] == 5)
-check("other power settings and bands are judged on their own", judge(0x25F, last["band"], 20)["level"] == "learning"
-      and judge(0x104, "40m", 5)["level"] == "learning")
+check("SWR reading against the usual for that band and power: normal", judge(41, last["band"], 5)["level"] == "normal")
+check("...higher than usual", judge(52, last["band"], 5)["level"] == "higher")
+check("...much higher (check the antenna); tunes don't count toward usual", judge(70, last["band"], 5)["level"] == "much higher"
+      and judge(41, last["band"], 5)["n"] == 5)
+check("other power settings and bands are judged on their own", judge(100, last["band"], 20)["level"] == "learning"
+      and judge(41, "40m", 5)["level"] == "learning")
+for k in range(3):
+    SWR["log"].append({"id": 20 + k, "t": "", "secs": 13, "band": last["band"], "khz": 0, "mode": "FT8", "watts": 20, "raw": 100})
+check("meter at the top of its scale at a power: not judged", judge(100, last["band"], 20)["level"] == "off scale")
 RADIO["ptt"] = 1; time.sleep(2.5)
 post("/api/config", {"df_lo": 1400})
 saved = json.load(open(ns["CONFIG_FILE"]))

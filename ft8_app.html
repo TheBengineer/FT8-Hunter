@@ -81,7 +81,7 @@ details summary{font-weight:700;padding:4px}
 <button class="mini" id="pwUp">+</button><b id="pwV" class="mono" style="min-width:42px;text-align:right">– W</b></div>
 <div class="meter" title="Output power from the rig's meter (the G90's is coarse: full or nothing)"><span class="small">Output</span><div class="bar" style="height:4px"><i id="mO" style="background:#ff9f43"></i></div><span class="mono small" id="vO">–</span></div>
 <div id="swBox" style="display:none">
-<div class="meter" title="The G90's SWR meter over CAT, against its usual reading on this band at this power. The raw number isn't an SWR (its scale is unknown), but a rise means more power is coming back from the antenna"><span class="small">SWR</span><span class="small" id="vSw" style="margin-left:auto;min-width:0">–</span></div>
+<div class="meter" title="The G90's SWR meter over CAT, against its usual reading on this band at this power. The number (FLRig's 0-100 meter) isn't an SWR (its scale is unknown), but a rise means more power is coming back from the antenna"><span class="small">SWR</span><span class="small" id="vSw" style="margin-left:auto;min-width:0">–</span></div>
 <div class="small" id="swLast" style="margin-top:2px"></div></div>
 <div class="meter" id="sRow" style="display:none"><span class="small">S-meter</span><div class="bar"><i id="mS" style="background:#2ecc71"></i></div><span class="mono small" id="vS">–</span></div>
 <div class="small" id="rxBest" style="margin-top:2px"></div></div>
@@ -256,7 +256,7 @@ function rigView(r,rx){
  bar('mO',r.ok&&r.ptt?(r.out||0)/(r.max||100):0);$('vO').textContent=r.ok&&r.ptt?Math.round(r.out||0)+' W':'–';
  $('sRow').style.display=r.has_s?'flex':'none';if(r.has_s){bar('mS',r.s/100);$('vS').textContent=r.ptt?'–':String(r.s)}
  $('rxBest').textContent=rx&&rx.best!=null?`strongest decode last period: ${rx.best>0?'+':''}${rx.best} dB SNR (${rx.n} decodes)`:'no decodes last period'}
-function swrVs(v){if(!v)return'';if(v.level==='learning')return`<span class="small">learning what's usual (${v.n} of 3 TX)</span>`;
+function swrVs(v){if(!v)return'';if(v.level==='learning')return`<span class="small">learning what's usual (${v.n} of 3 TX)</span>`;if(v.level==='off scale')return`<span class="small">meter at the top at this power: can't compare</span>`;
  const c=v.level==='normal'?'good':v.level==='higher'?'mid':'bad';
  return`<span class="${c}">${v.level==='normal'?'normal':v.level+' than usual'+(v.level==='much higher'?': check the antenna':'')}</span> <span class="small">(×${v.x} of usual)</span>`}
 function swrView(w){$('swBox').style.display=w?'block':'none';if(!w)return;

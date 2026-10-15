@@ -1455,33 +1455,29 @@ def hold_power(fl, now):
         log(f"radio TX power went to {w} W (not set here): set back to {want} W")
 
 # --- SWR, relative. The G90 answers CI-V 15 12 (the Icom SWR meter) with a
-# 16-bit value that grows with the power setting and tops out at 0x25F, which
-# FLRig clips to Icom's 0-255 scale. Its mapping to SWR is unknown (the radio
-# shows SWR only as a bar), so each transmission's reading is logged and a new
-# one is compared with the usual reading for that band and power.
+# 16-bit value that grows with the power setting and tops out at 0x25F; FLRig's
+# get_swrmeter reads it onto Icom's scale (0-100, rising with it: 0x104 -> 40,
+# 0x14C -> 62, from about 0x237 up -> 100). A raw CI-V query can't be used: in
+# TX the G90 answers after FLRig's cat_string has given up. Its mapping to SWR
+# is unknown (the radio shows SWR only as a bar), so each transmission's
+# reading is logged and a new one is compared with the usual reading for that
+# band and power.
 SWR_LEARN = 3     # transmissions on a band and power before "usual" means anything
 SWR_HIGH = 1.2    # raw reading this many times the usual: higher than usual
 SWR_BAD = 1.5     # ...and this many: much higher (check the antenna)
+SWR_TOP = 100     # top of FLRig's scale
 SWR_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "swr_log.json")
 SWR = {"on": None, "cur": [], "log": deque(maxlen=500)}
 
-def civ_swr(fl):
-    addr = CIV[RIG["xcvr"]][0]
-    rep = str(fl.rig.cat_string(f"xFE xFE x{addr:02X} xE0 x15 x12 xFD"))
-    m = re.search(rf"FE FE E0 {addr:02X} 15 12 ([0-9A-F]{{2}}) ([0-9A-F]{{2}}) FD", rep)
-    return int(m.group(1) + m.group(2), 16) if m else None
-
-def swr_poll(fl, ptt, now):
-    """Raw SWR readings while transmitting; one record per transmission."""
+def swr_poll(ptt, swr, now):
+    """SWR meter readings while transmitting; one record per transmission."""
     if RIG.get("xcvr") not in CIV:
         return
     if ptt:
         if not SWR["on"]:
             SWR.update(on=now, cur=[], what="tune" if ENG.get("tuning") else mode_raw())
-        raw = civ_swr(fl)
-        if raw is not None:
-            SWR["cur"].append(raw)
-            RIG["swr_raw"] = raw
+        SWR["cur"].append(swr)
+        RIG["swr_raw"] = swr or None
         return
     if not SWR["on"]:
         return
@@ -1519,6 +1515,8 @@ def swr_judge(raw, b, watts, skip=None):
     usual, n = swr_usual(b, watts, skip)
     if raw is None or n < SWR_LEARN or not usual:
         return {"usual": usual, "n": n, "level": "learning"}
+    if usual >= SWR_TOP:  # the meter is at its top at this power: nothing to compare
+        return {"usual": usual, "n": n, "level": "off scale"}
     x = raw / usual
     return {"usual": usual, "n": n, "x": round(x, 2),
             "level": "much higher" if x >= SWR_BAD else "higher" if x >= SWR_HIGH else "normal"}
@@ -1543,16 +1541,15 @@ def rig_poll():
                 RIG["xcvr"] = str(fl.rig.get_xcvr())
                 RIG["max"] = int(float(fl.rig.get_maxpwr() or 0)) or MAX_W.get(RIG["xcvr"], 100)
             m = xmlrpc.client.MultiCall(flrig())
-            m.rig.get_ptt(); m.rig.get_power(); m.rig.get_smeter(); m.rig.get_pwrmeter()
-            ptt, power, sm, out = list(m())
-            # (the G90's SWR meter over CAT doesn't track reality, so it isn't shown;
-            # its power meter is coarse, full or nothing, but shows we put out power)
+            m.rig.get_ptt(); m.rig.get_power(); m.rig.get_smeter(); m.rig.get_pwrmeter(); m.rig.get_swrmeter()
+            ptt, power, sm, out, swr = list(m())
+            # (the G90's power meter is coarse, full or nothing, but shows we put out power)
             ptt = bool(int(ptt))
             RIG.update(ok=True, err="", t=time.time(), ptt=ptt, s=float(sm),
                        out=max(0.0, float(out or 0)) if ptt else 0.0)
             if RIG.get("xcvr") not in CIV:
                 RIG["power"] = int(float(power))
-            swr_poll(flrig(), ptt, time.time())
+            swr_poll(ptt, int(float(swr or 0)), time.time())
             hold_power(flrig(), time.time())
             if float(sm) > 0:
                 RIG["has_s"] = True  # some rigs (the G90) never report an S-meter over CAT

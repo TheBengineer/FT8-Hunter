@@ -209,15 +209,16 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
   logged). On the G90, FLRig's `get_power` reads 0, so the setting is read with a
   raw CI-V query instead. A thin bar shows output power while transmitting (the
   G90's meter is coarse: full or nothing).
-- **SWR, relative** (G90): the G90 answers the CI-V SWR-meter query with a raw
-  number that rises with the power setting and tops out at 20 W, and FLRig clips
-  it. Its scale is unknown and the radio shows SWR only as a bar, so the number
-  isn't turned into an SWR. Instead each transmission's reading is kept in
-  `swr_log.json` (band, power, reading), and the status card compares the reading
-  with the usual one for that band and power: **normal**, **higher than usual**
-  (1.2× or more) or **much higher: check the antenna** (1.5× or more). It needs
-  three transmissions on a band at a power before it judges; antenna tunes don't
-  count.
+- **SWR, relative** (G90): the G90's SWR meter over CAT is a number that rises
+  with the power setting, read through FLRig's `get_swrmeter` (0-100; a raw CI-V
+  query doesn't work in TX, the G90 answers too late). Its scale is unknown and
+  the radio shows SWR only as a bar, so the number isn't turned into an SWR.
+  Instead each transmission's reading is kept in `swr_log.json` (band, power,
+  reading), and the status card compares the reading with the usual one for that
+  band and power: **normal**, **higher than usual** (1.2× or more) or **much
+  higher: check the antenna** (1.5× or more). It needs three transmissions on a
+  band at a power before it judges; antenna tunes don't count. Where the meter
+  sits at the top of its scale (likely the G90 at 20 W) it can't compare.
 - **WRL Desktop bridge**: every WS packet is rebroadcast to `127.0.0.1:2238` — set
   WRL Desktop's UDP server to that port — and whatever WRL sends back is relayed to
   WS, so WRL logs as if it were talking to WS directly. (Two apps can't share 2237:
