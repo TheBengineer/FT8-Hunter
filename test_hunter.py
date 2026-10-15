@@ -103,8 +103,8 @@ check("sign-off: Tx5 set to our call + text, 73 split off so WS logs it (not sen
       and free_texts(CTX["tx"]) == [("KR4MZM GL 73", 0)])
 dec("<KR4MZM/AG> W1AW -10")
 check("sign-off: set again on their reply", free_texts(CTX["tx"])[-1] == ("KR4MZM GL 73", 0) and len(free_texts(CTX["tx"])) == 2)
-ns["on_my_tx"]("KR4MZM GL 73")
-check("sign-off: our free-text 73 completes the QSO", t["done"] and t["left"] == 2)
+dec("KR4MZM/AG <W1AW> RR73"); ns["on_my_tx"]("KR4MZM GL 73")
+check("sign-off: their RR73 completes the QSO; our free-text 73 follows", t["done"] and t["left"] == 2)
 fresh(); CTX["tx"].raw.clear(); st["config"]["signoff"] = ["73"]
 dec("CQ W1AW FN31", snr=0); ns["engine_tick"]()
 check("sign-off: '73' leaves WS's standard message", st["target"]["signoff"] is None and not free_texts(CTX["tx"]))
@@ -538,6 +538,38 @@ check("not for a fresh call (grid) from a logged station", not ENG["callers"])
 fresh(); ns["add_worked"]("K1REP"); ENG["rr73_again"]["K1REP"] = 3
 dec("KR4MZM/AG K1REP R-05")
 check("at most 3 extra RR73s", not ENG["callers"])
+
+# --- RRR: always answered with a 73
+fresh(); st["running"] = True
+ns["add_worked"]("KC3VT")
+dec("KR4MZM KC3VT RRR", t_ms=15000)
+check("logged station repeating RRR is queued for our 73 again",
+      [c["call"] for c in ENG["callers"]] == ["KC3VT"] and ENG["callers"][0]["again"])
+ns["engine_tick"]()
+check("...and answered (Reply to their RRR: WS sends Tx5, the 73)",
+      st["target"] and st["target"]["call"] == "KC3VT" and st["target"]["why"] == "73 again" and REPLY in CTX["tx"].sent)
+fresh(); dec("CQ K3YTL FN21", snr=0); ns["engine_tick"](); dec("KR4MZM K3YTL -09")
+ns["add_worked"]("KC3VT"); CTX["tx"].sent.clear()
+dec("KR4MZM KC3VT RRR")
+check("RRR again during another QSO: queued, the QSO in progress kept",
+      st["target"]["call"] == "K3YTL" and [c["call"] for c in ENG["callers"]] == ["KC3VT"] and HALT not in CTX["tx"].sent)
+fresh(); dec("CQ KF5DO EM34", snr=0); ns["engine_tick"](); dec("KR4MZM KF5DO -04")
+t = st["target"]; CTX["tx"].sent.clear()
+dec("KR4MZM KF5DO RRR")
+check("first RRR: done, WS sends the 73 itself", t["done"] and REPLY not in CTX["tx"].sent)
+ns["on_my_tx"]("KR4MZM HH 73"); dec("KR4MZM KF5DO RRR")
+check("RRR again from our target: we send the 73 again", CTX["tx"].sent.count(REPLY) == 1)
+dec("KR4MZM KF5DO RRR"); dec("KR4MZM KF5DO RRR"); dec("KR4MZM KF5DO RRR")
+check("...at most 3 times", CTX["tx"].sent.count(REPLY) == 3)
+fresh(); dec("CQ K3YTL FN21", snr=0); ns["engine_tick"](); dec("KR4MZM K3YTL -09")
+t = st["target"]; t["signoff"] = "KR4MZM TY 73"; ns["on_my_tx"]("KR4MZM TY 73")
+check("our free-text 73 alone doesn't end the QSO (it names no one)", not t.get("done"))
+st["udp"]["dxcall"] = "KC3VT"; CTX["tx"].sent.clear(); ns["engine_tick"]()
+check("WS switched DX Call mid-QSO: pointed back at our partner",
+      st["target"] is t and REPLY in CTX["tx"].sent)
+st["udp"]["dxcall"] = "K3YTL"; CTX["tx"].sent.clear(); ns["engine_tick"]()
+check("...and left alone while WS is on them", REPLY not in CTX["tx"].sent)
+st["udp"]["dxcall"] = ""
 
 # --- real UDP packets through udp_listener
 ns["udp_port"] = 22999; st["fwd_port"] = 22998

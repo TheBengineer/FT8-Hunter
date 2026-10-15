@@ -1049,10 +1049,11 @@ def check_qrm(now=None):
                 ENG["cq_until"] = 0; halt_ws()
 
 def rr73_again(call, rest, now):
-    """A station we just logged repeating its R-report never copied our RR73:
-    without another one the QSO is missing from their log. Worth answering
-    within 4 minutes of the contact, at most 3 more times."""
-    if not (rest and re.fullmatch(r"R[+-]\d\d", rest[-1])):
+    """A station we just logged repeating its R-report never copied our RR73,
+    and one repeating RRR never copied our 73: without another one the QSO may
+    be missing from their log. Worth answering within 4 minutes of the
+    contact, at most 3 more times."""
+    if not (rest and (rest[-1] == "RRR" or re.fullmatch(r"R[+-]\d\d", rest[-1]))):
         return False
     here = (band(), mode())
     ts = max((t for (c, b, m), t in list(state["worked"].items()) if (b, m) == here and same_call(c, call)),
@@ -1074,8 +1075,8 @@ def on_my_tx(msg):
     repeat (didn't copy), so the next caller is not kept waiting."""
     t = state["target"]
     to, frm, rest = addressing(msg)
-    if t and ((rest and rest[-1] in ("RR73", "73") and same_call(to, t["call"]))
-              or " ".join(msg.upper().split()) == t.get("signoff")):
+    # (a free-text sign-off, 'KR4MZM GL 73', names no one: their RRR/RR73 marks those done)
+    if t and rest and rest[-1] in ("RR73", "73") and same_call(to, t["call"]):
         t["done"] = True
         t["left"] = min(t["left"], 2)
 
@@ -1155,6 +1156,12 @@ def engine_tick():
             # once QSO progresses (resp), WS auto-sequences — don't touch it
             if not t.get("resp") and t.get("msg"):
                 send_exact_reply(CTX["tx"], t["msg"])
+            # WS answers a late RRR/73 from the previous station by itself,
+            # even mid-QSO, switching its DX Call away: point it back
+            dx = (state["udp"].get("dxcall") or "").strip()
+            if t.get("resp") and not t.get("done") and t.get("last") and dx and not same_call(dx, t["call"]):
+                if send_exact_reply(CTX["tx"], t["last"]):
+                    log(f"WS switched to {dx} in the middle of our QSO with {t['call']}: back to {t['call']}")
             how = ("signing off" if t.get("done") else "in QSO") if t.get("resp") \
                 else f"calling, {(t['left'] + 1) // 2} tries left"
             return at("target", f"{t['call']}: {how}")
@@ -1165,11 +1172,12 @@ def engine_tick():
         c = waiting.pop(0)
         ENG["callers"].remove(c)
         if c.get("again"):
-            if acquire(c["call"], "", c["msg"], tries=1, why="RR73 again"):
+            what = "73" if c["msg"].split()[-1] == "RRR" else "RR73"
+            if acquire(c["call"], "", c["msg"], tries=1, why=f"{what} again"):
                 state["target"]["again"] = True
                 k = base_call(c["call"])
                 ENG["rr73_again"][k] = ENG["rr73_again"].get(k, 0) + 1
-                return at("caller", c["call"] + " (RR73 again)")
+                return at("caller", f"{c['call']} ({what} again)")
             continue
         if acquire(c["call"], "", c["msg"], tries=cfg.get("cq_tries", 3), why="called us"):
             ENG["busy"] += 1
@@ -1383,14 +1391,21 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                 # sign-off we only owe a 73, so release the target soon after.
                 if not t.get("resp"):
                     RIG_WAKE.set()  # QSO power before our next transmission
+                if rest and rest[-1] == "RRR" and t.get("done") and t.get("rrr_n", 0) < 3:
+                    # RRR again: they never copied our 73. WS stops TX after
+                    # sending a 73, so answer it again ourselves.
+                    t["rrr_n"] = t.get("rrr_n", 0) + 1
+                    if send_exact_reply(CTX["tx"], msg):
+                        log(f"{frm} sent RRR again, sending our 73 again")
                 t["resp"] = True
+                t["last"] = msg
                 t["done"] = t.get("done") or signoff
                 push_signoff(t)
                 # each reply buys qso_tries more of our transmissions (+1 period
                 # to decode their answer to the last); silence after that: give up
                 t["left"] = 2 if signoff else state["config"].get("qso_tries", 7) * 2 + 1
                 log(f"reply: {msg}")
-            elif state["running"] and not signoff and (not is_worked(frm) or (again := rr73_again(frm, rest, now))):
+            elif state["running"] and ((not signoff and not is_worked(frm)) or (again := rr73_again(frm, rest, now))):
                 # A hold stops us calling them, not them answering us: a reply
                 # from a held station is a late answer to our call. Lift the
                 # hold and work them next.
@@ -1406,7 +1421,8 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                     entry = {"call": frm, "msg": msg, "t": now, "again": again}
                     if again:
                         ENG["callers"].appendleft(entry)
-                        log(f"{frm} didn't copy our RR73, sending it again: {msg}")
+                        log(f"{frm} didn't copy our {'73' if rest[-1] == 'RRR' else 'RR73'}, "
+                            f"sending it again: {msg}")
                     elif late:
                         ENG["callers"].appendleft(entry)
                         log(f"late reply, answering next: {msg}")
