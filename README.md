@@ -86,10 +86,11 @@ periods with the decodes boxed, so undecoded signals stand out, and bars marking
 which offsets the picker counts as taken on the even and odd periods; tap a spot
 to see who is there and move your Tx offset to it. Each CQ shows why it is or isn't being called
 (on hold, in QSO, pileup size, stale, weak, region/DX-only), and calls on hold
-are underlined wherever they appear. A time bar across the top shows the
-contacts of the last 2 hours (−/+ or the mouse wheel zoom from 30 minutes to 24
-hours), each call at its UTC time in its band's color, stacked only as high as
-overlapping calls need; when there is no room, the oldest become bare ticks. A spinning globe draws today's contacts as
+are underlined wherever they appear. A slim time bar card (first in the
+first column) shows the contacts of the last 2 hours (−/+ or the mouse wheel
+zoom from 30 minutes to 24 hours), each call written upright at its UTC time in
+its band's color, with the bands in view named in their colors; a crowded call
+moves to a second row, and past that the oldest become bare ticks. A spinning globe draws today's contacts as
 arcs from your station, the current target in bold and other stations' live
 traffic faintly; during a QSO it zooms in on that QSO's arc. Scroll or pinch to
 zoom it yourself. The worked / ignored list shows today's
