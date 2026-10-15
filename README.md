@@ -221,15 +221,13 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
   sits at the top of its scale (likely the G90 at 20 W) it can't compare.
 - **Sign-off 73s**: when we answer a CQ our last message is the 73. Instead of
   the standard `THEM US 73`, the hunter sets WS's Tx5 (standard UDP FreeText) to
-  a line from the catalog in Settings → Sign-off 73s (one per line, editable),
-  picked at random per QSO. FT8 free text holds 13 characters in all, so their
-  call never fits. With **Our call in sign-off** on (default) the message is
-  `KR4MZM GL 73`, ending the contact with our ID, and only lines of 6 characters
-  or fewer are used. Off, the whole 13 are for the text (`TNX QSO GL 73`) and the
-  last transmission carries no call sign; the earlier ones in the QSO did. WS
+  our call and a line from the catalog in Settings → Sign-off 73s (one per line,
+  editable), picked at random per QSO: `KR4MZM GL 73`, `KR4MZM CUL 73`... Our
+  call is always in it, so the contact ends with our ID. FT8 free text holds 13
+  characters in all, so their call can't fit and a line gets 6 characters. WS
   logs the QSO when it sends the 73 and only recognises `73` as a word of its
-  own, so `GL73` is sent as `GL 73` and a line without a 73 is refused. `73`
-  alone means the standard message.
+  own, so `GL73` is sent as `GL 73`; a line without a 73, or too long, is
+  refused when saved. `73` alone means the standard message.
 - **WRL Desktop bridge**: every WS packet is rebroadcast to `127.0.0.1:2238` — set
   WRL Desktop's UDP server to that port — and whatever WRL sends back is relayed to
   WS, so WRL logs as if it were talking to WS directly. (Two apps can't share 2237:

@@ -110,22 +110,15 @@ dec("CQ W1AW FN31", snr=0); ns["engine_tick"]()
 check("sign-off: '73' leaves WS's standard message", st["target"]["signoff"] is None and not free_texts(CTX["tx"]))
 st["config"]["signoff"] = ["MUCH TOO LONG 73"]
 check("sign-off: over 13 characters with our call falls back to standard", ns["signoff_text"]() is None)
-st["config"]["signoff_id"] = False
-check("sign-off: over 13 characters on its own falls back to standard", ns["signoff_text"]() is None)
-st["config"]["signoff_id"] = True
+
 st["config"]["signoff"] = ["GL73", "TU73"]
 check("sign-off: picked from the list", {ns["signoff_text"]() for _ in range(50)} == {"KR4MZM GL 73", "KR4MZM TU 73"})
 st["config"]["signoff"] = ["GL 73", "TNX QSO GL 73"]
-check("sign-off with our call: lines over 6 characters skipped",
+check("sign-off: our call always in it, lines over 6 characters skipped",
       {ns["signoff_text"]() for _ in range(50)} == {"KR4MZM GL 73"})
-st["config"]["signoff_id"] = False
-check("sign-off without our call: the whole 13 characters",
-      {ns["signoff_text"]() for _ in range(50)} == {"GL 73", "TNX QSO GL 73"})
-st["config"]["signoff_id"] = True
 cat = ns["SIGNOFF_CATALOG"]
-check("catalog: every line has a 73 word and fits FT8 free text",
-      all(ns["signoff_fix"](x) == x and ns["FREE_TEXT_RE"].fullmatch(x) for x in cat) and len(cat) >= 25)
-check("catalog: at least 10 lines fit after our call", sum(len(x) <= 6 for x in cat) >= 10)
+check("catalog: every line has a 73 word and fits after our call",
+      all(ns["signoff_fix"](x) == x and ns["sign_msg"](x) for x in cat) and len(cat) >= 20)
 st["config"]["signoff"] = _so; CTX["tx"] = _sock; st["ws_addr"] = _addr
 
 # --- callers
@@ -748,10 +741,10 @@ for k in range(3):
     SWR["log"].append({"id": 20 + k, "t": "", "secs": 13, "band": last["band"], "khz": 0, "mode": "FT8", "watts": 20, "raw": 100})
 check("meter at the top of its scale at a power: not judged", judge(100, last["band"], 20)["level"] == "off scale")
 RADIO["ptt"] = 1; time.sleep(2.5)
-post("/api/config", {"signoff": "gl73\ntu  73\n73\nTNX QSO GL 73\nTHIS IS TOO LONG 73\nTNX\ngl 73", "signoff_id": False})
+post("/api/config", {"signoff": "gl73\ntu  73\n73\nTNX QSO GL 73\nTNX\ngl 73\ncul73"})
 check("sign-off catalog from Settings: one per line, upper-cased, 73 split off, duplicates dropped; "
-      "over 13 characters or no 73 refused",
-      st["config"]["signoff"] == ["GL 73", "TU 73", "73", "TNX QSO GL 73"] and st["config"]["signoff_id"] is False)
+      "too long after our call or no 73 refused",
+      st["config"]["signoff"] == ["GL 73", "TU 73", "73", "CUL 73"])
 post("/api/config", {"df_lo": 1400})
 saved = json.load(open(ns["CONFIG_FILE"]))
 st["config"]["df_lo"] = 1300; ns["load_config"]()
