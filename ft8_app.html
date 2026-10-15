@@ -129,6 +129,7 @@ Chart: dB over the floor, 200–3000 Hz · <span style="color:#2ecc71">▬ FT-li
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Our transmissions in a QSO without hearing back before giving up">Replies without an answer</span><input id="sQso" type="number" min="1" max="20" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Power while calling and calling CQ">TX power calling (W)</span><input id="sWCall" type="number" min="1" max="100" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Power once a station answers us, for the rest of the QSO">TX power in QSO (W)</span><input id="sWQso" type="number" min="1" max="100" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Our last message in a QSO, picked at random each time and sent with our call, e.g. KR4MZM GL 73. Comma separated; 73 alone = standard THEM US 73. Each needs a 73 as its own word or WS will not log the QSO (GL73 is sent as GL 73). FT8 free text holds 13 characters including our call.">Sign-off 73s</span><input id="sSignoff" type="text" placeholder="GL 73, TU 73" style="max-width:150px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Hold (min)</span><input id="sHold" type="number" min="1" max="60" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Listen every N idle</span><input id="sIdleN" type="number" min="1" max="20" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Listen secs</span><input id="sIdleS" type="number" min="15" max="300" step="15" style="max-width:90px;margin-top:0"></div>
@@ -265,12 +266,12 @@ function swrView(w){$('swBox').style.display=w?'block':'none';if(!w)return;
 $('bC').onclick=()=>api('/api/call',{call:$('mc').value,grid:$('mg').value}).then(tick);
 let sLoaded=false;
 function fillSettings(c){if(sLoaded)return;sLoaded=true;
-$('sCq').value=c.cq_tries;$('sTail').value=c.tail_tries;$('sQso').value=c.qso_tries;$('sWCall').value=c.watts_call;$('sWQso').value=c.watts_qso;$('sHold').value=c.hold_min;
+$('sCq').value=c.cq_tries;$('sTail').value=c.tail_tries;$('sQso').value=c.qso_tries;$('sWCall').value=c.watts_call;$('sWQso').value=c.watts_qso;$('sHold').value=c.hold_min;$('sSignoff').value=(c.signoff||[]).join(', ');
 $('sIdleN').value=c.idle_every;$('sIdleS').value=c.idle_secs;$('sSpec').checked=c.special_first!==false;
 $('sCallCq').checked=c.call_cq!==false;$('sCqSecs').value=c.cq_secs;
 $('sAutoDf').checked=c.auto_df!==false;$('sDfLo').value=c.df_lo;$('sQrm').checked=c.qrm_detect!==false;$('sMinSnr').value=c.min_snr;
 $('sTune').checked=c.tune_new_band!==false;$('sTuneKhz').value=c.tune_below_khz}
-$('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,qso_tries:+$('sQso').value,watts_call:+$('sWCall').value,watts_qso:+$('sWQso').value,hold_min:+$('sHold').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value,special_first:$('sSpec').checked,call_cq:$('sCallCq').checked,cq_secs:+$('sCqSecs').value,auto_df:$('sAutoDf').checked,df_lo:+$('sDfLo').value,qrm_detect:$('sQrm').checked,tune_new_band:$('sTune').checked,tune_below_khz:+$('sTuneKhz').value,min_snr:+$('sMinSnr').value},'POST');sLoaded=false;tick()};
+$('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,qso_tries:+$('sQso').value,watts_call:+$('sWCall').value,watts_qso:+$('sWQso').value,hold_min:+$('sHold').value,signoff:$('sSignoff').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value,special_first:$('sSpec').checked,call_cq:$('sCallCq').checked,cq_secs:+$('sCqSecs').value,auto_df:$('sAutoDf').checked,df_lo:+$('sDfLo').value,qrm_detect:$('sQrm').checked,tune_new_band:$('sTune').checked,tune_below_khz:+$('sTuneKhz').value,min_snr:+$('sMinSnr').value},'POST');sLoaded=false;tick()};
 setInterval(tick,2000);tick();
 // T/R cycle bar (15 s FT8, 7.5 s FT4, 3.75 s FT2) + TX badge, updated locally every 200ms
 setInterval(()=>{const per=window._per||15,t=Date.now()/1000,pos=t%per,pct=pos/per*100;

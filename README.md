@@ -219,6 +219,14 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
   higher: check the antenna** (1.5× or more). It needs three transmissions on a
   band at a power before it judges; antenna tunes don't count. Where the meter
   sits at the top of its scale (likely the G90 at 20 W) it can't compare.
+- **Sign-off 73s**: when we answer a CQ our last message is the 73. Instead of
+  the standard `THEM US 73`, the hunter sets WS's Tx5 (standard UDP FreeText) to
+  one of the texts in Settings → Sign-off 73s, picked at random per QSO, e.g.
+  `KR4MZM GL 73`. FT8 free text holds only 13 characters, so only one call fits;
+  ours is kept so the contact ends with our ID. WS logs the QSO when it sends
+  the 73, and only recognises `73` as a word of its own, so `GL73` is sent as
+  `GL 73` and a text without a 73 is refused. `73` in the list means the
+  standard message; a text too long with our call is refused when saved.
 - **WRL Desktop bridge**: every WS packet is rebroadcast to `127.0.0.1:2238` — set
   WRL Desktop's UDP server to that port — and whatever WRL sends back is relayed to
   WS, so WRL logs as if it were talking to WS directly. (Two apps can't share 2237:

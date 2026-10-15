@@ -4,7 +4,7 @@ Run: python3 ft8_server.py --mycall KR4MZM --mygrid EM84 --port 2237 --http 8080
 API: GET /api/state -> {running, target, cq[], answering[], worked[], log[], config, stats}
      POST /api/start|stop|call|skip|config   Webapp: GET /
 """
-import argparse, json, socket, struct, threading, time, re, os, math
+import argparse, json, socket, struct, threading, time, re, os, math, random
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import deque
 from urllib.parse import urlparse
@@ -21,6 +21,7 @@ state = {
                "auto_df": True, "df_lo": 1300, "df_hi": 2700,  # df_lo: rig feeds back below 1300 Hz
                "qrm_detect": True, "qrm_backoff_min": 5, "min_snr": -20,
                "watts_call": 10, "watts_qso": 20,
+               "signoff": ["GL 73", "TU 73", "HH 73"],  # our final 73, one per QSO at random ("73" = standard)
                "tune_new_band": True, "tune_below_khz": 1,  # ATU tune this far under FT8 after a band change
                "scan_modes": ["FT8", "FT4", "FT2"],  # band scan: what to visit
                "scan_bands": ["160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m"]},  # TX power held on the radio: calling / once they answer
@@ -112,6 +113,40 @@ def has_ws_hunter(since="260926"):
     the `since` build (yymmdd) on. ClearDX arrived in 261013."""
     m = re.match(r"(\d{6})-hunter", state["udp"].get("revision", ""))
     return bool(m) and m.group(1) >= since
+
+FREE_TEXT = 9  # standard WSJT-X UDP: set the Tx5 message text
+def pack_free_text(id_, text, send=False):
+    return struct.pack(">III", 0xADBCCBDA, 2, FREE_TEXT) + pack_str(id_) + pack_str(text) + struct.pack(">B", 1 if send else 0)
+
+FREE_TEXT_RE = re.compile(r"[A-Z0-9 +\-./?]{1,13}")  # what an FT8 free-text message can carry
+def signoff_text():
+    """Our final transmission for this QSO: '<mycall> <text>' with a text from
+    the sign-off list, e.g. 'KR4MZM GL73'. Our call stays in it (station ID at
+    the end of the contact); FT8 free text only holds 13 characters, so theirs
+    can't fit too. None means WS's standard 'THEM US 73'."""
+    picks = [str(x).strip().upper() for x in state["config"].get("signoff") or []]
+    picks = [x for x in picks if x]
+    if not picks:
+        return None
+    pick = signoff_fix(random.choice(picks))
+    msg = f"{base_call(state['mycall'])} {pick}"
+    if pick in (None, "73") or not FREE_TEXT_RE.fullmatch(msg):
+        return None
+    return msg
+
+def signoff_fix(text):
+    """WS logs the QSO when it sends a 73, but only if '73' is a word of its
+    own: 'GL73' -> 'GL 73'. None if there is no 73 to split off."""
+    text = " ".join(str(text).upper().split())
+    text = re.sub(r"(?<=[A-Z])(R?R?73)\b", r" \1", text)
+    return text if re.search(r"\b(RR)?73\b", text) else None
+
+def push_signoff(t):
+    """Put the target's sign-off in WS's Tx5. WS rewrites Tx5 only when the DX
+    call changes, so this holds for the QSO; it is re-sent on each of their
+    replies in case anything regenerated it."""
+    if t and t.get("signoff") and state.get("ws_addr"):
+        CTX["tx"].sendto(pack_free_text(state["ws_id"], t["signoff"]), ws_dest())
 
 def pack_id_only(mtype, id_):
     return struct.pack(">III", 0xADBCCBDA, 2, mtype) + pack_str(id_)
@@ -1027,7 +1062,8 @@ def on_my_tx(msg):
     repeat (didn't copy), so the next caller is not kept waiting."""
     t = state["target"]
     to, frm, rest = addressing(msg)
-    if t and rest and rest[-1] in ("RR73", "73") and same_call(to, t["call"]):
+    if t and ((rest and rest[-1] in ("RR73", "73") and same_call(to, t["call"]))
+              or " ".join(msg.upper().split()) == t.get("signoff")):
         t["done"] = True
         t["left"] = min(t["left"], 2)
 
@@ -1267,7 +1303,8 @@ def acquire(call, grid, msg, tries, why):
         return False
     # `left` counts T/R periods; we transmit in every other one
     state["target"] = {"call": call, "grid": grid, "left": tries * 2 + extra, "why": why,
-                       "msg": msg, "resp": False}
+                       "msg": msg, "resp": False, "signoff": signoff_text()}
+    push_signoff(state["target"])
     ENG["cq_until"] = 0  # a Reply replaces our CQ in WS
     state["stats"]["calls_made"] += 1
     log(f"calling {call} {grid} ({why}, {tries} tries)")
@@ -1336,6 +1373,7 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                     RIG_WAKE.set()  # QSO power before our next transmission
                 t["resp"] = True
                 t["done"] = t.get("done") or signoff
+                push_signoff(t)
                 # each reply buys qso_tries more of our transmissions (+1 period
                 # to decode their answer to the last); silence after that: give up
                 t["left"] = 2 if signoff else state["config"].get("qso_tries", 7) * 2 + 1
@@ -2285,6 +2323,15 @@ class H(BaseHTTPRequestHandler):
             for k in ("watts_call", "watts_qso"):
                 c[k] = max(1, min(int(c[k]), RIG.get("max", 100)))
             c["tune_below_khz"] = max(0.5, min(float(c["tune_below_khz"]), 10.0))  # stay near the band's FT8
+            if isinstance(c["signoff"], str):
+                c["signoff"] = [x for x in re.split(r"[,\n]", c["signoff"]) if x.strip()]
+            raw = [" ".join(str(x).upper().split()) for x in c["signoff"] if str(x).strip()][:20]
+            c["signoff"] = [f for x in raw if (f := signoff_fix(x)) and
+                            (f == "73" or FREE_TEXT_RE.fullmatch(f"{base_call(state['mycall'])} {f}"))]
+            bad = [x for x in raw if signoff_fix(x) not in c["signoff"]]
+            if bad:
+                log(f"sign-off not usable (needs a 73 for WS to log the QSO; FT8 free text: 13 characters "
+                    f"with our call, A-Z 0-9 +-./?): {', '.join(bad)}")
             save_config()
             RIG_WAKE.set()  # new power applies now
             if "cq_first" in body:

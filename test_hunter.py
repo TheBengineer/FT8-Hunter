@@ -82,6 +82,38 @@ check("sign-off -> done, short release", t["done"] and t["left"] == 2)
 ns["engine_tick"](); ns["engine_tick"]()
 check("done QSO released and marked worked", st["target"] is None and ns["is_worked"]("W1AW"))
 
+# --- sign-off 73s: Tx5 set to free text with our call, standard 73 kept as an option
+class RawSock(FakeSock):
+    def sendto(self, data, addr): super().sendto(data, addr); self.raw.append(data)
+def free_texts(sock):
+    out = []
+    for d in sock.raw:
+        if struct.unpack(">I", d[8:12])[0] == ns["FREE_TEXT"]:
+            p = 12 + 4 + struct.unpack(">i", d[12:16])[0]
+            n = struct.unpack(">i", d[p:p+4])[0]
+            out.append((d[p+4:p+4+n].decode(), d[p+4+n]))
+    return out
+_sock, _addr = CTX["tx"], st.get("ws_addr")
+CTX["tx"] = RawSock(); CTX["tx"].raw = []; st["ws_addr"] = ("127.0.0.1", 9)
+_so = st["config"]["signoff"]
+fresh(); st["config"]["signoff"] = ["GL73"]
+dec("CQ W1AW FN31", snr=0); ns["engine_tick"]()
+t = st["target"]
+check("sign-off: Tx5 set to our call + text, 73 split off so WS logs it (not sent)", t["signoff"] == "KR4MZM GL 73"
+      and free_texts(CTX["tx"]) == [("KR4MZM GL 73", 0)])
+dec("<KR4MZM/AG> W1AW -10")
+check("sign-off: set again on their reply", free_texts(CTX["tx"])[-1] == ("KR4MZM GL 73", 0) and len(free_texts(CTX["tx"])) == 2)
+ns["on_my_tx"]("KR4MZM GL 73")
+check("sign-off: our free-text 73 completes the QSO", t["done"] and t["left"] == 2)
+fresh(); CTX["tx"].raw.clear(); st["config"]["signoff"] = ["73"]
+dec("CQ W1AW FN31", snr=0); ns["engine_tick"]()
+check("sign-off: '73' leaves WS's standard message", st["target"]["signoff"] is None and not free_texts(CTX["tx"]))
+st["config"]["signoff"] = ["TOO LONG 73"]
+check("sign-off: over 13 characters with our call falls back to standard", ns["signoff_text"]() is None)
+st["config"]["signoff"] = ["GL73", "TU73"]
+check("sign-off: picked from the list", {ns["signoff_text"]() for _ in range(50)} == {"KR4MZM GL 73", "KR4MZM TU 73"})
+st["config"]["signoff"] = _so; CTX["tx"] = _sock; st["ws_addr"] = _addr
+
 # --- callers
 fresh()
 dec("CQ K9XYZ EN52", snr=5); ns["engine_tick"]()
@@ -702,6 +734,9 @@ for k in range(3):
     SWR["log"].append({"id": 20 + k, "t": "", "secs": 13, "band": last["band"], "khz": 0, "mode": "FT8", "watts": 20, "raw": 100})
 check("meter at the top of its scale at a power: not judged", judge(100, last["band"], 20)["level"] == "off scale")
 RADIO["ptt"] = 1; time.sleep(2.5)
+post("/api/config", {"signoff": "gl73, tu  73,73, THIS IS TOO LONG 73, TNX"})
+check("sign-off list from Settings: split, upper-cased, 73 split off; too long or no 73 refused",
+      st["config"]["signoff"] == ["GL 73", "TU 73", "73"])
 post("/api/config", {"df_lo": 1400})
 saved = json.load(open(ns["CONFIG_FILE"]))
 st["config"]["df_lo"] = 1300; ns["load_config"]()
