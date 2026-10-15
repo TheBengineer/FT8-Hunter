@@ -905,8 +905,21 @@ ENG["tuned_band"] = "20m"; started.clear(); ns["engine_tick"]()
 check("same band (a mode change): no tune", not started)
 ns["start_tune"] = real_start
 ENG["tuned_band"] = "40m"; ENG["tuning"] = "starting"; ns["atu_tune"]()
-check("tune carrier 1 kHz under the band's FT8, then back to the operating frequency",
-      rig.tuned_at == [14073000] and st["udp"]["dial"] == 14080000 and rig.vfo == 14080000)
+check("tune carrier 50 kHz from FT8 (General on 20m: above, 14.024 is Extra only), then back",
+      rig.tuned_at == [14124000] and st["udp"]["dial"] == 14080000 and rig.vfo == 14080000)
+tf = ns["tune_freq"]
+st["config"]["license"] = "extra"
+check("Extra: 50 kHz below FT8 on 20m and 40m", tf("20m")[0] == 14024000 and tf("40m")[0] == 7024000)
+st["config"]["license"] = "general"
+check("General on 10m: 50 kHz below", tf("10m")[0] == 28024000)
+check("General on 40m: neither fits, nearest allowed spot inside the segment",
+      tf("40m")[0] == 7122000 and "as far as General" in tf("40m")[1])
+check("30m (50 kHz wide): stays inside the band", 10100000 < tf("30m")[0] < 10150000)
+check("17m: above, below would be out of band", tf("17m")[0] == 18150000)
+check("60m: no tune (channels)", tf("60m")[0] is None)
+st["config"]["tune_away_khz"] = 10
+check("never closer than 50 kHz", tf("10m")[0] == 28024000)
+st["config"]["tune_away_khz"] = 50
 check("...and the band counts as tuned", ENG["tuned_band"] == "20m" and not ENG["tuning"])
 rig.follow, rig.tuned_at = False, []; ENG["tuned_band"] = "40m"; ENG["tuning"] = "starting"; ns["atu_tune"]()
 check("rig not on the tune frequency: no tune carrier", rig.tuned_at == [] and not ENG["tuning"])

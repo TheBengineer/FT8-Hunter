@@ -29,7 +29,8 @@ state = {
                # our final 73, one per QSO at random ("73" = standard). FT8 free text
                # is 13 characters and our call goes first, so 6 are left for the text
                "signoff": list(SIGNOFF_CATALOG),
-               "tune_new_band": True, "tune_below_khz": 1,  # ATU tune this far under FT8 after a band change
+               "tune_new_band": True, "tune_away_khz": 50,  # ATU tune at least this far from FT8 (below if allowed)
+               "license": "general",  # US class: where a tune carrier may go (see PRIV)
                "scan_modes": ["FT8", "FT4", "FT2"],  # band scan: what to visit
                "scan_bands": ["160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m"]},  # TX power held on the radio: calling / once they answer
     "stats": {"cq_heard": 0, "calls_made": 0},
@@ -2087,10 +2088,44 @@ def start_tune():
     ENG["tuning"] = "starting"
     threading.Thread(target=atu_tune, daemon=True).start()
 
+# US amateur HF/6m privileges (kHz) by license class: where a tune carrier
+# may go. CW is allowed anywhere in a class's privileges (47 CFR 97.305).
+PRIV = {
+    "extra": {"160m": [(1800, 2000)], "80m": [(3500, 4000)], "40m": [(7000, 7300)],
+              "30m": [(10100, 10150)], "20m": [(14000, 14350)], "17m": [(18068, 18168)],
+              "15m": [(21000, 21450)], "12m": [(24890, 24990)], "10m": [(28000, 29700)],
+              "6m": [(50000, 54000)]},
+    "general": {"160m": [(1800, 2000)], "80m": [(3525, 3600), (3800, 4000)],
+                "40m": [(7025, 7125), (7175, 7300)], "30m": [(10100, 10150)],
+                "20m": [(14025, 14150), (14225, 14350)], "17m": [(18068, 18168)],
+                "15m": [(21025, 21200), (21275, 21450)], "12m": [(24890, 24990)],
+                "10m": [(28000, 29700)], "6m": [(50000, 54000)]},
+}
+TUNE_EDGE_KHZ = 3  # keep the carrier this far inside a segment edge
+
 def tune_freq(b):
-    """Where to tune on band b: tune_below_khz under its FT8 dial frequency."""
+    """Where to tune on band b, in Hz: at least tune_away_khz (50) from its
+    FT8 dial frequency so the tune carrier stays off the FT8 segment. Below
+    if the license allows it there, else above; if neither fits (General on
+    80/40/30m) the allowed spot nearest to that distance. Returns (hz, note);
+    hz None on 60m (channels) or an unknown band."""
     ft8 = next((khz for khz, m in SCAN["freqs"]["list"] if m == "FT8" and band_of(khz * 1000) == b), None)
-    return round((ft8 - state["config"].get("tune_below_khz", 1)) * 1000) if ft8 else None
+    lic = state["config"].get("license", "general")
+    segs = PRIV.get(lic, PRIV["general"]).get(b)
+    if not ft8 or not segs:
+        return None, "60m is channelized" if b == "60m" else f"no FT8 frequency known for {b}"
+    away = max(50, float(state["config"].get("tune_away_khz", 50)))
+    segs = [(lo + TUNE_EDGE_KHZ, hi - TUNE_EDGE_KHZ) for lo, hi in segs]
+    def inside(k):
+        return any(lo <= k <= hi for lo, hi in segs)
+    for k, where in ((ft8 - away, "below"), (ft8 + away, "above")):
+        if inside(k):
+            return round(k * 1000), f"{away:g} kHz {where} FT8"
+    # nearest allowed spot to either goal, preferring below on a tie
+    best = min(((abs(min(max(g, lo), hi) - g), i, min(max(g, lo), hi))
+                for i, g in enumerate((ft8 - away, ft8 + away)) for lo, hi in segs))[2]
+    return round(best * 1000), (f"{abs(best - ft8):g} kHz {'below' if best < ft8 else 'above'} FT8: "
+                                f"as far as {lic.title()} privileges allow")
 
 def wait_dial(hz, secs=6):
     """Until both WS and the rig itself are on hz."""
@@ -2119,9 +2154,9 @@ def atu_tune():
     iv = [t0, None]
     ENG["tune_iv"].append(iv)  # the offset picker skips the periods we were off the dial
     try:
-        hz = tune_freq(b)
+        hz, why = tune_freq(b)
         if not (hz and op):
-            log(f"antenna tune: no FT8 frequency known for {b}; not tuning")
+            log(f"antenna tune: {why}; not tuning")
             return
         ENG["tuning"] = f"{b}: moving to {hz / 1e6:.4f} MHz"
         halt_ws()
@@ -2141,7 +2176,7 @@ def atu_tune():
             if st is not None and st != 2:
                 break
             time.sleep(0.5)
-        log(f"antenna tuned on {b} at {hz / 1e6:.4f} MHz ({round(time.time() - t0)} s)" if st is not None and st != 2
+        log(f"antenna tuned on {b} at {hz / 1e6:.4f} MHz, {why} ({round(time.time() - t0)} s)" if st is not None and st != 2
             else f"antenna tune on {b}: no word from the tuner after {TUNE_WAIT} s")
     except Exception as e:
         log(f"antenna tune: {e}")
@@ -2351,7 +2386,8 @@ class H(BaseHTTPRequestHandler):
             c["df_lo"] = max(200, min(int(c["df_lo"]), int(c["df_hi"]) - 300))
             for k in ("watts_call", "watts_qso"):
                 c[k] = max(1, min(int(c[k]), RIG.get("max", 100)))
-            c["tune_below_khz"] = max(0.5, min(float(c["tune_below_khz"]), 10.0))  # stay near the band's FT8
+            c["tune_away_khz"] = max(50.0, min(float(c["tune_away_khz"]), 150.0))  # off FT8, near enough to match
+            c["license"] = c["license"] if c["license"] in PRIV else "general"
             if isinstance(c["signoff"], str):
                 c["signoff"] = [x for x in re.split(r"[,\n]", c["signoff"]) if x.strip()]
             raw = [" ".join(str(x).upper().split()) for x in c["signoff"] if str(x).strip()][:100]

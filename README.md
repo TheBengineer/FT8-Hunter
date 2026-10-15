@@ -92,8 +92,13 @@ hunter runs), the hunter does two things before it transmits there.
    first transmission on the band goes on a clear offset. Listening needs no
    tune, so the antenna is left alone until now.
 2. **It tunes the antenna** (Xiegu G90), just before the first transmission.
-   It halts WS and moves 1 kHz below that band's FT8 frequency, which keeps the
-   carrier clear of everyone on FT8 above the dial. It starts the rig's tuner,
+   It halts WS and moves at least 50 kHz (Settings) away from that band's FT8
+   frequency, keeping the carrier off the FT8 segment: below if the license
+   class in Settings allows a carrier there, else above. A General licensee
+   can't go 50 kHz below FT8 on 80/40/20/15m (Extra-only segment) or on
+   30/17/12/160m (out of band); where neither direction fits (General on 80,
+   40 and 30m) it uses the allowed spot nearest 50 kHz, 3 kHz inside the
+   segment edge, and says so in the log. No tune on 60m (channels). It starts the rig's tuner,
    waits for it to finish, and goes back to the operating frequency. If the
    radio can't be confirmed on the tune frequency, nothing is sent. The periods
    spent tuning are left out of the offset picker, like periods we transmit in.
