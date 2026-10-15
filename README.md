@@ -209,6 +209,13 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
   logged). On the G90, FLRig's `get_power` reads 0, so the setting is read with a
   raw CI-V query instead. A thin bar shows output power while transmitting (the
   G90's meter is coarse: full or nothing).
+- **SWR calibration** (G90): the G90 answers the CI-V SWR-meter query with a raw
+  number that rises with the power setting and tops out at 20 W, and FLRig clips
+  it, so it isn't an SWR yet. The status card shows the raw number while
+  transmitting and keeps one record per transmission (band, power, raw reading)
+  in `swr_log.json`. Read the SWR on the radio's screen during a transmission and
+  enter it under **Radio showed SWR**. With enough of those, the raw number can be
+  turned into a real SWR readout.
 - **WRL Desktop bridge**: every WS packet is rebroadcast to `127.0.0.1:2238` — set
   WRL Desktop's UDP server to that port — and whatever WRL sends back is relayed to
   WS, so WRL logs as if it were talking to WS directly. (Two apps can't share 2237:

@@ -3,3 +3,4 @@ __pycache__/
 hunter_config.json
 scan_results.json
 scan_freqs.json
+swr_log.json

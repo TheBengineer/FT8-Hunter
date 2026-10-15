@@ -13,6 +13,7 @@ import tempfile
 _tmp = tempfile.mkdtemp()
 ns["CONFIG_FILE"] = os.path.join(_tmp, "hunter_config.json")  # never the real settings
 ns["SCAN_FILE"], ns["FREQ_FILE"] = os.path.join(_tmp, "scan.json"), os.path.join(_tmp, "freqs.json")
+ns["SWR_FILE"] = os.path.join(_tmp, "swr.json")
 
 
 class FakeSock:
@@ -628,15 +629,18 @@ check("worked count is for this band/mode only", api["worked"] == ["K1ABC"])
 
 # --- radio via FLRig XML-RPC: meters polled, TX power set and clamped
 from xmlrpc.server import SimpleXMLRPCServer
-RADIO = {"power": 16, "ptt": 1}
+RADIO = {"power": 16, "ptt": 1, "swr": 0x104}
+def cat(c):
+    if "x15 x12" in c:  # SWR meter: reads 0 off the air
+        return "FE FE 70 E0 15 12 FD FE FE E0 70 15 12 %02X %02X FD" % divmod(RADIO["swr"] if RADIO["ptt"] else 0, 256)
+    return "FE FE 70 E0 14 0A FD FE FE E0 70 14 0A %02X %02X FD" % divmod(ns["CIV"]["Xiegu-G90"][1][RADIO["power"]], 256)
 fl = SimpleXMLRPCServer(("127.0.0.1", 0), logRequests=False, allow_none=True)
 fl.register_multicall_functions()
 for name, f in {"rig.get_xcvr": lambda: "Xiegu-G90", "rig.get_maxpwr": lambda: 0,
                 "rig.get_ptt": lambda: RADIO["ptt"], "rig.get_power": lambda: RADIO["power"],
                 "rig.get_pwrmeter": lambda: "15", "rig.get_swrmeter": lambda: "12", "rig.get_smeter": lambda: "0",
                 "rig.set_power": lambda w: RADIO.update(power=w) or 0,
-                "rig.cat_string": lambda c: "FE FE 70 E0 14 0A FD FE FE E0 70 14 0A %02X %02X FD" % divmod(
-                    ns["CIV"]["Xiegu-G90"][1][RADIO["power"]], 256)}.items():
+                "rig.cat_string": cat}.items():
     fl.register_function(f, name)
 threading.Thread(target=fl.serve_forever, daemon=True).start()
 ns["RIG"]["url"] = f"http://127.0.0.1:{fl.server_address[1]}"
@@ -679,6 +683,21 @@ check("G90 raw power values map to watts", ns["civ_watts"](0x17E, ns["CIV"]["Xie
       and ns["civ_watts"](0x128, ns["CIV"]["Xiegu-G90"][1]) == 10 and ns["same_watts"](10, 11))
 RADIO["ptt"] = 1; time.sleep(2.5)
 check("output power shown while transmitting", R["out"] == 15)
+SWR = ns["SWR"]; SWR["on"] -= 10  # on the air for a while
+check("raw SWR meter shown live while transmitting", ns["swr_state"]()["live"] == 0x104)
+RADIO["ptt"] = 0; time.sleep(2.5)
+last = SWR["log"][-1] if SWR["log"] else {}
+check("one SWR record per transmission: raw reading, band, power", last.get("raw") == 0x104 and last.get("watts") == 5
+      and ns["swr_state"]()["live"] is None)
+post("/api/swr/note", {"id": last.get("id"), "swr": 1.6})
+check("the radio's SWR noted next to it and saved", json.load(open(ns["SWR_FILE"]))[-1]["radio_swr"] == 1.6
+      and ns["swr_state"]()["noted"] == 1)
+try:
+    post("/api/swr/note", {"id": last.get("id"), "swr": "x"}); bad = False
+except urllib.error.HTTPError:
+    bad = True
+check("a bad SWR entry is refused", bad)
+RADIO["ptt"] = 1; time.sleep(2.5)
 post("/api/config", {"df_lo": 1400})
 saved = json.load(open(ns["CONFIG_FILE"]))
 st["config"]["df_lo"] = 1300; ns["load_config"]()

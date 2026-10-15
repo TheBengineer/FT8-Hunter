@@ -1454,6 +1454,65 @@ def hold_power(fl, now):
         RIG.update(power=want, pw_off=0, pw_t=0)
         log(f"radio TX power went to {w} W (not set here): set back to {want} W")
 
+# --- SWR calibration. The G90 answers CI-V 15 12 (the Icom SWR meter) with a
+# 16-bit value that grows with the power setting and tops out at 0x25F, which
+# FLRig clips to Icom's 0-255 scale. Until it's known how it maps to SWR, each
+# transmission's raw readings are logged so the radio's own SWR display can
+# be noted next to them.
+SWR_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "swr_log.json")
+SWR = {"on": None, "cur": [], "log": deque(maxlen=500)}
+
+def civ_swr(fl):
+    addr = CIV[RIG["xcvr"]][0]
+    rep = str(fl.rig.cat_string(f"xFE xFE x{addr:02X} xE0 x15 x12 xFD"))
+    m = re.search(rf"FE FE E0 {addr:02X} 15 12 ([0-9A-F]{{2}}) ([0-9A-F]{{2}}) FD", rep)
+    return int(m.group(1) + m.group(2), 16) if m else None
+
+def swr_poll(fl, ptt, now):
+    """Raw SWR readings while transmitting; one record per transmission."""
+    if RIG.get("xcvr") not in CIV:
+        return
+    if ptt:
+        if not SWR["on"]:
+            SWR.update(on=now, cur=[], what="tune" if ENG.get("tuning") else mode_raw())
+        raw = civ_swr(fl)
+        if raw is not None:
+            SWR["cur"].append(raw)
+            RIG["swr_raw"] = raw
+        return
+    if not SWR["on"]:
+        return
+    vals = [v for v in SWR["cur"] if v]  # 0 = read just as PTT came up or dropped
+    if vals and now - SWR["on"] >= 3:
+        SWR["log"].append({"id": int(SWR["on"]), "t": time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(SWR["on"])),
+                           "secs": round(now - SWR["on"]), "band": band(), "khz": (state["udp"].get("dial") or 0) / 1000,
+                           "mode": SWR["what"], "watts": RIG.get("power"), "raw": sorted(vals)[len(vals) // 2],
+                           "raws": vals, "radio_swr": None})
+        save_swr()
+    SWR.update(on=None, cur=[])
+    RIG["swr_raw"] = None
+
+def save_swr():
+    try:
+        with open(SWR_FILE, "w") as f:
+            json.dump(list(SWR["log"]), f, indent=0)
+    except OSError as e:
+        log_err("SWR log", e)
+
+def load_swr():
+    try:
+        SWR["log"].extend(json.load(open(SWR_FILE)))
+    except (OSError, ValueError):
+        pass
+
+def swr_state():
+    """The last transmission, for noting the radio's SWR next to it."""
+    if RIG.get("xcvr") not in CIV:
+        return None
+    last = SWR["log"][-1] if SWR["log"] else None
+    return {"live": RIG.get("swr_raw"), "last": last and {k: v for k, v in last.items() if k != "raws"},
+            "noted": sum(1 for r in SWR["log"] if r.get("radio_swr"))}
+
 def rig_poll():
     import xmlrpc.client
     while True:
@@ -1472,6 +1531,7 @@ def rig_poll():
                        out=max(0.0, float(out or 0)) if ptt else 0.0)
             if RIG.get("xcvr") not in CIV:
                 RIG["power"] = int(float(power))
+            swr_poll(flrig(), ptt, time.time())
             hold_power(flrig(), time.time())
             if float(sm) > 0:
                 RIG["has_s"] = True  # some rigs (the G90) never report an S-meter over CAT
@@ -2082,6 +2142,7 @@ class H(BaseHTTPRequestHandler):
                 "cq_calling": max(0, round(ENG["cq_until"] - time.time())),
                 "mode": mode(), "period": period(),
                 "rig": {**{k: v for k, v in RIG.items() if k != "url"}, "qso": answered()}, "rx": rx_level(now),
+                "swr": swr_state(),
                 "step": ENG.get("step") or {"step": "stopped" if not state["running"] else "idle"},
                 "qrm": {"secs": max(0, round(ENG["qrm_until"] - time.time())), "why": ENG["qrm_why"]},
                 "txdf": {"current": u.get("tx_df"), **ENG.get("suggest", {})},
@@ -2180,6 +2241,17 @@ class H(BaseHTTPRequestHandler):
                 return self._json({"error": "pick at least one band and mode"}, 400)
             SCAN["on"] = True  # before the thread starts: a second click is refused
             threading.Thread(target=scan_run, args=(pts,), daemon=True).start()
+        elif p == "/api/swr/note":
+            r = next((r for r in SWR["log"] if r["id"] == body.get("id")), None)
+            try:
+                v = float(body.get("swr"))
+            except (TypeError, ValueError):
+                v = 0
+            if not r or not 1 <= v <= 20:
+                return self._json({"error": "no such transmission, or SWR not 1-20"}, 400)
+            r["radio_swr"] = v
+            save_swr()
+            log(f"SWR noted: radio showed {v} on {r['band']} at {r['watts']} W (raw {r['raw']})")
         elif p == "/api/scan/stop":
             SCAN["stop"] = True
         elif p == "/api/scan/go":
@@ -2234,6 +2306,7 @@ signal.signal(signal.SIGINT, shutdown)
 threading.Thread(target=watcher, daemon=True).start()
 threading.Thread(target=rig_poll, daemon=True).start()
 load_scan()
+load_swr()
 threading.Thread(target=load_freqs, daemon=True).start()
 log(f"hunter ready as {state['mycall']} {state['mygrid']}")
 print(f"open http://0.0.0.0:{a.http}/")
