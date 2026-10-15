@@ -2269,6 +2269,13 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(b); return
         if self.path == "/api/globe":
             return self._json(globe())
+        if self.path == "/api/timeline":
+            # contacts of the last 24 h, oldest first, for the time bar: the
+            # log's (minute) times, or the moment WS logged one this session
+            now = time.time()
+            qs = {k: ts for k, ts in list({**state["worked"], **RECENT}.items()) if ts and now - ts < 86400}
+            return self._json({"now": now, "qsos": [{"call": c, "band": b, "mode": m, "t": ts}
+                                                     for (c, b, m), ts in sorted(qs.items(), key=lambda kv: kv[1])]})
         if self.path == "/api/scan":
             return self._json(scan_state())
         if self.path == "/api/waterfall":

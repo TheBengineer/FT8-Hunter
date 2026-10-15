@@ -58,9 +58,17 @@ details summary{font-weight:700;padding:4px}
 #scRows{max-height:60vh;overflow-y:auto}#scRows li{display:grid;grid-template-columns:auto 1fr auto;gap:2px 8px;padding:6px 4px}#scRows li.here{background:#1d3a2a;border-radius:8px}
 #scRows canvas{grid-column:1/-1;width:100%;height:26px;display:block}
 .badge.busy2{background:#1f9d4d}.badge.active{background:#2a6cb6}.badge.quiet{background:#3a4552}.badge.qrm{background:#8a2f2f}.badge.noisy{background:#7a5a2a}
+/* time bar: contacts along the last N hours, labels stacked where they would overlap */
+#tl{max-width:480px;margin:0 auto 10px;background:#1a222c;border-radius:12px;padding:6px 10px 4px}
+@media (min-width:900px){#tl{max-width:980px}}@media (min-width:1350px){#tl{max-width:1500px}}
+#tl .z{flex:0;padding:2px 9px;font-size:.8rem;background:#26303c;color:#cde;border-radius:6px}
+#tlc{width:100%;display:block;touch-action:pan-y}
 .col.over{outline:1px dashed #334;border-radius:12px}.mv .grip{cursor:grab;touch-action:none}.card.dragging{outline:2px dashed #2a6cb6;opacity:.7}.card.dragging .grip{cursor:grabbing}
 </style></head><body>
 <h1>📻 FT8 Hunter</h1>
+<div id="tl"><div class="row small"><span>🕒 QSOs</span><span id="tlN"></span>
+<span style="margin-left:auto" id="tlSpan"></span><button class="z" id="tlOut" title="Zoom out">−</button><button class="z" id="tlIn" title="Zoom in">+</button></div>
+<canvas id="tlc"></canvas></div>
 <main class="cards">
 <div class="card" data-id="status"><div class="row"><span id="dot" class="dot"></span><b id="st">…</b></div>
 <div class="row" style="margin-top:6px"><span id="udpdot" class="dot"></span><span class="small" id="udp">UDP …</span></div>
@@ -303,6 +311,54 @@ const b=$('cbar');if(b)b.style.width=pct+'%';
 const tx=window._tx;$('txdot').className='dot'+(tx?' run':'');
 const txEl=$('tx');if(txEl){txEl.textContent=tx?'🔴 TX':'🟢 RX';txEl.style.color=tx?'#ff6b6b':'#2ecc71'}
 const c=$('ctxt');if(c)c.textContent=`${window._mode||'FT8'} · ${pos.toFixed(1)}s / ${per}s · ${pos<per*0.8?'receiving':pos<per*0.87?'decoding':'TX window'}`},200);
+</script>
+<script>
+// Time bar: each contact at its time (UTC), newest at the right edge. Zoom
+// with −/+ or the mouse wheel; labels take the lowest free lane, so the bar
+// grows only as tall as the overlapping callsigns need.
+(()=>{
+const cv=$('tlc'),ctx=cv.getContext('2d'),SPANS=[30,60,120,240,480,720,1440];  // minutes
+const BC={'160m':'#b07cff','80m':'#7c8cff','60m':'#5fb0ff','40m':'#4fd1c5','30m':'#5ad16a','20m':'#f1c40f',
+ '17m':'#ffa94d','15m':'#ff7b7b','12m':'#ff6bb5','10m':'#ff9ff3','6m':'#e6e6e6'};
+let zi=2,Q=[],skew=0;
+try{const v=+localStorage.getItem('tlZoom');if(SPANS.includes(v))zi=SPANS.indexOf(v)}catch(e){}
+function zoom(d){zi=Math.max(0,Math.min(SPANS.length-1,zi+d));try{localStorage.setItem('tlZoom',SPANS[zi])}catch(e){}draw()}
+$('tlIn').onclick=()=>zoom(-1);$('tlOut').onclick=()=>zoom(1);
+cv.addEventListener('wheel',e=>{e.preventDefault();zoom(e.deltaY>0?1:-1)},{passive:false});
+const hm=t=>new Date(t*1000).toISOString().slice(11,16);
+function draw(){const w=cv.clientWidth||300,dpr=devicePixelRatio||1,span=SPANS[zi]*60,t1=Date.now()/1000-skew,t0=t1-span;
+ const P=4,x=t=>P+(t-t0)/span*(w-2*P),LH=13,AX=15,MAXL=6;
+ ctx.font='600 11px monospace';
+ const qs=Q.filter(q=>q.t>=t0&&q.t<=t1),lanes=[],placed=[];
+ // newest first, from the right: when the lanes run out, the oldest calls become bare ticks
+ for(const q of qs.slice().reverse()){const tw=ctx.measureText(q.call).width,cx=x(q.t),l=Math.max(0,Math.min(w-tw,cx-tw/2));
+  let i=lanes.findIndex(r=>l+tw+5<=r);if(i<0&&lanes.length<MAXL){lanes.push(1e9);i=lanes.length-1}
+  if(i>=0)lanes[i]=l;placed.push({q,cx,l,i})}
+ const n=Math.max(1,lanes.length),h=n*LH+AX+4;
+ cv.style.height=h+'px';cv.width=w*dpr;cv.height=h*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.font='600 11px monospace';
+ const base=h-AX;
+ // hour/minute grid, spaced at least 56 px
+ const step=[5,10,15,30,60,120,240].map(m=>m*60).find(s=>s/span*(w-2*P)>=56)||14400;
+ ctx.fillStyle='#667';ctx.font='10px system-ui';ctx.textAlign='center';
+ for(let t=Math.ceil(t0/step)*step;t<=t1;t+=step){const gx=x(t);ctx.fillRect(gx,base,1,4);ctx.fillText(hm(t),gx,h-2)}
+ ctx.fillStyle='#334';ctx.fillRect(P,base,w-2*P,1);
+ ctx.fillStyle='#2ecc71';ctx.fillRect(x(t1)-1,base-3,2,7);  // now
+ ctx.font='600 11px monospace';ctx.textAlign='left';
+ // leader lines first, then labels on a backing so the lines pass behind them
+ for(const p of placed){ctx.fillStyle=BC[p.q.band]||'#9ab';ctx.globalAlpha=p.i<0?.6:.45;
+  const top=p.i<0?base-6:base-(p.i+1)*LH+LH-2;ctx.fillRect(p.cx,top,1,base-top)}
+ ctx.globalAlpha=1;
+ for(const p of placed){if(p.i<0)continue;  // no room: tick only
+  const y=base-(p.i+1)*LH,tw=ctx.measureText(p.q.call).width;
+  ctx.fillStyle='#1a222c';ctx.fillRect(p.l-1,y+1,tw+2,LH-2);
+  ctx.fillStyle=BC[p.q.band]||'#9ab';ctx.fillText(p.q.call,p.l,y+LH-3)}
+ $('tlN').textContent=`${qs.length} in ${SPANS[zi]<60?SPANS[zi]+' min':SPANS[zi]/60+' h'}`+(placed.some(p=>p.i<0)?' · zoom in for every call':'');
+ $('tlSpan').textContent='UTC'}
+async function poll(){if(document.visibilityState!=='visible')return;
+ try{const r=await (await fetch('/api/timeline')).json();Q=r.qsos||[];skew=Date.now()/1000-r.now}catch(e){}draw()}
+setInterval(poll,20000);setInterval(draw,10000);addEventListener('resize',draw);
+document.addEventListener('visibilitychange',poll);poll();
+})();
 </script>
 <script>
 // Waterfall from ws-hunter's per-period spectra: excess over each bin's usual

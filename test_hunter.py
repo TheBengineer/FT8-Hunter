@@ -720,6 +720,10 @@ check("book lists a station we gave up on as ignored, with its hold",
       book["W9NOP"]["kind"] == "ignored" and book["W9NOP"]["band"] == "20m" and book["W9NOP"]["hold_s"] > 0)
 check("a station that answered after its hold isn't listed as ignored", "W8LATE" not in book)
 check("worked count is for this band/mode only", api["worked"] == ["K1ABC"])
+tl = json.load(urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}/api/timeline"))["qsos"]
+check("time bar: contacts of the last 24 h with time, band and mode, oldest first",
+      [q["call"] for q in tl][-2:] == ["K1ABC", "K2ABC"] and tl[-1]["band"] == "40m" and tl[-1]["mode"] == "FT4"
+      and all(a["t"] <= b["t"] for a, b in zip(tl, tl[1:])))
 
 # --- manual (contest) mode: the hunter ranks, the operator starts each QSO
 def mpost(path, body):
