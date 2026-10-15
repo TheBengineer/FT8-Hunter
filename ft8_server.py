@@ -1527,11 +1527,12 @@ def swr_poll(ptt, swr, now):
         if not SWR["on"]:
             SWR.update(on=now, cur=[], what="tune" if ENG.get("tuning") else mode_raw())
         SWR["cur"].append(swr)
-        RIG["swr_raw"] = swr or None
+        RIG["swr_raw"] = swr if swr and swr > 0 else None
         return
     if not SWR["on"]:
         return
-    vals = [v for v in SWR["cur"] if v]  # 0 = read just as PTT came up or dropped
+    # 0 = read just as PTT came up or dropped; -1 = FLRig got no reading (G90 at 20 W)
+    vals = [v for v in SWR["cur"] if v and v > 0]
     if vals and now - SWR["on"] >= 3:
         SWR["log"].append({"id": int(SWR["on"]), "t": time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(SWR["on"])),
                            "secs": round(now - SWR["on"]), "band": band(), "khz": (state["udp"].get("dial") or 0) / 1000,
@@ -1550,7 +1551,7 @@ def save_swr():
 
 def load_swr():
     try:
-        SWR["log"].extend(json.load(open(SWR_FILE)))
+        SWR["log"].extend(r for r in json.load(open(SWR_FILE)) if (r.get("raw") or 0) > 0)  # -1: no reading
     except (OSError, ValueError):
         pass
 

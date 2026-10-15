@@ -740,6 +740,9 @@ check("other power settings and bands are judged on their own", judge(100, last[
 for k in range(3):
     SWR["log"].append({"id": 20 + k, "t": "", "secs": 13, "band": last["band"], "khz": 0, "mode": "FT8", "watts": 20, "raw": 100})
 check("meter at the top of its scale at a power: not judged", judge(100, last["band"], 20)["level"] == "off scale")
+n0 = len(ns["SWR"]["log"]); ns["SWR"]["on"] = None
+ns["swr_poll"](True, -1, 1000.0); ns["swr_poll"](True, -1, 1002.0); ns["swr_poll"](False, 0, 1005.0)
+check("FLRig's -1 (no reading) is not logged as an SWR reading", len(ns["SWR"]["log"]) == n0 and ns["RIG"]["swr_raw"] is None)
 RADIO["ptt"] = 1; time.sleep(2.5)
 post("/api/config", {"signoff": "gl73\ntu  73\n73\nTNX QSO GL 73\nTNX\ngl 73\ncul73"})
 check("sign-off catalog from Settings: one per line, upper-cased, 73 split off, duplicates dropped; "
