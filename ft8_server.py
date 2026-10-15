@@ -196,6 +196,12 @@ def enable_tx():
         return "Enable Tx via UDP"
     return "TX light on: click Enable Tx in WSJT-X"
 
+def manual_on():
+    """Contest (manual) mode: nothing new starts without the operator's
+    press. Always on without ws-hunter: there the hunter can't enable TX or
+    pick a clear offset, so the operator drives and the hunter suggests."""
+    return bool(state["config"].get("manual")) or not has_ws_hunter()
+
 TX_LIGHT = {"want_t": 0, "mode_t": 0}
 def tx_light(now=None):
     """Without ws-hunter (compatibility mode, or a stock WSJT-X) the hunter
@@ -1206,7 +1212,7 @@ def engine_tick():
     if t:
         t["left"] -= 1
         if t["left"] <= 0:
-            waiting = [] if cfg.get("manual") else fresh_callers(now)  # manual: no one is next until picked
+            waiting = [] if manual_on() else fresh_callers(now)  # manual: no one is next until picked
             if not (t.get("done") and waiting):
                 halt_ws()  # with a caller waiting, the next Reply takes over TX instead
             if t.get("done"):
@@ -1235,7 +1241,7 @@ def engine_tick():
                 else f"calling, {(t['left'] + 1) // 2} tries left"
             return at("target", f"{t['call']}: {how}")
     check_qrm(now)  # spectra wait for their decodes; we may transmit meanwhile
-    if cfg.get("manual"):
+    if manual_on():
         # Contest rules (ARRL, WW Digi): each QSO started by the operator. The
         # hunter finishes the QSO they started; the next one waits for a tap.
         ENG["busy"] = 0
@@ -1541,7 +1547,7 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                     if again:
                         ENG["callers"].appendleft(entry)
                         log(f"{frm} didn't copy our {'73' if rest[-1] == 'RRR' else 'RR73'}, "
-                            + ("tap to send it again: " if state["config"].get("manual") else "sending it again: ")
+                            + ("tap to send it again: " if manual_on() else "sending it again: ")
                             + msg)
                     elif late:
                         ENG["callers"].appendleft(entry)
@@ -1549,7 +1555,7 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                     else:
                         ENG["callers"].append(entry)
                         log(f"caller queued: {msg}")
-                    if t and not t.get("resp") and not state["config"].get("manual"):  # never abandon a QSO in progress
+                    if t and not t.get("resp") and not manual_on():  # never abandon a QSO in progress
                         halt_ws()
                         log(f"dropping {tgt} for caller {frm}")
                         state["target"] = None
@@ -2341,7 +2347,8 @@ class H(BaseHTTPRequestHandler):
             par = ENG["parity"]
             return self._json({"running": state["running"], "mycall": state["mycall"],
                 "mygrid": state["mygrid"], "target": state["target"], "cq": cq[:40],
-                "suggest": suggestions(now) if state["config"].get("manual") else [],
+                "suggest": suggestions(now) if manual_on() else [],
+                "manual": manual_on(), "manual_forced": not has_ws_hunter(),
                 "answering": ans[:80], "now": now, "worked": worked, "book": book[:200], "band": band(),
                 "msgs": msgs, "mytx": list(state["mytx"])[:15], "dxfocus": dxf,
                 "holds": holds, "callers": [c["call"] for c in list(ENG["callers"])],

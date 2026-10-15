@@ -57,6 +57,10 @@ def ps(s):
 
 CTX["tx"] = FakeSock()
 st.update(mycall="KR4MZM", running=True)
+real_manual_on = ns["manual_on"]
+# the engine tests below run without a ws-hunter revision; contest mode is
+# forced then (tested on its own further down), so here only the setting counts
+ns["manual_on"] = lambda: bool(st["config"].get("manual"))
 real_sleep = time.sleep
 time.sleep = lambda s: None  # skip start_cq's wait for WS (shared time module)
 st["config"]["call_cq"] = False
@@ -308,7 +312,7 @@ st["config"]["compat"] = True
 check("compat: ws-hunter commands off even on the ws-hunter build", not ns["has_ws_hunter"]() and ns["ws_caps"]() == "configure")
 check("compat: nothing to send -> light idle", ns["tx_light"]()["state"] == "idle")
 dec("CQ K9XYZ EN52", snr=5); ns["engine_tick"]()
-check("compat: the hunter still calls by Reply", st["target"]["call"] == "K9XYZ" and REPLY in CTX["tx"].sent
+check("compat: a call goes out by Reply, never Enable Tx over UDP", st["target"]["call"] == "K9XYZ" and REPLY in CTX["tx"].sent
       and SET_TX_ENABLED not in CTX["tx"].sent)
 ns["TX_LIGHT"]["want_t"] = time.time() - 5
 check("compat: wants TX, Enable Tx off -> light says enable", ns["tx_light"]()["state"] == "enable"
@@ -324,6 +328,19 @@ st["udp"]["version"] = "1.9.1"
 check("old WSJT-X (before 2.0): basic controls only", ns["ws_caps"]() == "basic")
 st["udp"].update(mode="FT8", tx_enabled=False, revision="", version=""); st["config"]["compat"] = False
 ns["TX_LIGHT"].update(want_t=0, mode_t=0); fresh()
+
+# --- without ws-hunter, contest (manual) mode is forced: nothing starts on its own
+ns["manual_on"] = real_manual_on
+fresh(); st["udp"]["revision"] = ""; dec("CQ K9XYZ EN52", snr=5); ns["engine_tick"]()
+check("no ws-hunter: contest mode forced, the CQ is only suggested",
+      ns["manual_on"]() and st["target"] is None and ENG["step"]["step"] == "manual"
+      and [x["call"] for x in ns["suggestions"]()] == ["K9XYZ"])
+st["udp"]["revision"] = "261013-hunter"; ns["engine_tick"]()
+check("ws-hunter, contest mode off: the hunter calls by itself", not ns["manual_on"]() and st["target"]["call"] == "K9XYZ")
+fresh(); st["config"]["compat"] = True
+check("compatibility mode on the ws-hunter build: contest mode forced too", ns["manual_on"]())
+st["config"]["compat"] = False; st["udp"]["revision"] = ""
+ns["manual_on"] = lambda: bool(st["config"].get("manual")); fresh()
 
 # --- listen one cycle for interference: every N transmissions between QSOs, and after a timeout
 fresh(); st["config"]["check_every"] = 10

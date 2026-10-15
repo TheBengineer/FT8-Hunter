@@ -19,14 +19,19 @@ Each T/R period (15 s FT8, 7.5 s FT4, 3.75 s FT2) it does the first of these tha
 everyone who answers, still leaves its CQ for an activator if "Activations first"
 is on, and skips steps 3 and 4.
 
-**Manual (contest)** (the ✋ button) is for contests and awards that don't accept
+**Contest mode** (the 🏆 button) is for contests and awards that don't accept
 automated contacts (ARRL contests, DXCC, WAS; WW Digi): each QSO must be started
-by the operator. The hunter starts nothing on its own. It lists what it would
-work next, in the order above, and you tap **work** on one. The hunter then
-works that QSO to the end (repeats, power, sign-off, another 73 for an RRR it
-missed) and waits for your next tap. A new pick is refused mid-QSO; finish it or
-Skip first. A station that didn't copy our 73 shows up in the list for you to
-answer again. Check the rules of the contest you enter.
+by the operator. The hunter starts nothing on its own. When it is time for the
+next QSO a big green **▶ Work CALL** button shows its first choice; press it, or
+pick another from the list below it (in the order above). The hunter then works
+that QSO to the end (repeats, power, sign-off, another 73 for an RRR it missed)
+and waits for your next press. A new pick is refused mid-QSO; finish it or Skip
+first. A station that didn't copy our 73 shows up in the list to answer again.
+Check the rules of the contest you enter.
+
+Contest mode is always on when WS isn't the ws-hunter build (or compatibility
+mode is on): without ws-hunter the hunter can't enable TX or pick a clear
+offset, so it suggests and you press, with the TX light for Enable Tx.
 
 CQs are ranked by chance of a contact: SNR, minus 3 dB for each station already
 calling them, plus 3 if heard last period.
@@ -218,7 +223,7 @@ so the hunter can only *suggest* a clear offset and can't reliably switch WS fro
 the last station back to CQ.
 
 **Compatibility mode** (Settings; automatic with any WS / WSJT-X that isn't
-ws-hunter) uses standard UDP messages only: Reply to call a station, Halt Tx,
+ws-hunter) turns contest mode on (you press to start each QSO) and uses standard UDP messages only: Reply to call a station, Halt Tx,
 Free Text for the sign-off, and on WSJT-X 2.0 or later Configure for the CQ
 message and the mode (it asks WSJT-X to switch to FT8 if it is on another mode).
 Nothing can turn Enable Tx on over standard UDP, so a **TX light** in the status

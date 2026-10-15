@@ -67,6 +67,7 @@ details summary{font-weight:700;padding:4px}
 #txl.idle{display:block;background:#26303c;color:#9ab;font-weight:600;font-size:.85rem}
 #txl.ok{display:block;background:#173a26;border-color:#1f9d4d;color:#7ee2a8;font-size:.9rem}
 #txl.enable,#txl.reenable,#txl.mode{display:block;background:#f1c40f;color:#111;animation:txl 1s linear infinite}
+@keyframes go{50%{box-shadow:0 0 0 4px #2ecc7166}}
 @keyframes txl{0%,49.9%{background:#f1c40f;color:#111}50%,100%{background:#5a4704;color:#fff}}
 .col.over{outline:1px dashed #334;border-radius:12px}.mv .grip{cursor:grab;touch-action:none}.card.dragging{outline:2px dashed #2a6cb6;opacity:.7}.card.dragging .grip{cursor:grabbing}
 </style></head><body>
@@ -86,8 +87,10 @@ details summary{font-weight:700;padding:4px}
 <div id="cbar" style="height:100%;width:0%;background:#2a6cb6"></div></div>
 <div class="small" id="ctxt" style="text-align:center;margin-top:2px">cycle</div>
 <div class="row"><button id="bS">Start</button><button id="bX" class="warn">Skip</button></div>
-<div class="row" style="margin-top:8px"><button id="bManual" style="background:#3a4552" title="Contest rules: each QSO started by the operator. The hunter ranks stations; tap one to start it, and the hunter finishes that QSO">✋ Manual (contest): off</button></div>
-<div id="pickBox" style="display:none;margin-top:6px"><div class="small" id="pickNote">Tap a station to start the QSO</div><ul id="pick"></ul></div>
+<div class="row" style="margin-top:8px"><button id="bManual" style="background:#3a4552" title="Contest rules: each QSO started by the operator. The hunter picks the next station; press the button to start it, and the hunter finishes that QSO">🏆 Contest mode: off</button></div>
+<div id="pickBox" style="display:none;margin-top:6px">
+<button id="bGo" style="display:none;width:100%;background:#1f9d4d;font-size:1.15rem;animation:go 1.2s ease-in-out infinite"></button>
+<div class="small" id="pickNote" style="margin-top:6px">Press to start the QSO</div><ul id="pick"></ul></div>
 <div class="row" style="margin-top:8px"><button id="bCqFirst" style="background:#3a4552" title="Run our own CQ: answer callers and activators only">📣 CQ first: off</button></div>
 <div class="row" style="margin-top:8px"><button id="bCQ" style="background:#1f9d4d">🔴 ARM TX</button></div>
 <div id="rig" style="margin-top:8px;padding:8px;border:1px solid #26303c;border-radius:10px">
@@ -175,7 +178,7 @@ const STEPS=[['stopped','Hunter running?','Stopped'],
  ['newband','Just arrived on this band?','Listen 2 cycles for a clear offset'],
  ['tuning','New band, antenna not tuned yet?','Tune the antenna under FT8'],
  ['target','Calling or working a target?','Work the target'],
- ['manual','Manual (contest) mode?','Wait for the operator to pick'],
+ ['manual','Contest mode?','Wait for the operator to press'],
  ['caller','Station calling me?','Answer the caller'],
  ['check','Time to check for interference?','Pause a cycle and listen'],
  ['qrm','Someone else on frequency?','Back off: no new calls'],
@@ -192,17 +195,25 @@ function cqFirstView(on){CQF=on;const b=$('bCqFirst');b.textContent='📣 CQ fir
 $('bCqFirst').onclick=()=>{cqFirstView(!CQF);api('/api/config',{cq_first:CQF},'POST').then(tick)};
 // Manual (contest) mode: the hunter ranks stations; nothing new starts without a tap
 let MAN=false;
-function manualView(on){MAN=on;const b=$('bManual');b.textContent='✋ Manual (contest): '+(on?'on':'off');b.style.background=on?'#7a3fb8':'#3a4552';$('pickBox').style.display=on?'block':'none'}
-$('bManual').onclick=()=>{manualView(!MAN);api('/api/config',{manual:MAN},'POST').then(tick)};
+let FORCED=false;
+function manualView(on,forced){MAN=on;FORCED=forced;const b=$('bManual');
+ b.textContent='🏆 Contest mode: '+(on?'on':'off')+(forced?' (no ws-hunter: always on)':'');
+ b.title=forced?'WS here is not the ws-hunter build (or compatibility mode is on): the hunter cannot enable TX or pick a clear offset, so it only suggests and you press to start each QSO':'Contest rules: each QSO started by the operator. The hunter picks the next station; press the button to start it, and the hunter finishes that QSO';
+ b.style.background=on?'#7a3fb8':'#3a4552';b.style.opacity=forced?.75:1;$('pickBox').style.display=on?'block':'none'}
+$('bManual').onclick=()=>{if(FORCED)return;manualView(!MAN,false);api('/api/config',{manual:MAN},'POST').then(tick)};
+// the press: the hunter's first choice, shown when it is time to start the next QSO
+$('bGo').onclick=()=>pick(0);
 async function pick(i){const e=(window._pick||[])[i];if(!e)return;const r=await api('/api/work',{msg:e.msg});
  $('pickNote').textContent=r.error?'⚠️ '+r.error:'Calling '+e.call;tick()}
 function pickView(s){window._pick=s.suggest||[];if(!MAN)return;
- const busy=s.target&&s.target.resp&&!s.target.done;
- if(!$('pickNote').textContent.startsWith('⚠️')||!window._pick.length)$('pickNote').textContent=!s.running?'Start the hunter to pick stations':busy?'In a QSO with '+s.target.call+': pick the next when it is done':'Tap a station to start the QSO';
+ const busy=s.target&&s.target.resp&&!s.target.done,top=window._pick[0],free=s.running&&!busy&&!(s.target&&!s.target.done);
+ $('bGo').style.display=top&&free?'block':'none';
+ if(top)$('bGo').textContent=`▶ Work ${top.call} · ${top.why} · ${top.snr>0?'+':''}${top.snr} dB`;
+ if(!$('pickNote').textContent.startsWith('⚠️')||!window._pick.length)$('pickNote').textContent=!s.running?'Start the hunter to pick stations':busy?'In a QSO with '+s.target.call+': the next one when it is done':s.target&&!s.target.done?'Calling '+s.target.call+' · or pick another:':window._pick.length?'Or pick another:':'Waiting for stations to work';
  $('pick').innerHTML=window._pick.map((e,i)=>`<li><span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="badge${/again|called/.test(e.why)?' me':/^(POTA|SOTA|WWFF|IOTA|BOTA|LOTA)$/.test(e.why)?' act':''}">${e.why}</span>`
-  +`<span class="mono" style="flex:1">${mark(e.msg)}</span><button class="mini" ${busy||!s.running?'disabled':''} onclick="pick(${i})">work</button></li>`).join('')||'<li>— nothing to pick yet —</li>'}
+  +`<span class="mono" style="flex:1">${mark(e.msg)}</span><button class="mini" ${busy||!s.running?'disabled':''} onclick="pick(${i})">work</button></li>`).slice(top&&free?1:0).join('')||(top?'':'<li>— nothing to pick yet —</li>')}
 function flow(st,cfg){const id=(st||{}).step||'stopped',det=(st||{}).detail||'';
- const off=cfg&&cfg.manual?{caller:'manual: tap',check:'manual: off',qrm:'manual: off',listen:'manual: off',activator:'manual: tap',cq:'manual: tap',tail:'manual: tap',mycq:'manual: off',cq_end:'manual: off',cq_start:'manual: off'}
+ const off=cfg&&cfg.manual?{caller:'contest: press',check:'contest: off',qrm:'contest: off',listen:'contest: off',activator:'contest: press',cq:'contest: press',tail:'contest: press',mycq:'contest: off',cq_end:'contest: off',cq_start:'contest: off'}
   :cfg&&cfg.cq_first?{cq:'CQ first: skipped',tail:'CQ first: skipped',manual:'off'}:{manual:'off'};
  let cur=STEPS.findIndex(x=>x[0]===id);if(cur<0)cur=STEPS.length; // idle: every check said no
  let html=STEPS.map(([sid,q,a],i)=>{
@@ -238,7 +249,7 @@ function ansPrefs(save){const f={q:$('aQ'),age:$('aAge'),me:$('aMe')};
 ansPrefs(false);['aQ','aAge','aMe'].forEach(id=>$(id).addEventListener('input',()=>{ansPrefs(true);renderAns()}));
 setInterval(()=>{const now=srvNow();document.querySelectorAll('#ans .ago').forEach(el=>el.textContent=ago(Math.max(0,Math.round(now-el.dataset.seen))))},1000);
 async function tick(){const s=await api('/api/state');
-window._cfg=s.config;window._me=s.mycall;fillSettings(s.config);cqFirstView(!!s.config.cq_first);manualView(!!s.config.manual);pickView(s);if(s.rig)rigView(s.rig,s.rx);swrView(s.swr);HELD=s.holds||{};flow(s.step,s.config);
+window._cfg=s.config;window._me=s.mycall;fillSettings(s.config);cqFirstView(!!s.config.cq_first);manualView(!!s.manual,!!s.manual_forced);pickView(s);if(s.rig)rigView(s.rig,s.rx);swrView(s.swr);HELD=s.holds||{};flow(s.step,{...s.config,manual:!!s.manual});
 $('dot').className='dot'+(s.running?' run':'');lightView(s.light,s.caps);
 $('st').textContent=(s.running?'RUNNING':'STOPPED')+' · '+s.mycall+' '+s.mygrid;
 $('target').textContent=s.target?('🎯 '+s.target.call+' '+(s.target.grid||'')+' · '+(s.target.why||'')+' · '+(s.target.resp?'in QSO':Math.ceil(s.target.left/2)+' tries left')):(s.cq_calling?('📣 calling CQ · '+s.cq_calling+'s'):'no target');
