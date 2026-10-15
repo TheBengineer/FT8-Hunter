@@ -689,14 +689,17 @@ RADIO["ptt"] = 0; time.sleep(2.5)
 last = SWR["log"][-1] if SWR["log"] else {}
 check("one SWR record per transmission: raw reading, band, power", last.get("raw") == 0x104 and last.get("watts") == 5
       and ns["swr_state"]()["live"] is None)
-post("/api/swr/note", {"id": last.get("id"), "swr": 1.6})
-check("the radio's SWR noted next to it and saved", json.load(open(ns["SWR_FILE"]))[-1]["radio_swr"] == 1.6
-      and ns["swr_state"]()["noted"] == 1)
-try:
-    post("/api/swr/note", {"id": last.get("id"), "swr": "x"}); bad = False
-except urllib.error.HTTPError:
-    bad = True
-check("a bad SWR entry is refused", bad)
+check("too few transmissions on a band and power to judge yet", ns["swr_state"]()["last"]["vs"]["level"] == "learning")
+for k in range(4):
+    SWR["log"].append({"id": k, "t": "", "secs": 13, "band": last["band"], "khz": 0, "mode": "FT8", "watts": 5, "raw": 0x104 + k})
+SWR["log"].append({"id": 9, "t": "", "secs": 13, "band": last["band"], "khz": 0, "mode": "tune", "watts": 5, "raw": 0x25F})
+judge = ns["swr_judge"]
+check("SWR reading against the usual for that band and power: normal", judge(0x104, last["band"], 5)["level"] == "normal")
+check("...higher than usual", judge(0x140, last["band"], 5)["level"] == "higher")
+check("...much higher (check the antenna); tunes don't count toward usual", judge(0x190, last["band"], 5)["level"] == "much higher"
+      and judge(0x104, last["band"], 5)["n"] == 5)
+check("other power settings and bands are judged on their own", judge(0x25F, last["band"], 20)["level"] == "learning"
+      and judge(0x104, "40m", 5)["level"] == "learning")
 RADIO["ptt"] = 1; time.sleep(2.5)
 post("/api/config", {"df_lo": 1400})
 saved = json.load(open(ns["CONFIG_FILE"]))

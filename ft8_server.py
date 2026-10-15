@@ -1454,11 +1454,14 @@ def hold_power(fl, now):
         RIG.update(power=want, pw_off=0, pw_t=0)
         log(f"radio TX power went to {w} W (not set here): set back to {want} W")
 
-# --- SWR calibration. The G90 answers CI-V 15 12 (the Icom SWR meter) with a
+# --- SWR, relative. The G90 answers CI-V 15 12 (the Icom SWR meter) with a
 # 16-bit value that grows with the power setting and tops out at 0x25F, which
-# FLRig clips to Icom's 0-255 scale. Until it's known how it maps to SWR, each
-# transmission's raw readings are logged so the radio's own SWR display can
-# be noted next to them.
+# FLRig clips to Icom's 0-255 scale. Its mapping to SWR is unknown (the radio
+# shows SWR only as a bar), so each transmission's reading is logged and a new
+# one is compared with the usual reading for that band and power.
+SWR_LEARN = 3     # transmissions on a band and power before "usual" means anything
+SWR_HIGH = 1.2    # raw reading this many times the usual: higher than usual
+SWR_BAD = 1.5     # ...and this many: much higher (check the antenna)
 SWR_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "swr_log.json")
 SWR = {"on": None, "cur": [], "log": deque(maxlen=500)}
 
@@ -1487,7 +1490,7 @@ def swr_poll(fl, ptt, now):
         SWR["log"].append({"id": int(SWR["on"]), "t": time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(SWR["on"])),
                            "secs": round(now - SWR["on"]), "band": band(), "khz": (state["udp"].get("dial") or 0) / 1000,
                            "mode": SWR["what"], "watts": RIG.get("power"), "raw": sorted(vals)[len(vals) // 2],
-                           "raws": vals, "radio_swr": None})
+                           "raws": vals})
         save_swr()
     SWR.update(on=None, cur=[])
     RIG["swr_raw"] = None
@@ -1505,13 +1508,31 @@ def load_swr():
     except (OSError, ValueError):
         pass
 
+def swr_usual(b, watts, skip=None):
+    """Median raw reading of past transmissions on band b at this power
+    (antenna tunes left out), and how many there were."""
+    vals = sorted(r["raw"] for r in list(SWR["log"])
+                  if r["band"] == b and r["watts"] == watts and r["mode"] != "tune" and r["id"] != skip)
+    return (vals[len(vals) // 2] if vals else None), len(vals)
+
+def swr_judge(raw, b, watts, skip=None):
+    usual, n = swr_usual(b, watts, skip)
+    if raw is None or n < SWR_LEARN or not usual:
+        return {"usual": usual, "n": n, "level": "learning"}
+    x = raw / usual
+    return {"usual": usual, "n": n, "x": round(x, 2),
+            "level": "much higher" if x >= SWR_BAD else "higher" if x >= SWR_HIGH else "normal"}
+
 def swr_state():
-    """The last transmission, for noting the radio's SWR next to it."""
+    """The reading on the air now and the last transmission's, each against
+    the usual for that band and power."""
     if RIG.get("xcvr") not in CIV:
         return None
     last = SWR["log"][-1] if SWR["log"] else None
-    return {"live": RIG.get("swr_raw"), "last": last and {k: v for k, v in last.items() if k != "raws"},
-            "noted": sum(1 for r in SWR["log"] if r.get("radio_swr"))}
+    live = RIG.get("swr_raw")
+    return {"live": live, "live_vs": swr_judge(live, band(), RIG.get("power")) if live else None,
+            "last": last and {k: v for k, v in last.items() if k not in ("raws", "radio_swr")}
+            | {"vs": swr_judge(last["raw"], last["band"], last["watts"], skip=last["id"])}}
 
 def rig_poll():
     import xmlrpc.client
@@ -2241,17 +2262,6 @@ class H(BaseHTTPRequestHandler):
                 return self._json({"error": "pick at least one band and mode"}, 400)
             SCAN["on"] = True  # before the thread starts: a second click is refused
             threading.Thread(target=scan_run, args=(pts,), daemon=True).start()
-        elif p == "/api/swr/note":
-            r = next((r for r in SWR["log"] if r["id"] == body.get("id")), None)
-            try:
-                v = float(body.get("swr"))
-            except (TypeError, ValueError):
-                v = 0
-            if not r or not 1 <= v <= 20:
-                return self._json({"error": "no such transmission, or SWR not 1-20"}, 400)
-            r["radio_swr"] = v
-            save_swr()
-            log(f"SWR noted: radio showed {v} on {r['band']} at {r['watts']} W (raw {r['raw']})")
         elif p == "/api/scan/stop":
             SCAN["stop"] = True
         elif p == "/api/scan/go":

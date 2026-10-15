@@ -81,9 +81,8 @@ details summary{font-weight:700;padding:4px}
 <button class="mini" id="pwUp">+</button><b id="pwV" class="mono" style="min-width:42px;text-align:right">– W</b></div>
 <div class="meter" title="Output power from the rig's meter (the G90's is coarse: full or nothing)"><span class="small">Output</span><div class="bar" style="height:4px"><i id="mO" style="background:#ff9f43"></i></div><span class="mono small" id="vO">–</span></div>
 <div id="swBox" style="display:none">
-<div class="meter" title="The G90's raw SWR meter over CAT. It isn't an SWR yet: note what the radio's own SWR display shows to calibrate it"><span class="small">SWR raw</span><span class="mono small" id="vSw" style="margin-left:auto">–</span></div>
-<div class="small" id="swLast" style="margin-top:2px"></div>
-<div class="row" style="margin-top:4px"><span class="small" style="flex:1" title="Read the SWR on the G90's screen while it transmits, then enter it here for that transmission">Radio showed SWR</span><input id="swIn" type="number" min="1" max="20" step="0.1" placeholder="1.5" style="max-width:70px;margin-top:0"><button class="mini" id="swSave">Save</button></div></div>
+<div class="meter" title="The G90's SWR meter over CAT, against its usual reading on this band at this power. The raw number isn't an SWR (its scale is unknown), but a rise means more power is coming back from the antenna"><span class="small">SWR</span><span class="small" id="vSw" style="margin-left:auto;min-width:0">–</span></div>
+<div class="small" id="swLast" style="margin-top:2px"></div></div>
 <div class="meter" id="sRow" style="display:none"><span class="small">S-meter</span><div class="bar"><i id="mS" style="background:#2ecc71"></i></div><span class="mono small" id="vS">–</span></div>
 <div class="small" id="rxBest" style="margin-top:2px"></div></div>
 <div class="row" style="margin-top:8px"><button id="bWake" class="mini" style="flex:1;padding:8px;background:#3a4552">📱 Keep screen awake: off</button></div></div>
@@ -257,14 +256,12 @@ function rigView(r,rx){
  bar('mO',r.ok&&r.ptt?(r.out||0)/(r.max||100):0);$('vO').textContent=r.ok&&r.ptt?Math.round(r.out||0)+' W':'–';
  $('sRow').style.display=r.has_s?'flex':'none';if(r.has_s){bar('mS',r.s/100);$('vS').textContent=r.ptt?'–':String(r.s)}
  $('rxBest').textContent=rx&&rx.best!=null?`strongest decode last period: ${rx.best>0?'+':''}${rx.best} dB SNR (${rx.n} decodes)`:'no decodes last period'}
-let swrId=null;
+function swrVs(v){if(!v)return'';if(v.level==='learning')return`<span class="small">learning what's usual (${v.n} of 3 TX)</span>`;
+ const c=v.level==='normal'?'good':v.level==='higher'?'mid':'bad';
+ return`<span class="${c}">${v.level==='normal'?'normal':v.level+' than usual'+(v.level==='much higher'?': check the antenna':'')}</span> <span class="small">(×${v.x} of usual)</span>`}
 function swrView(w){$('swBox').style.display=w?'block':'none';if(!w)return;
- $('vSw').textContent=w.live!=null?String(w.live):'–';const l=w.last;swrId=l&&l.id;
- $('swLast').textContent=l?`Last TX ${l.t.slice(11,16)}Z, ${l.band} ${l.mode} at ${l.watts} W: raw ${l.raw}`+
-  (l.radio_swr?`, radio showed ${l.radio_swr}`:'')+` · ${w.noted} noted so far`:'No transmission logged yet';
- $('swSave').disabled=!l}
-$('swSave').onclick=async()=>{const v=+$('swIn').value;if(!swrId||!(v>=1))return;
- const r=await api('/api/swr/note',{id:swrId,swr:v});if(r.error)alert(r.error);else{$('swIn').value='';tick()}};
+ $('vSw').innerHTML=w.live!=null?swrVs(w.live_vs)+` <span class="mono small">${w.live}</span>`:'–';const l=w.last;
+ $('swLast').innerHTML=l?`Last TX ${l.t.slice(11,16)}Z, ${l.band} at ${l.watts} W: `+swrVs(l.vs):'No transmission logged yet'}
 $('bC').onclick=()=>api('/api/call',{call:$('mc').value,grid:$('mg').value}).then(tick);
 let sLoaded=false;
 function fillSettings(c){if(sLoaded)return;sLoaded=true;
