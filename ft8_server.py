@@ -23,7 +23,8 @@ state = {
                "cq_tries": 3, "tail_tries": 2, "qso_tries": 7, "hold_min": 10,
                "idle_every": 4, "idle_secs": 60, "special_first": True,
                "call_cq": True, "cq_secs": 120, "cq_first": False,
-               "manual": False,  # contest mode: the hunter ranks, the operator taps to start each QSO
+               "manual": False,
+               "compat": False,  # plain WSJT-X/WS UDP only (no ws-hunter commands): a light asks you to Enable Tx  # contest mode: the hunter ranks, the operator taps to start each QSO
                "auto_df": True, "df_lo": 1300, "df_hi": 2700,  # df_lo: rig feeds back below 1300 Hz
                "qrm_detect": True, "qrm_backoff_min": 5, "min_snr": -20,
                "check_every": 10,  # transmissions between one-cycle listens for interference (0 = never)
@@ -121,8 +122,20 @@ def pack_set_u32(mtype, id_, value):
 def has_ws_hunter(since="260926"):
     """True when WS reports a ws-hunter build in its Heartbeat revision, from
     the `since` build (yymmdd) on. ClearDX arrived in 261013."""
+    if state["config"].get("compat"):
+        return False  # compatibility mode: behave as with any WSJT-X
     m = re.match(r"(\d{6})-hunter", state["udp"].get("revision", ""))
     return bool(m) and m.group(1) >= since
+
+def ws_caps():
+    """What WS / WSJT-X can be told over UDP: 'hunter' (the ws-hunter build:
+    everything), 'configure' (WSJT-X 2.0 on: Reply, Halt Tx, Free Text and
+    Configure for the mode and the CQ message) or 'basic' (older: Reply and
+    Halt Tx). Nothing but ws-hunter can turn Enable Tx on: the TX light asks."""
+    if has_ws_hunter():
+        return "hunter"
+    m = re.match(r"\s*(\d+)\.(\d+)", state["udp"].get("version", ""))
+    return "basic" if m and (int(m.group(1)), int(m.group(2))) < (2, 0) else "configure"
 
 FREE_TEXT = 9  # standard WSJT-X UDP: set the Tx5 message text
 def pack_free_text(id_, text, send=False):
@@ -176,11 +189,46 @@ def select_cq():
         CTX["tx"].sendto(pack_configure(state["ws_id"]), ws_dest())
 
 def enable_tx():
-    """Enable Tx: a UDP command on the ws-hunter build, else a click."""
+    """Enable Tx: a UDP command on the ws-hunter build. Any other WS/WSJT-X
+    has no such command: the TX light (tx_light) asks the operator."""
     if has_ws_hunter():
         CTX["tx"].sendto(pack_set_bool(SET_TX_ENABLED, state["ws_id"], True), ws_dest())
         return "Enable Tx via UDP"
-    return arm_tx()
+    return "TX light on: click Enable Tx in WSJT-X"
+
+TX_LIGHT = {"want_t": 0, "mode_t": 0}
+def tx_light(now=None):
+    """Without ws-hunter (compatibility mode, or a stock WSJT-X) the hunter
+    can choose whom to call (Reply) and stop TX (Halt Tx) but not turn Enable
+    Tx on. This light says what the operator should do in WSJT-X:
+    'enable' (it wants to transmit and Enable Tx is off), 'reenable' (the TX
+    watchdog stopped it), 'mode' (not on FT8/FT4/FT2), 'ok' or 'idle'.
+    With ws-hunter it is None: the hunter does it all itself."""
+    if has_ws_hunter():
+        return None
+    now = now or time.time()
+    u, t = state["udp"], state["target"]
+    if u.get("mode") and u["mode"] not in MODES:
+        # best effort: WSJT-X 2.0 on switches mode on a Configure (once a minute)
+        if state["running"] and ws_caps() == "configure" and now - TX_LIGHT["mode_t"] > 60:
+            TX_LIGHT["mode_t"] = now
+            CTX["tx"].sendto(pack_configure(state["ws_id"], "", "", False, mode="FT8"), ws_dest())
+            log(f"WSJT-X is on {u['mode']}: asked it to switch to FT8")
+        return {"state": "mode", "msg": f"Set WSJT-X to FT8 (it is on {u['mode']})"}
+    want = state["running"] and not ENG.get("tuning") and (
+        bool(t and not t.get("done")) or now < ENG["cq_until"])
+    if not want:
+        TX_LIGHT["want_t"] = 0
+        return {"state": "idle", "msg": "Nothing to send: Enable Tx can stay as it is"}
+    TX_LIGHT["want_t"] = TX_LIGHT["want_t"] or now
+    what = f"calling {t['call']}" if t and not t.get("resp") else f"in QSO with {t['call']}" if t else "calling CQ"
+    if u.get("watchdog"):
+        return {"state": "reenable", "msg": f"TX watchdog stopped WSJT-X: click Enable Tx again ({what})"}
+    if u.get("tx_enabled"):
+        return {"state": "ok", "msg": f"TX enabled ({what})"}
+    if now - TX_LIGHT["want_t"] < 2:  # WSJT-X may enable it itself on a Reply (double-click sets Tx enable)
+        return {"state": "ok", "msg": what}
+    return {"state": "enable", "msg": f"Click Enable Tx in WSJT-X ({what})"}
 
 def alltxt_time_ms(tstr):
     # "261009_221230" -> ms since midnight (decode times fall on whole seconds)
@@ -1125,6 +1173,11 @@ def engine_tick():
     except Exception as e:
         log_err("ADIF reload", e)
     prune(now)
+    lt = (tx_light(now) or {}).get("state")  # without ws-hunter: tell the operator when to Enable Tx
+    if lt != ENG.get("light"):
+        ENG["light"] = lt
+        if lt in ("enable", "reenable", "mode"):
+            log("TX light: " + tx_light(now)["msg"])
     if not state["running"]:
         return at("stopped")
     if ENG.get("tuning"):
@@ -1742,43 +1795,6 @@ def globe():
     return {"me": me, "mycall": state["mycall"], "worked": worked[:300], "target": tgt, "callers": callers,
             "traffic": traffic, "fade": TRAFFIC_SECS}
 
-def arm_tx(only_if_off=False):
-    """Click WS 'Enable Tx' via xdotool (no UDP message exists for it).
-    Position computed from live window geometry (calibrated 2026-10-10;
-    re-calibrate if the WS layout/splitter moves: button frac ≈ (0.737, 0.407))."""
-    import subprocess
-    xd = os.path.expanduser("~/xdotool/usr/bin/xdotool")
-    lib = os.path.expanduser("~/xdotool/usr/lib/x86_64-linux-gnu")
-    env = dict(os.environ, LD_LIBRARY_PATH=lib + ":" + os.environ.get("LD_LIBRARY_PATH", ""))
-    try:
-        out = subprocess.run([xd, "search", "--onlyvisible", "--name", "Digital Mode Suite"],
-                             capture_output=True, text=True, env=env, timeout=10).stdout.split()
-        if not out:
-            return "WS window not found"
-        wid = out[0]
-        g = subprocess.run([xd, "getwindowgeometry", wid], capture_output=True,
-                           text=True, env=env, timeout=10).stdout
-        pos = re.search(r"Position:\s*(\d+),(\d+)", g)
-        geo = re.search(r"Geometry:\s*(\d+)x(\d+)", g)
-        if not pos or not geo:
-            return "geometry parse failed"
-        x, y = int(pos.group(1)), int(pos.group(2))
-        w, h = int(geo.group(1)), int(geo.group(2))
-        bx, by = x + int(w * 0.737), y + int(h * 0.407)
-        if only_if_off:
-            # suite's Status TxEnabled bit is unreliable; treat recent TX as armed
-            recent_tx = any(time.time() - m.get("seen", 0) < 90 for m in state["mytx"])
-            if state["udp"].get("tx_enabled") or recent_tx:
-                return "already armed"
-        subprocess.run([xd, "windowraise", wid], env=env, timeout=10)
-        subprocess.run([xd, "windowfocus", wid], env=env, timeout=10)
-        time.sleep(1.0)
-        subprocess.run([xd, "mousemove", str(bx), str(by), "click", "1"],
-                       env=env, timeout=10)
-        return f"clicked {bx},{by}"
-    except Exception as e:
-        return f"arm failed: {e}"
-
 # --- Band scan: visit the published FT8/FT4/FT2 dial frequencies and take
 # one clean ws-hunter spectrum on each, to see which bands are busy. WS runs
 # FT2 meanwhile (3.75 s periods, so a spectrum every 3.75 s); the period in
@@ -2327,6 +2343,7 @@ class H(BaseHTTPRequestHandler):
                 "mode": mode(), "period": period(),
                 "rig": {**{k: v for k, v in RIG.items() if k != "url"}, "qso": answered()}, "rx": rx_level(now),
                 "swr": swr_state(),
+                "light": tx_light(now), "caps": ws_caps(),
                 "step": ENG.get("step") or {"step": "stopped" if not state["running"] else "idle"},
                 "qrm": {"secs": max(0, round(ENG["qrm_until"] - time.time())), "why": ENG["qrm_why"]},
                 "txdf": {"current": u.get("tx_df"), **ENG.get("suggest", {})},
@@ -2363,11 +2380,7 @@ class H(BaseHTTPRequestHandler):
             state["target"] = None; ENG["callers"].clear()
             try:
                 select_cq()
-                if has_ws_hunter():
-                    how = enable_tx()
-                else:
-                    time.sleep(2)  # let Status report back before toggle check
-                    how = arm_tx(only_if_off=True)
+                how = enable_tx()
                 log(f"CQ mode: stack reset + {how}")
             except Exception as e:
                 log(f"CQ reset failed: {e}")
@@ -2488,6 +2501,9 @@ class H(BaseHTTPRequestHandler):
                     f"with our call, so 6 for the text; A-Z 0-9 +-./?): {', '.join(bad)}")
             save_config()
             RIG_WAKE.set()  # new power applies now
+            if "compat" in body:
+                log("compatibility mode " + ("on: plain WSJT-X UDP only; the TX light shows when to Enable Tx"
+                                             if c["compat"] else "off: ws-hunter controls when WS has them"))
             if "manual" in body:
                 if c["manual"] and ENG["cq_until"]:  # our own CQ run was the hunter's choice: end it
                     ENG["cq_until"] = 0

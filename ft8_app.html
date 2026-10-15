@@ -62,6 +62,12 @@ details summary{font-weight:700;padding:4px}
 .card[data-id=tl]{padding:5px 10px 3px}#tl .row{font-size:.65rem;white-space:nowrap;gap:6px}#tl .row>span{overflow:hidden;text-overflow:ellipsis}
 #tl .z{flex:0;padding:0 7px;font-size:.75rem;line-height:1.3;background:#26303c;color:#cde;border-radius:5px}
 #tlc{width:100%;display:block;touch-action:pan-y}
+/* TX light (no ws-hunter): when the operator must click Enable Tx in WSJT-X */
+#txl{display:none;margin-top:8px;padding:10px;border-radius:10px;font-weight:800;text-align:center;font-size:1.05rem;border:2px solid transparent}
+#txl.idle{display:block;background:#26303c;color:#9ab;font-weight:600;font-size:.85rem}
+#txl.ok{display:block;background:#173a26;border-color:#1f9d4d;color:#7ee2a8;font-size:.9rem}
+#txl.enable,#txl.reenable,#txl.mode{display:block;background:#f1c40f;color:#111;animation:txl 1s linear infinite}
+@keyframes txl{0%,49.9%{background:#f1c40f;color:#111}50%,100%{background:#5a4704;color:#fff}}
 .col.over{outline:1px dashed #334;border-radius:12px}.mv .grip{cursor:grab;touch-action:none}.card.dragging{outline:2px dashed #2a6cb6;opacity:.7}.card.dragging .grip{cursor:grabbing}
 </style></head><body>
 <h1>📻 FT8 Hunter</h1>
@@ -71,6 +77,7 @@ details summary{font-weight:700;padding:4px}
 <canvas id="tlc"></canvas></div>
 <div class="card" data-id="status"><div class="row"><span id="dot" class="dot"></span><b id="st">…</b></div>
 <div class="row" style="margin-top:6px"><span id="udpdot" class="dot"></span><span class="small" id="udp">UDP …</span></div>
+<div id="txl" title="This WS/WSJT-X can't be told to Enable Tx over UDP: the hunter picks who to call and stops TX, you click Enable Tx when this flashes"></div>
 <div id="target">no target</div>
 <div class="row" style="margin-top:6px"><span id="txdot" class="dot"></span><b id="tx">RX</b>
 <span class="small" id="dx"></span><span class="small" id="txdf" style="margin-left:auto"></span></div>
@@ -151,6 +158,7 @@ Chart: dB over the floor, 200–3000 Hz · <span style="color:#2ecc71">▬ FT-li
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Auto Tx offset (ws-hunter build)</span><input id="sAutoDf" type="checkbox" style="width:auto;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Lowest auto Tx offset (Hz)</span><input id="sDfLo" type="number" min="200" max="2400" step="50" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Between QSOs, after this many transmissions (and after calling someone who never answers): one cycle without transmitting, to hear both periods for interference. 0 = never">Listen for interference every N TX</span><input id="sCheck" type="number" min="0" max="100" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="For stock or older WSJT-X / WS: only standard UDP messages (Reply, Halt Tx, Free Text, Configure). The hunter can't turn Enable Tx on, so a light in the status card flashes when you should click it. No auto Tx offset, waterfall, band scan or antenna tune.">Compatibility mode (stock / old WSJT-X)</span><input id="sCompat" type="checkbox" style="width:auto;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Back off when non-FT8 signals appear</span><input id="sQrm" type="checkbox" style="width:auto;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="On a new band (not a new mode): move under FT8, run the rig's tuner, then go back, before transmitting">Tune the antenna on a new band</span><input id="sTune" type="checkbox" style="width:auto;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="The tune carrier goes at least this far from the band's FT8 frequency: below if your license allows a carrier there, else above; on bands too narrow for that, as far as your privileges allow. Not on 60m (channels).">Tune away from FT8 (kHz, 50+)</span><input id="sTuneKhz" type="number" min="50" max="150" step="5" style="max-width:90px;margin-top:0"></div>
@@ -231,7 +239,7 @@ ansPrefs(false);['aQ','aAge','aMe'].forEach(id=>$(id).addEventListener('input',(
 setInterval(()=>{const now=srvNow();document.querySelectorAll('#ans .ago').forEach(el=>el.textContent=ago(Math.max(0,Math.round(now-el.dataset.seen))))},1000);
 async function tick(){const s=await api('/api/state');
 window._cfg=s.config;window._me=s.mycall;fillSettings(s.config);cqFirstView(!!s.config.cq_first);manualView(!!s.config.manual);pickView(s);if(s.rig)rigView(s.rig,s.rx);swrView(s.swr);HELD=s.holds||{};flow(s.step,s.config);
-$('dot').className='dot'+(s.running?' run':'');
+$('dot').className='dot'+(s.running?' run':'');lightView(s.light,s.caps);
 $('st').textContent=(s.running?'RUNNING':'STOPPED')+' · '+s.mycall+' '+s.mygrid;
 $('target').textContent=s.target?('🎯 '+s.target.call+' '+(s.target.grid||'')+' · '+(s.target.why||'')+' · '+(s.target.resp?'in QSO':Math.ceil(s.target.left/2)+' tries left')):(s.cq_calling?('📣 calling CQ · '+s.cq_calling+'s'):'no target');
 $('bS').textContent=s.running?'Stop':'Start';$('bS').className=s.running?'warn':'on';
@@ -265,6 +273,15 @@ $('callers').textContent=(s.callers&&s.callers.length)?('📥 callers waiting: '
 $('holds').innerHTML=(s.holds&&Object.keys(s.holds).length)?('on hold: '+Object.entries(s.holds).map(([c,sec])=>`<span class="badge hold">${c} ${Math.ceil(sec/60)}m</span>`).join(' ')):'';
 $('msgs').innerHTML=(s.msgs||[]).map(e=>`<li>${e.tome?'<span class="badge me">ME</span>':''}${e.dx?'<span class="badge">DX</span>':''}<span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="mono">${mark(e.msg)}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';
 }
+// TX light: flashes (and beeps once, and marks the tab title) when WSJT-X needs Enable Tx clicked
+let lastLight='';
+function beep(){try{const a=new (window.AudioContext||window.webkitAudioContext)(),o=a.createOscillator(),g=a.createGain();
+ o.frequency.value=880;g.gain.value=.15;o.connect(g).connect(a.destination);o.start();o.stop(a.currentTime+.25)}catch(e){}}
+function lightView(l,caps){const el=$('txl'),st=l?l.state:'';
+ el.className=st;el.textContent=!l?'':{enable:'🟡 ENABLE TX — ',reenable:'🟡 RE-ENABLE TX — ',mode:'🟡 ',ok:'🟢 ',idle:'⚪ '}[st]+l.msg+(caps==='basic'&&st!=='ok'?' · old WSJT-X: limited control':'');
+ const alert=['enable','reenable','mode'].includes(st);
+ if(alert&&st!==lastLight)beep();lastLight=st;
+ document.title=(alert?'🟡 Enable TX · ':'')+'FT8 Hunter'}
 async function call(c,g){await api('/api/call',{call:c,grid:g||''})}
 $('bS').onclick=async()=>{const s=await api('/api/state');await api(s.running?'/api/stop':'/api/start',{},'POST');tick()};
 $('bX').onclick=()=>api('/api/skip',{},'POST').then(tick);
@@ -296,13 +313,13 @@ function fillSettings(c){if(sLoaded)return;sLoaded=true;
 $('sCq').value=c.cq_tries;$('sTail').value=c.tail_tries;$('sQso').value=c.qso_tries;$('sWCall').value=c.watts_call;$('sWQso').value=c.watts_qso;$('sHold').value=c.hold_min;$('sSignoff').value=(c.signoff||[]).join('\n');signoffNote();
 $('sIdleN').value=c.idle_every;$('sIdleS').value=c.idle_secs;$('sSpec').checked=c.special_first!==false;
 $('sCallCq').checked=c.call_cq!==false;$('sCqSecs').value=c.cq_secs;
-$('sAutoDf').checked=c.auto_df!==false;$('sDfLo').value=c.df_lo;$('sQrm').checked=c.qrm_detect!==false;$('sCheck').value=c.check_every??10;$('sMinSnr').value=c.min_snr;
+$('sAutoDf').checked=c.auto_df!==false;$('sDfLo').value=c.df_lo;$('sQrm').checked=c.qrm_detect!==false;$('sCompat').checked=!!c.compat;$('sCheck').value=c.check_every??10;$('sMinSnr').value=c.min_snr;
 $('sTune').checked=c.tune_new_band!==false;$('sTuneKhz').value=c.tune_away_khz;$('sLic').value=c.license||'general'}
 function signoffNote(){const me=(window._me||'').split('/').sort((a,b)=>(/\d/.test(b)-/\d/.test(a))||b.length-a.length)[0]||'',
 ls=$('sSignoff').value.split('\n').map(x=>x.trim().toUpperCase().replace(/\s+/g,' ').replace(/([A-Z])(R?R?73)\b/,'$1 $2')).filter(Boolean),long=ls.filter(x=>me.length+1+x.length>13);
 $('sSignoffNote').textContent=`${ls.length} lines, sent as ${me} + the line. FT8 free text is 13 characters in all, so 6 are left for the line`+(long.length?`; too long: ${long.join(', ')}`:'')+'.'}
 $('sSignoff').oninput=signoffNote;
-$('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,qso_tries:+$('sQso').value,watts_call:+$('sWCall').value,watts_qso:+$('sWQso').value,hold_min:+$('sHold').value,signoff:$('sSignoff').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value,special_first:$('sSpec').checked,call_cq:$('sCallCq').checked,cq_secs:+$('sCqSecs').value,auto_df:$('sAutoDf').checked,df_lo:+$('sDfLo').value,qrm_detect:$('sQrm').checked,check_every:+$('sCheck').value,tune_new_band:$('sTune').checked,tune_away_khz:+$('sTuneKhz').value,license:$('sLic').value,min_snr:+$('sMinSnr').value},'POST');sLoaded=false;tick()};
+$('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,qso_tries:+$('sQso').value,watts_call:+$('sWCall').value,watts_qso:+$('sWQso').value,hold_min:+$('sHold').value,signoff:$('sSignoff').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value,special_first:$('sSpec').checked,call_cq:$('sCallCq').checked,cq_secs:+$('sCqSecs').value,auto_df:$('sAutoDf').checked,df_lo:+$('sDfLo').value,qrm_detect:$('sQrm').checked,compat:$('sCompat').checked,check_every:+$('sCheck').value,tune_new_band:$('sTune').checked,tune_away_khz:+$('sTuneKhz').value,license:$('sLic').value,min_snr:+$('sMinSnr').value},'POST');sLoaded=false;tick()};
 setInterval(tick,2000);tick();
 // T/R cycle bar (15 s FT8, 7.5 s FT4, 3.75 s FT2) + TX badge, updated locally every 200ms
 setInterval(()=>{const per=window._per||15,t=Date.now()/1000,pos=t%per,pct=pos/per*100;

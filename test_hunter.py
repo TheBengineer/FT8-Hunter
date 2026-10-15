@@ -57,7 +57,6 @@ def ps(s):
 
 CTX["tx"] = FakeSock()
 st.update(mycall="KR4MZM", running=True)
-ns["arm_tx"] = lambda only_if_off=False: "clicked (test)"
 real_sleep = time.sleep
 time.sleep = lambda s: None  # skip start_cq's wait for WS (shared time module)
 st["config"]["call_cq"] = False
@@ -296,6 +295,30 @@ st["config"]["special_first"] = False
 fresh(); ns["engine_tick"](); dec("CQ POTA K4PRK EM85"); ns["engine_tick"]()
 check("CQ first with activations-first off: activators skipped too", st["target"] is None and ENG["cq_until"])
 st["config"].update(special_first=True, cq_first=False)
+
+# --- compatibility mode: no ws-hunter commands; the TX light says when to Enable Tx
+fresh(); st["udp"].update(revision="261013-hunter", version="3.0", mode="FT8", tx_enabled=False, watchdog=False)
+check("ws-hunter: no TX light (the hunter enables TX itself)", ns["tx_light"]() is None and ns["ws_caps"]() == "hunter")
+st["config"]["compat"] = True
+check("compat: ws-hunter commands off even on the ws-hunter build", not ns["has_ws_hunter"]() and ns["ws_caps"]() == "configure")
+check("compat: nothing to send -> light idle", ns["tx_light"]()["state"] == "idle")
+dec("CQ K9XYZ EN52", snr=5); ns["engine_tick"]()
+check("compat: the hunter still calls by Reply", st["target"]["call"] == "K9XYZ" and REPLY in CTX["tx"].sent
+      and SET_TX_ENABLED not in CTX["tx"].sent)
+ns["TX_LIGHT"]["want_t"] = time.time() - 5
+check("compat: wants TX, Enable Tx off -> light says enable", ns["tx_light"]()["state"] == "enable"
+      and "K9XYZ" in ns["tx_light"]()["msg"])
+st["udp"]["tx_enabled"] = True
+check("compat: Enable Tx on -> light ok", ns["tx_light"]()["state"] == "ok")
+st["udp"]["watchdog"] = True
+check("compat: TX watchdog tripped -> light says enable again", ns["tx_light"]()["state"] == "reenable")
+st["udp"].update(watchdog=False, mode="JT65"); CTX["tx"].sent.clear(); ns["TX_LIGHT"]["mode_t"] = 0
+check("compat: not on FT8 -> asks WSJT-X to switch (Configure) and the light says so",
+      ns["tx_light"]()["state"] == "mode" and CTX["tx"].sent == [CONFIGURE])
+st["udp"]["version"] = "1.9.1"
+check("old WSJT-X (before 2.0): basic controls only", ns["ws_caps"]() == "basic")
+st["udp"].update(mode="FT8", tx_enabled=False, revision="", version=""); st["config"]["compat"] = False
+ns["TX_LIGHT"].update(want_t=0, mode_t=0); fresh()
 
 # --- listen one cycle for interference: every N transmissions between QSOs, and after a timeout
 fresh(); st["config"]["check_every"] = 10

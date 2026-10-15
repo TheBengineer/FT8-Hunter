@@ -186,8 +186,19 @@ Offline tests (no radio needed): `python3 test_hunter.py`
 ### WS build with hunter controls
 
 Stock WS has no UDP command to set the Tx offset, Enable Tx or clear the DX call,
-so the hunter can only *suggest* a clear offset, falls back to an xdotool click to
-arm TX, and can't reliably switch WS from the last station back to CQ. The
+so the hunter can only *suggest* a clear offset and can't reliably switch WS from
+the last station back to CQ.
+
+**Compatibility mode** (Settings; automatic with any WS / WSJT-X that isn't
+ws-hunter) uses standard UDP messages only: Reply to call a station, Halt Tx,
+Free Text for the sign-off, and on WSJT-X 2.0 or later Configure for the CQ
+message and the mode (it asks WSJT-X to switch to FT8 if it is on another mode).
+Nothing can turn Enable Tx on over standard UDP, so a **TX light** in the status
+card does it with you: it flashes yellow, beeps once and marks the tab title when
+the hunter wants to transmit and Enable Tx is off, or when WSJT-X's TX watchdog
+has stopped it; green while TX is enabled. In WSJT-X, ticking *Settings → General
+→ Double-click on call sets Tx enable* lets each Reply enable TX by itself. No
+auto Tx offset, waterfall, band scan or antenna tune in this mode. The
 [ws-hunter](https://github.com/TheBengineer/ws-hunter) fork of WS adds those
 controls plus a per-cycle spectrum feed; the hunter detects it automatically.
 
