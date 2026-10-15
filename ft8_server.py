@@ -26,6 +26,7 @@ state = {
                "manual": False,  # contest mode: the hunter ranks, the operator taps to start each QSO
                "auto_df": True, "df_lo": 1300, "df_hi": 2700,  # df_lo: rig feeds back below 1300 Hz
                "qrm_detect": True, "qrm_backoff_min": 5, "min_snr": -20,
+               "check_every": 10,  # transmissions between one-cycle listens for interference (0 = never)
                "watts_call": 10, "watts_qso": 20,
                # our final 73, one per QSO at random ("73" = standard). FT8 free text
                # is 13 characters and our call goes first, so 6 are left for the text
@@ -375,6 +376,7 @@ CTX = {"tx": None, "myll": None, "seen": {}, "cycle": [0]}
 # idle_until ts (listen-only rest), busy_cycles (consecutive cycles with a target)
 ENG = {"holds": {}, "held": {}, "callers": deque(maxlen=20), "parity": {0: 0, 1: 0},
        "idle_until": 0, "busy": 0, "idle_n": 0,
+       "tx_n": 0, "check_until": 0,  # transmissions since the last interference check; pause ends
        "cq_until": 0,  # calling our own CQ until this time (0 = not calling)
        "occ": deque(maxlen=800),  # recent decodes {t, par, df}: who is where
        "spec": {},                # parity -> latest ws-hunter spectrum summary
@@ -874,6 +876,7 @@ def note_tx(txing):
     now, iv = time.time(), ENG["tx_iv"]
     if txing and not (iv and iv[-1][1] is None):
         iv.append([now, None])
+        ENG["tx_n"] += 1
     elif not txing and iv and iv[-1][1] is None:
         iv[-1][1] = now
 
@@ -1151,6 +1154,7 @@ def engine_tick():
                     f"giving up, holding {hold(t['call'])}m")
             else:
                 log(f"timeout, holding {t['call']} {hold(t['call'])}m")
+                start_check(now, f"no answer from {t['call']}")
             state["target"] = None
         else:
             ENG["busy"] += 1
@@ -1191,6 +1195,13 @@ def engine_tick():
             ENG["busy"] += 1
             more = f" ({len(waiting)} more waiting)" if waiting else ""
             return at("caller", c["call"] + more)
+    # Every check_every transmissions, between QSOs: one cycle without
+    # transmitting, to hear whether anyone else has come up on frequency
+    every = cfg.get("check_every", 10)
+    if every and ENG["tx_n"] >= every and now >= ENG["check_until"]:
+        start_check(now, f"{ENG['tx_n']} transmissions")
+    if now < ENG["check_until"]:
+        return at("check", f"{math.ceil((ENG['check_until'] - now) / period())} period(s) left")
     # Holds of every kind (busy frequency, listen pause, a station on hold)
     # never stop us answering a station that is calling us; they only stop
     # us starting something new.
@@ -1280,6 +1291,16 @@ def suggestions(now=None):
     for m, frm in tail_cands(now):
         add(frm, m["msg"], "tail-end", cfg.get("tail_tries", 2))
     return out[:12]
+
+def start_check(now, why):
+    """Stop transmitting for one full cycle (an even and an odd period), so
+    both periods are heard: the busy-frequency check and the offset picker
+    never see the periods we transmit in (the rig mutes its receive audio)."""
+    halt_ws()
+    ENG["cq_until"] = 0  # a CQ run starts afresh after, on a fresh clear offset
+    ENG["check_until"] = now + cyc(2) - 1  # engine ticks at period starts: this one and the next
+    ENG["tx_n"] = 0
+    log(f"listening one cycle for interference ({why})")
 
 def cq_check(now):
     """During our CQ run, make sure WS really is set to call CQ: Enable Tx on
@@ -2447,6 +2468,7 @@ class H(BaseHTTPRequestHandler):
             c["df_lo"] = max(200, min(int(c["df_lo"]), int(c["df_hi"]) - 300))
             for k in ("watts_call", "watts_qso"):
                 c[k] = max(1, min(int(c[k]), RIG.get("max", 100)))
+            c["check_every"] = max(0, min(int(c["check_every"]), 100))
             c["tune_away_khz"] = max(50.0, min(float(c["tune_away_khz"]), 150.0))  # off FT8, near enough to match
             c["license"] = c["license"] if c["license"] in PRIV else "general"
             if isinstance(c["signoff"], str):

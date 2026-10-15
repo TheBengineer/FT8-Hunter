@@ -37,7 +37,7 @@ def dec(msg, snr=-5, df=1500, t_ms=0):
 def fresh():
     st["target"] = None; st["cq"].clear(); st["msgs"].clear(); st["worked"] = {}; ENG["held"].clear()
     ENG["callers"].clear(); ENG["holds"].clear()
-    ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0, arrived=None)
+    ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0, arrived=None, tx_n=0, check_until=0)
     ENG["occ"].clear(); ENG["spec"].clear(); ENG["noise_hist"].clear(); st["udp"].pop("tx_df", None)
     ENG["spec_pending"].clear(); ENG["qrm_first"] = None; ENG["tx_iv"].clear(); ENG["tune_iv"].clear()
     ENG["active"].clear(); ENG["calls_to"].clear(); ENG["spec_hist"].clear(); ENG["rr73_again"].clear()
@@ -296,6 +296,29 @@ st["config"]["special_first"] = False
 fresh(); ns["engine_tick"](); dec("CQ POTA K4PRK EM85"); ns["engine_tick"]()
 check("CQ first with activations-first off: activators skipped too", st["target"] is None and ENG["cq_until"])
 st["config"].update(special_first=True, cq_first=False)
+
+# --- listen one cycle for interference: every N transmissions between QSOs, and after a timeout
+fresh(); st["config"]["check_every"] = 10
+for _ in range(10): ns["note_tx"](True); ns["note_tx"](False)
+st["target"] = {"call": "K1QSO", "grid": "", "left": 9, "why": "CQ", "msg": "", "resp": True}
+dec("CQ K9XYZ EN52", snr=5); ns["engine_tick"]()
+check("interference check waits while in a QSO", st["target"]["call"] == "K1QSO" and not ENG["check_until"])
+st["target"] = None; CTX["tx"].sent.clear(); ns["engine_tick"]()
+check("after 10 TX between QSOs: halt, no new call, for one cycle",
+      st["target"] is None and HALT in CTX["tx"].sent and ENG["step"]["step"] == "check"
+      and ns["cyc"](1) < ENG["check_until"] - time.time() < ns["cyc"](2) and ENG["tx_n"] == 0)
+ENG["check_until"] = time.time() - 1; ns["engine_tick"]()
+check("...then hunting resumes", st["target"] and st["target"]["call"] == "K9XYZ")
+st["target"]["left"] = 1; CTX["tx"].sent.clear(); ns["engine_tick"]()
+check("calling timeout: listen one cycle too", st["target"] is None and ENG["check_until"] > time.time()
+      and ENG["step"]["step"] == "check")
+fresh(); dec(f"{st['mycall']} N5CAL EM15"); ENG["check_until"] = time.time() + 20; ns["engine_tick"]()
+check("a station calling us is still answered during the check", st["target"] and st["target"]["call"] == "N5CAL")
+fresh(); st["config"]["check_every"] = 0
+for _ in range(30): ns["note_tx"](True); ns["note_tx"](False)
+dec("CQ K9XYZ EN52", snr=5); ns["engine_tick"]()
+check("check_every 0: never pauses", st["target"] and not ENG["check_until"])
+st["config"]["check_every"] = 10; fresh()
 st["udp"]["revision"] = ""
 
 # --- politeness / success strategies
