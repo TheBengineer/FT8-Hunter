@@ -236,7 +236,10 @@ def alltxt_time_ms(tstr):
     return ((hh * 60 + mm) * 60 + ss) * 1000
 
 def udp_holder(port=2237):
-    """Who holds local UDP port? Returns process name or 'free'."""
+    """Who holds local UDP port? Returns process name or 'free' ('?' without
+    Linux's /proc, e.g. on macOS)."""
+    if not os.path.isdir("/proc/net"):
+        return "?"
     want = f"{port:04X}"
     inodes = set()
     for f in ("/proc/net/udp", "/proc/net/udp6"):
@@ -288,7 +291,17 @@ TRAFFIC_SECS = 300  # traffic lines fade out over this long
 RECENT = {}  # (call, band, mode) -> epoch time, last 24 h: the globe keeps them past UTC midnight
 GRID_RE = re.compile(r"^[A-R]{2}\d{2}([A-X]{2})?$")
 CTY_PATHS = ("~/ws-hunter-app/share/ws/cty.dat", "~/ws/usr/share/ws/cty.dat",
-             "~/ws-wide/usr/share/ws/cty.dat", "/usr/share/wsjtx/cty.dat")
+             "~/ws-wide/usr/share/ws/cty.dat", "/usr/share/wsjtx/cty.dat",
+             # macOS: inside the app bundle
+             "~/ws-hunter-app/ws.app/Contents/Resources/ws/cty.dat",
+             "/Applications/ws.app/Contents/Resources/ws/cty.dat",
+             "/Applications/wsjtx.app/Contents/Resources/wsjtx/cty.dat")
+# Where WS / WSJT-X keep ALL.TXT and wsjtx_log.adi, WS first: Linux, then macOS
+WS_DIRS = ("~/.local/share/WS", "~/.local/share/WSJT-X",
+           "~/Library/Application Support/WS", "~/Library/Application Support/WSJT-X")
+def ws_files(name, extra=()):
+    """That file in each WS / WSJT-X data folder, expanded (existing or not)."""
+    return [os.path.expanduser(os.path.join(d, name)) for d in WS_DIRS + tuple(extra)]
 
 def load_cty():
     """Parse the country file WS ships (AD1C cty.dat format)."""
@@ -352,9 +365,7 @@ def load_worked():
     import datetime
     utc = datetime.datetime.now(datetime.timezone.utc)
     today, yesterday = utc.strftime("%Y%m%d"), (utc - datetime.timedelta(days=1)).strftime("%Y%m%d")
-    paths = [os.path.expanduser("~/.local/share/WS/wsjtx_log.adi"),
-             os.path.expanduser("~/.local/share/WSJT-X/wsjtx_log.adi"),
-             os.path.expanduser("~/.wsjtx/wsjtx_log.adi")]
+    paths = ws_files("wsjtx_log.adi", ("~/.wsjtx",))
     w, mtimes = {}, {}
     for p in paths:
         if not os.path.exists(p):
@@ -647,8 +658,7 @@ def tail_alltxt():
     seen, cycle = CTX["seen"], CTX["cycle"]
     tx = CTX["tx"]
     p = None
-    for cand in ("~/.local/share/WS/ALL.TXT", "~/.local/share/WSJT-X/ALL.TXT"):
-        cand = os.path.expanduser(cand)
+    for cand in ws_files("ALL.TXT"):
         if os.path.exists(cand):
             p = cand; break
     if not p:
@@ -1966,8 +1976,7 @@ LOG_LAST = {"mt": None, "last": {}}
 def log_last():
     """{(band, mode): (last QSO epoch, QSOs in the last 24 h)} over the whole log."""
     import datetime
-    paths = [p for p in (os.path.expanduser("~/.local/share/WS/wsjtx_log.adi"),
-                         os.path.expanduser("~/.local/share/WSJT-X/wsjtx_log.adi")) if os.path.exists(p)]
+    paths = [p for p in ws_files("wsjtx_log.adi") if os.path.exists(p)]
     mt = tuple(os.path.getmtime(p) for p in paths)
     if mt == LOG_LAST["mt"]:
         return LOG_LAST["last"]

@@ -183,6 +183,34 @@ times live from the Settings panel in the UI.
 
 Offline tests (no radio needed): `python3 test_hunter.py`
 
+### macOS
+
+The hunter is plain Python 3 (no packages), so it runs on a Mac as above. It
+finds WS / WSJT-X's `ALL.TXT` and `wsjtx_log.adi` in `~/Library/Application
+Support/WS` (or `WSJT-X`) as well as the Linux folders, and the country file
+inside the app bundle. FLRig runs on macOS too. With a stock WS or WSJT-X it
+works in compatibility mode (the TX light); for the ws-hunter build on a Mac,
+see `build-hunter.sh`'s macOS notes (untested on a real Mac so far).
+
+To keep it running like the Linux systemd service, as a LaunchAgent:
+
+```bash
+cat > ~/Library/LaunchAgents/com.ft8hunter.plist <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+ <key>Label</key><string>com.ft8hunter</string>
+ <key>ProgramArguments</key><array><string>/usr/bin/python3</string>
+  <string>$HOME/FT8-Hunter/ft8_server.py</string><string>--mycall</string><string>YOURCALL</string>
+  <string>--mygrid</string><string>YOURGRID</string></array>
+ <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+ <key>StandardOutPath</key><string>/tmp/ft8-hunter.log</string>
+ <key>StandardErrorPath</key><string>/tmp/ft8-hunter.log</string>
+</dict></plist>
+PLIST
+launchctl load ~/Library/LaunchAgents/com.ft8hunter.plist      # unload to stop
+```
+
 ### WS build with hunter controls
 
 Stock WS has no UDP command to set the Tx offset, Enable Tx or clear the DX call,
@@ -204,7 +232,7 @@ controls plus a per-cycle spectrum feed; the hunter detects it automatically.
 
 ```bash
 git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
-~/ws-hunter/build-hunter.sh        # installs to ~/ws-hunter-app; run ~/ws-hunter-app/bin/ws
+~/ws-hunter/build-hunter.sh        # installs to ~/ws-hunter-app; run ~/ws-hunter-app/bin/ws (macOS: open ~/ws-hunter-app/ws.app)
 ```
 
 ## How it works

@@ -61,6 +61,11 @@ real_sleep = time.sleep
 time.sleep = lambda s: None  # skip start_cq's wait for WS (shared time module)
 st["config"]["call_cq"] = False
 
+# --- WS files: Linux and macOS data folders
+fs = ns["ws_files"]("ALL.TXT")
+check("WS files looked for on Linux and macOS, WS first",
+      fs[0].endswith("/.local/share/WS/ALL.TXT") and any("Library/Application Support/WS/ALL.TXT" in f for f in fs))
+
 # --- callsign helpers
 check("base_call strips hash + suffix", ns["base_call"]("<KR4MZM/AG>") == "KR4MZM")
 check("base_call prefix form", ns["base_call"]("VE3/K1ABC") == "K1ABC")
