@@ -37,7 +37,7 @@ def dec(msg, snr=-5, df=1500, t_ms=0):
 def fresh():
     st["target"] = None; st["cq"].clear(); st["msgs"].clear(); st["worked"] = {}; ENG["held"].clear()
     ENG["callers"].clear(); ENG["holds"].clear()
-    ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0, arrived=None, tx_n=0, check_until=0)
+    ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0, arrived=None, tx_n=0, check_until=0, fresh_check=0)
     ENG["occ"].clear(); ENG["spec"].clear(); ENG["noise_hist"].clear(); st["udp"].pop("tx_df", None)
     ENG["spec_pending"].clear(); ENG["qrm_first"] = None; ENG["tx_iv"].clear(); ENG["tune_iv"].clear()
     ENG["active"].clear(); ENG["calls_to"].clear(); ENG["spec_hist"].clear(); ENG["rr73_again"].clear()
@@ -61,6 +61,8 @@ real_manual_on = ns["manual_on"]
 # the engine tests below run without a ws-hunter revision; contest mode is
 # forced then (tested on its own further down), so here only the setting counts
 ns["manual_on"] = lambda: bool(st["config"].get("manual"))
+real_heard_cycle = ns["heard_cycle"]  # most tests have no spectra: count a cycle as heard
+ns["heard_cycle"] = lambda now: True
 real_sleep = time.sleep
 time.sleep = lambda s: None  # skip start_cq's wait for WS (shared time module)
 st["config"]["call_cq"] = False
@@ -469,6 +471,30 @@ s = CTX["tx"].sent
 check("locked offset: hold sent, offset never moved, shown as busy",
       SET_HOLD in s and SET_TX_DF not in s and REPLY in s and ENG["suggest"]["locked"] and ENG["suggest"]["busy"])
 st["config"]["df_lock"] = False
+# no full cycle heard: listen one before moving the offset, then move
+ns["heard_cycle"] = real_heard_cycle
+def heard(par, back=0):
+    ENG["spec_hist"].append({"t": time.time(), "t_ms": recent_tm(par, back), "tr_ms": 15000, "par": par,
+                             "start": 0, "bin": 10, "rel": [0.0] * 300})
+fresh(); st["udp"]["tx_df"] = 1500
+dec("K1CQ W2BUSY -05", df=1480, t_ms=recent_tm(1))  # traffic on our offset (decoded, but no spectra)
+dec("CQ K4PRK EM85", snr=-3, df=900, t_ms=recent_tm(0)); ns["engine_tick"]()
+s = CTX["tx"].sent
+check("no full cycle heard: listen first, no Reply, offset not moved",
+      REPLY not in s and SET_TX_DF not in s and HALT in s and ENG["check_until"] > time.time()
+      and ENG["step"]["step"] == "check")
+heard(0); heard(1); check("both periods of the last cycle heard -> a full cycle", real_heard_cycle(time.time()))
+ENG["check_until"] = 0; CTX["tx"].sent.clear(); ns["engine_tick"]()
+s = CTX["tx"].sent
+check("...then the offset moves and the call goes out", SET_TX_DF in s and REPLY in s and st["target"]["call"] == "K4PRK")
+fresh(); heard(1, back=1); heard(0, back=1)
+check("a cycle older than that is not", not real_heard_cycle(time.time()))
+fresh(); st["udp"]["tx_df"] = 1500; ENG["fresh_check"] = time.time() - 40
+dec("K1CQ W2BUSY -05", df=1480, t_ms=recent_tm(1))
+dec("CQ K4PRK EM85", snr=-3, df=900, t_ms=recent_tm(0)); ns["engine_tick"]()
+check("still nothing heard right after a listen (no spectra): move by what we have",
+      SET_TX_DF in CTX["tx"].sent and REPLY in CTX["tx"].sent)
+ns["heard_cycle"] = lambda now: True
 
 # --- spectrum + someone else on frequency
 def spectrum(levels, t_ms=15000, floor=-20.0, step=0.25, tr=15000):

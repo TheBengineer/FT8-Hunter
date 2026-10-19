@@ -93,7 +93,9 @@ to see who is there and move your Tx offset to it. A move from the waterfall
 locks the offset (🔒): the auto picker then leaves it alone even when someone
 else turns up on it, and only shows where it would go. The lock button under
 the waterfall locks the offset where it is (say, one you set in WS) or hands it
-back to the picker. Each CQ shows why it is or isn't being called
+back to the picker. The picker only moves the offset after hearing a full
+cycle (both periods): if we have been transmitting, it listens one cycle before
+starting a new QSO on a new spot (a station calling us is answered where we are). Each CQ shows why it is or isn't being called
 (on hold, in QSO, pileup size, stale, weak, region/DX-only), and calls on hold
 are underlined wherever they appear. A slim time bar card (first in the
 first column) shows the contacts of the last 2 hours (−/+ or the mouse wheel

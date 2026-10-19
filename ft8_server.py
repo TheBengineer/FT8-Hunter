@@ -915,21 +915,43 @@ def pick_tx_df(par, current=None):
     # df_lo the rig feeds back), then take the least crowded spot inside it
     return best if current is not None and not lo <= current <= hi - bw() else None
 
-def tune_tx(par):
+def heard_cycle(now):
+    """Have we just heard a full cycle: a spectrum (heard, not transmitted
+    in) of each parity among the last three ended periods? The newest one's
+    spectrum may still be on its way, so the one a cycle before stands in."""
+    tr = int(period() * 1000)
+    last = (tod_ms(now) // tr - 1) * tr
+    want = {(last - k * tr) % 86400000 for k in range(3)}
+    return {h["par"] for h in list(ENG["spec_hist"]) if h["t_ms"] in want} >= {0, 1}
+
+def tune_tx(par, can_wait=False):
     """Before transmitting on parity `par`: hold Tx freq (so a Reply can't drag
     us onto the DX) and move to a clear offset. Needs the ws-hunter build;
-    on stock WS the pick is only shown in the UI."""
+    on stock WS the pick is only shown in the UI. A move is only made after
+    a full cycle heard: otherwise, with can_wait, listen a cycle first and
+    return False (transmit nothing yet); without it (someone is calling us),
+    stay where we are this time."""
+    now = time.time()
     cur = state["udp"].get("tx_df")
     f = pick_tx_df(par, cur)
     lock = bool(state["config"].get("df_lock")) and cur is not None
     ENG["suggest"] = {"par": par, "df": f, "locked": lock, "busy": lock and f != cur}
     if not (has_ws_hunter() and state["config"].get("auto_df", True)):
-        return
+        return True
+    move = f and f != cur and not lock  # locked: the operator chose this offset, keep it
+    if move and cur is not None and not heard_cycle(now):
+        if can_wait and now - ENG.get("fresh_check", 0) > cyc(6):  # once: the spectra may not come at all
+            ENG["fresh_check"] = now
+            start_check(now, f"before moving off {cur} Hz")
+            return False
+        if now - ENG.get("fresh_check", 0) > cyc(6):
+            move = False  # nothing heard lately to pick by
     tx, wid = CTX["tx"], state["ws_id"]
     tx.sendto(pack_set_bool(SET_HOLD_TX_FREQ, wid, True), ws_dest())
-    if f and f != cur and not lock:  # locked: the operator chose this offset, keep it
+    if move:
         tx.sendto(pack_set_u32(SET_TX_DF, wid, f), ws_dest())
         log(f"Tx offset {cur} -> {f} Hz ({'even' if par == 0 else 'odd'})")
+    return True
 
 def tod_ms(ts):
     """UTC time of day in ms, the clock WS uses for period start times."""
@@ -1291,10 +1313,12 @@ def engine_tick():
     cands.sort(key=cq_rank)
     for e in cands:
         if acquire(e["call"], e["grid"], e["msg"], tries=cfg.get("cq_tries", 3),
-                   why=e["tag"] if e.get("special") else "CQ"):
+                   why=e["tag"] if e.get("special") else "CQ", can_wait=True):
             ENG["busy"] += 1
             special = e.get("special") and cfg.get("special_first", True)
             return at("activator" if special else "cq", f"{e['call']} ({e['snr']:+d})")
+        if time.time() < ENG["check_until"]:  # listening a cycle before moving our offset
+            return at("check", "a full cycle before picking a Tx offset")
     if now < ENG["cq_until"]:
         # our own CQ keeps running; WS repeats it each period
         cq_check(now)
@@ -1303,9 +1327,12 @@ def engine_tick():
     # "A B ..." makes WS call B, the sender. RR73/RRR usually comes from the
     # station running the frequency, who is about to be free; prefer those.
     best = ([] if cq_first else tail_cands(now))[:1]
-    if best and acquire(best[0][1], "", best[0][0]["msg"], tries=cfg.get("tail_tries", 2), why="tail-end"):
+    if best and acquire(best[0][1], "", best[0][0]["msg"], tries=cfg.get("tail_tries", 2), why="tail-end",
+                        can_wait=True):
         ENG["busy"] += 1
         return at("tail", best[0][1])
+    if time.time() < ENG["check_until"]:
+        return at("check", "a full cycle before picking a Tx offset")
     ENG["busy"] = 0
     if ENG["cq_until"]:  # our CQ run just ended: stop and listen before the next
         ENG["cq_until"] = 0
@@ -1315,6 +1342,8 @@ def engine_tick():
         return at("cq_end", f"listening {cfg.get('idle_secs', 60)} s")
     if cq_first or cfg.get("call_cq", True):  # last resort (or first): call CQ ourselves
         start_cq(cfg.get("cq_secs", 120))
+        if time.time() < ENG["check_until"]:
+            return at("check", "a full cycle before picking a Tx offset")
         return at("cq_start", f"{cfg.get('cq_secs', 120)} s run")
     # spare cycle: every idle_every idle cycles, rest to catch the off sequence
     ENG["idle_n"] += 1
@@ -1405,7 +1434,8 @@ def start_cq(secs):
         par = 0 if busy[0] <= busy[1] else 1
         if has_ws_hunter():
             CTX["tx"].sendto(pack_set_bool(SET_TX_PERIOD, state["ws_id"], par == 0), ws_dest())
-        tune_tx(par)
+        if not tune_tx(par, can_wait=True):
+            return  # listening a cycle before choosing an offset
         select_cq()
         if not has_ws_hunter():
             time.sleep(1.0)  # let WS act on Halt + Configure before clicking
@@ -1436,12 +1466,15 @@ def cq_rank(e):
     special = state["config"].get("special_first", True) and e.get("special", False)
     return (not special, -cq_score(e), e["km"] is None, e["km"] or 0)
 
-def acquire(call, grid, msg, tries, why):
+def acquire(call, grid, msg, tries, why, can_wait=False):
+    """Call them. can_wait: if our offset needs to move and we haven't heard
+    a full cycle, listen one first and return False (starting nothing)."""
     p = state["decparams"].get(msg)
     extra = 0
     if p:
         tx_par = 1 - parity(p["t_ms"])  # we answer in the other period
-        tune_tx(tx_par)
+        if not tune_tx(tx_par, can_wait):
+            return False
         # Starting in their period, our first call goes out a period later;
         # allow for it so their answer to our last call is decoded before we
         # give up on them.
