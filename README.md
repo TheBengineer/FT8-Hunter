@@ -106,7 +106,16 @@ When more calls than fit, the oldest are ticks only. A spinning globe draws toda
 arcs from your station, the current target in bold and other stations' live
 traffic faintly; during a QSO it zooms in on that QSO's arc. Scroll or pinch to
 zoom it yourself. The worked / ignored list shows today's
-contacts and the stations that never answered, with time, band and mode. On a desktop the cards spread into two or
+contacts and the stations that never answered, with time, band and mode.
+
+Stations look the same on every card (lists, waterfall, time bar, globe):
+**colour = band** (by wavelength, like light: 160m red through 20m green to
+10m violet, 6m magenta), **line style = mode** (FT8 solid, FT4 dashed, FT2
+dotted), and **weight = who they are to you**, rising from other stations'
+traffic (plain, faint) to worked (dimmed), answering us (bold), our target
+(outlined; a pulsing bold arc on the globe) and the QSO in progress (filled,
+glowing). All of the page's other colours are named tokens at the top of
+`ft8_app.html`, and the canvases draw with the same tokens. On a desktop the cards spread into two or
 three columns; move cards with the arrows or by dragging, and each stays in the
 column you put it in.
 

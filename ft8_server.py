@@ -1883,7 +1883,7 @@ def globe():
             traffic.append({"from": p["a"], "to": p["b"], "a": a, "b": b, "age": round(age),
                             "tome": is_me(p["b"])})
     return {"me": me, "mycall": state["mycall"], "worked": worked[:300], "target": tgt, "callers": callers,
-            "traffic": traffic, "fade": TRAFFIC_SECS}
+            "traffic": traffic, "fade": TRAFFIC_SECS, "band": here[0], "mode": here[1]}
 
 # --- Band scan: visit the published FT8/FT4/FT2 dial frequencies and take
 # one clean ws-hunter spectrum on each, to see which bands are busy. WS runs

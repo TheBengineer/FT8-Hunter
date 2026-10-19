@@ -3,9 +3,15 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>FT8 Hunter</title>
 <style>
-*{box-sizing:border-box;margin:0}body{font-family:system-ui,sans-serif;background:#0f1419;color:#e6e6e6;
+/* Colours: every one the page uses is a token here; the canvases read the
+   same tokens (LOOK.c). Band colours live in LOOK.BANDS (script). */
+:root{--bg:#0f1419;--card:#1a222c;--line:#26303c;--edge:#334;--text:#e6e6e6;--hi:#cde;--muted:#9ab;--faint:#556;
+ --accent:#2a6cb6;--go:#1f9d4d;--good:#2ecc71;--mid:#f1c40f;--bad:#e74c3c;--warn:#8a2f2f;--off:#3a4552;
+ --amber:#b8860b;--hold:#c0761a;--held:#f0a040;--busy:#6a4a9a;--noisy:#7a5a2a;--contest:#7a3fb8;--lock:#8a6d1f;
+ --tx:#ff6b6b;--out:#ff9f43;--here:#1d3a2a;--clear:#1f5d3a;--taken:#d04a4a;
+ --band:#9ab}  /* the band we are on, set from the state */
+*{box-sizing:border-box;margin:0}body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--text);
 margin:0 auto;padding:12px;min-height:100vh}
-/* phone: one stack; desktop: cards flow into 2 then 3 columns, masonry-style */
 /* phone: one stack; desktop: 2 then 3 columns. Each card stays in the column
    you put it in (saved per layout), whatever the other cards' heights. */
 .cards{max-width:480px;margin:0 auto;display:flex;gap:10px;align-items:stretch}
@@ -14,62 +20,82 @@ margin:0 auto;padding:12px;min-height:100vh}
 @media (min-width:1350px){.cards{max-width:1500px}}
 h1{font-size:1.2rem;text-align:center;margin-bottom:8px}
 h2{font-size:.95rem;margin-bottom:6px}
-.card{background:#1a222c;border-radius:12px;padding:12px;margin-bottom:10px;width:100%}
+.card{background:var(--card);border-radius:12px;padding:12px;margin-bottom:10px;width:100%}
 .row{display:flex;gap:8px;align-items:center}
-button{flex:1;padding:14px;border:0;border-radius:10px;font-size:1rem;font-weight:700;color:#fff;background:#2a6cb6}
-button.on{background:#1f9d4d}button.warn{background:#8a2f2f}
+button{flex:1;padding:14px;border:0;border-radius:10px;font-size:1rem;font-weight:700;color:#fff;background:var(--accent)}
+button.on{background:var(--go)}button.warn{background:var(--warn)}button.quiet{background:var(--off)}
+/* a toggle: grey when off, its own --lit colour when on */
+button.tog{background:var(--off)}button.tog.lit{background:var(--lit)}
 button.mini{flex:0;padding:4px 10px;font-size:.8rem}
 #target{font-size:1.4rem;font-weight:800;text-align:center;padding:8px}
-input{width:100%;padding:12px;border-radius:8px;border:1px solid #334;font-size:1rem;background:#0f1419;color:#fff;margin-top:6px}
-ul{list-style:none;padding:0}li{padding:8px;border-bottom:1px solid #26303c;font-size:.85rem;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+input,textarea,select.in{width:100%;padding:12px;border-radius:8px;border:1px solid var(--edge);font-size:1rem;background:var(--bg);color:#fff;margin-top:6px}
+ul{list-style:none;padding:0}li{padding:8px;border-bottom:1px solid var(--line);font-size:.85rem;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .mono{font-family:monospace}.snr{font-weight:800;min-width:52px;text-align:right}
-.good{color:#2ecc71}.mid{color:#f1c40f}.bad{color:#e74c3c}
-.badge{font-size:.7rem;background:#2a6cb6;border-radius:6px;padding:2px 6px}
-.badge.me{background:#1f9d4d}.badge.wkd{background:#555}.badge.act{background:#b8860b}
-.badge.hold{background:#c0761a}.badge.busy{background:#6a4a9a}.badge.dim{background:#3a4552}.badge.pile{background:#2f3d4c}
-li.skip{opacity:.55}li.tgt{background:#1d3a2a;border-radius:8px}
-.held{color:#f0a040;text-decoration:underline dotted}
+.good{color:var(--good)}.mid{color:var(--mid)}.bad{color:var(--bad)}
+.badge{font-size:.7rem;background:var(--accent);border-radius:6px;padding:2px 6px}
+.badge.me{background:var(--go)}.badge.wkd{background:var(--faint)}.badge.act{background:var(--amber)}
+.badge.hold{background:var(--hold)}.badge.busy{background:var(--busy)}.badge.dim{background:var(--off)}.badge.pile{background:var(--line)}
+li.skip{opacity:.55}li.tgt{background:var(--here);border-radius:8px}
+.held{color:var(--held);text-decoration:underline dotted}
+/* Stations look the same everywhere (lists, waterfall, time bar, globe):
+   colour = band, line style = mode (FT8 solid, FT4 dashed, FT2 dotted),
+   weight = role, rising: traffic plain, worked dim, answering us bold,
+   our target outlined, the QSO filled. */
+.bm{color:var(--bc);border-bottom:2px solid var(--bc);padding:0 1px;font-weight:600;white-space:nowrap}
+.FT4.bm{border-bottom-style:dashed}.FT2.bm{border-bottom-style:dotted}.FT4.lg{border-style:dashed}.FT2.lg{border-style:dotted}
+.r-worked{opacity:.5}
+.r-waiting{font-weight:700;color:var(--band)}
+.r-target{font-weight:800;color:var(--band);box-shadow:inset 0 0 0 1.5px var(--band);border-radius:4px;padding:0 3px}
+.r-qso{font-weight:800;color:var(--bg);background:var(--band);border-radius:4px;padding:0 3px;box-shadow:0 0 8px var(--band)}
+/* line keys for the canvases: the same weights as LOOK.ROLES */
+.lg{display:inline-block;width:18px;margin:0 3px 0 1px;vertical-align:middle;border:0 solid var(--band);border-top-width:2px}
+.lg.traffic{border-top-width:1px;opacity:.4}.lg.worked{border-top-width:1.5px;opacity:.75}.lg.waiting{border-top-width:2px}
+.lg.target{border-top-width:3px;animation:pulse 1.9s ease-in-out infinite}.lg.qso{border-top-width:4px;box-shadow:0 0 6px var(--band)}
+.lg.mode{border-color:var(--hi);border-top-width:2px}
+@keyframes pulse{50%{opacity:.3}}
 /* decision flow: question on the left, its "yes" action on the right */
 .flow .r{display:grid;grid-template-columns:1fr 16px 1fr;align-items:center;gap:4px;margin:3px 0}
-.flow .q,.flow .a{border:1px solid #334;padding:5px 8px;font-size:.78rem;line-height:1.25}
-.flow .q{border-radius:14px}.flow .a{border-radius:6px}.flow .ar{text-align:center;color:#556;font-size:.8rem}
-.flow .ans{float:right;font-size:.7rem;color:#9ab;margin-left:6px}
-.flow .pass .q{border-color:#2a6cb6;color:#cde}.flow .pass .a{opacity:.35}
-.flow .cur .q{background:#2a6cb6;border-color:#2a6cb6;color:#fff}
-.flow .cur .a{background:#1f9d4d;border-color:#1f9d4d;color:#fff;font-weight:700}.flow .cur .ar{color:#2ecc71}
+.flow .q,.flow .a{border:1px solid var(--edge);padding:5px 8px;font-size:.78rem;line-height:1.25}
+.flow .q{border-radius:14px}.flow .a{border-radius:6px}.flow .ar{text-align:center;color:var(--faint);font-size:.8rem}
+.flow .ans{float:right;font-size:.7rem;color:var(--muted);margin-left:6px}
+.flow .pass .q{border-color:var(--accent);color:var(--hi)}.flow .pass .a{opacity:.35}
+.flow .cur .q{background:var(--accent);border-color:var(--accent);color:#fff}
+.flow .cur .a{background:var(--go);border-color:var(--go);color:#fff;font-weight:700}.flow .cur .ar{color:var(--good)}
 .flow .ahead{opacity:.35}.flow .off .q,.flow .off .a{text-decoration:line-through;opacity:.4}.flow .det{display:block;font-weight:400;font-size:.72rem;opacity:.9}
-.dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#666;margin-right:6px}
-.dot.run{background:#2ecc71}.small{font-size:.8rem;color:#9ab}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--faint);margin-right:6px}
+.dot.run{background:var(--good)}.small{font-size:.8rem;color:var(--muted)}
 details summary{font-weight:700;padding:4px}
-.sel{padding:8px;border-radius:8px;border:1px solid #334;background:#0f1419;color:#fff;font-size:.9rem}
+.sel{padding:8px;border-radius:8px;border:1px solid var(--edge);background:var(--bg);color:#fff;font-size:.9rem}
 .meter{display:flex;align-items:center;gap:6px;margin-top:4px}.meter>span:first-child{min-width:64px}
-.meter .bar{flex:1;height:8px;background:#0f1419;border-radius:4px;overflow:hidden}
-.meter .bar i{display:block;height:100%;width:0;background:#ff6b6b;transition:width .3s}.meter>span:last-child{min-width:72px;text-align:right}
+.meter .bar{flex:1;height:8px;background:var(--bg);border-radius:4px;overflow:hidden}
+.meter .bar i{display:block;height:100%;width:0;background:var(--tx);transition:width .3s}.meter>span:last-child{min-width:72px;text-align:right}
 .ago{margin-left:auto;font-variant-numeric:tabular-nums}
 /* drag a card by its grip to reorder; the order is remembered in this browser */
 .card{position:relative}
 .mv{position:absolute;top:4px;right:4px;display:flex;gap:2px}
-.mv span{padding:3px 5px;color:#556;cursor:pointer;user-select:none;font-size:.85rem;line-height:1;border-radius:4px}
-.mv span:hover{color:#cde;background:#26303c}.one .mv .lr{display:none}
+.mv span{padding:3px 5px;color:var(--faint);cursor:pointer;user-select:none;font-size:.85rem;line-height:1;border-radius:4px}
+.mv span:hover{color:var(--hi);background:var(--line)}.one .mv .lr{display:none}
 .card>h2,.card>details>summary,.card>.row:first-child{padding-right:110px}.one .card>h2,.one .card>details>summary,.one .card>.row:first-child{padding-right:70px}
-/* band scan */
-.chips{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0}.chips label{font-size:.75rem;padding:4px 8px;border-radius:12px;background:#26303c;color:#9ab;cursor:pointer;user-select:none}
-.chips label.on{background:#2a6cb6;color:#fff}.chips input{display:none}
-#scRows{max-height:60vh;overflow-y:auto}#scRows li{display:grid;grid-template-columns:auto 1fr auto;gap:2px 8px;padding:6px 4px}#scRows li.here{background:#1d3a2a;border-radius:8px}
+/* band scan: band chips in their band colour, mode chips in their line style */
+.chips{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0}.chips label{font-size:.75rem;padding:3px 7px;border-radius:12px;border:2px solid transparent;background:var(--line);color:var(--muted);cursor:pointer;user-select:none}
+.chips label.on{background:var(--accent);color:#fff}.chips input{display:none}
+.chips label.bc.on{background:var(--line);color:var(--bc);border-color:var(--bc)}
+.chips label.md.on{background:var(--line);color:var(--hi);border-color:var(--hi)}.chips label.FT4{border-style:dashed}.chips label.FT2{border-style:dotted}
+#scRows{max-height:60vh;overflow-y:auto}#scRows li{display:grid;grid-template-columns:auto 1fr auto;gap:2px 8px;padding:6px 4px}#scRows li.here{background:var(--here);border-radius:8px}
 #scRows canvas{grid-column:1/-1;width:100%;height:26px;display:block}
-.badge.busy2{background:#1f9d4d}.badge.active{background:#2a6cb6}.badge.quiet{background:#3a4552}.badge.qrm{background:#8a2f2f}.badge.noisy{background:#7a5a2a}
+.badge.busy2{background:var(--go)}.badge.active{background:var(--accent)}.badge.quiet{background:var(--off)}.badge.qrm{background:var(--warn)}.badge.noisy{background:var(--noisy)}
 /* time bar: contacts along the last N hours, labels stacked where they would overlap */
 .card[data-id=tl]{padding:5px 10px 3px}#tl .row{font-size:.65rem;white-space:nowrap;gap:6px}#tl .row>span{overflow:hidden;text-overflow:ellipsis}
-#tl .z{flex:0;padding:0 7px;font-size:.75rem;line-height:1.3;background:#26303c;color:#cde;border-radius:5px}
+#tl .z{flex:0;padding:0 7px;font-size:.75rem;line-height:1.3;background:var(--line);color:var(--hi);border-radius:5px}
 #tlc{width:100%;display:block;touch-action:pan-y}
 /* TX light (no ws-hunter): when the operator must click Enable Tx in WSJT-X */
 #txl{display:none;margin-top:8px;padding:10px;border-radius:10px;font-weight:800;text-align:center;font-size:1.05rem;border:2px solid transparent}
-#txl.idle{display:block;background:#26303c;color:#9ab;font-weight:600;font-size:.85rem}
-#txl.ok{display:block;background:#173a26;border-color:#1f9d4d;color:#7ee2a8;font-size:.9rem}
-#txl.enable,#txl.reenable,#txl.mode{display:block;background:#f1c40f;color:#111;animation:txl 1s linear infinite}
-@keyframes go{50%{box-shadow:0 0 0 4px #2ecc7166}}
-@keyframes txl{0%,49.9%{background:#f1c40f;color:#111}50%,100%{background:#5a4704;color:#fff}}
-.col.over{outline:1px dashed #334;border-radius:12px}.mv .grip{cursor:grab;touch-action:none}.card.dragging{outline:2px dashed #2a6cb6;opacity:.7}.card.dragging .grip{cursor:grabbing}
+#txl.idle{display:block;background:var(--line);color:var(--muted);font-weight:600;font-size:.85rem}
+#txl.ok{display:block;background:var(--here);border-color:var(--go);color:#7ee2a8;font-size:.9rem}
+#txl.enable,#txl.reenable,#txl.mode{display:block;background:var(--mid);color:#111;animation:txl 1s linear infinite}
+@keyframes go{50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--good) 40%,transparent)}}
+@keyframes txl{0%,49.9%{background:var(--mid);color:#111}50%,100%{background:#5a4704;color:#fff}}
+.col.over{outline:1px dashed var(--edge);border-radius:12px}.mv .grip{cursor:grab;touch-action:none}.card.dragging{outline:2px dashed var(--accent);opacity:.7}.card.dragging .grip{cursor:grabbing}
 </style></head><body>
 <h1>📻 FT8 Hunter</h1>
 <main class="cards">
@@ -82,48 +108,48 @@ details summary{font-weight:700;padding:4px}
 <div id="target">no target</div>
 <div class="row" style="margin-top:6px"><span id="txdot" class="dot"></span><b id="tx">RX</b>
 <span class="small" id="dx"></span><span class="small" id="txdf" style="margin-left:auto"></span></div>
-<div id="qrm" class="small" style="display:none;margin-top:6px;padding:6px;border-radius:8px;background:#8a2f2f;color:#fff"></div>
-<div style="background:#0f1419;border-radius:8px;height:14px;margin-top:8px;overflow:hidden">
-<div id="cbar" style="height:100%;width:0%;background:#2a6cb6"></div></div>
+<div id="qrm" class="small" style="display:none;margin-top:6px;padding:6px;border-radius:8px;background:var(--warn);color:#fff"></div>
+<div style="background:var(--bg);border-radius:8px;height:14px;margin-top:8px;overflow:hidden">
+<div id="cbar" style="height:100%;width:0%;background:var(--accent)"></div></div>
 <div class="small" id="ctxt" style="text-align:center;margin-top:2px">cycle</div>
 <div class="row"><button id="bS">Start</button><button id="bX" class="warn">Skip</button></div>
-<div class="row" style="margin-top:8px"><button id="bManual" style="background:#3a4552" title="Contest rules: each QSO started by the operator. The hunter picks the next station; press the button to start it, and the hunter finishes that QSO">🏆 Contest mode: off</button></div>
+<div class="row" style="margin-top:8px"><button id="bManual" class="tog" style="--lit:var(--contest)" title="Contest rules: each QSO started by the operator. The hunter picks the next station; press the button to start it, and the hunter finishes that QSO">🏆 Contest mode: off</button></div>
 <div id="pickBox" style="display:none;margin-top:6px">
-<button id="bGo" style="display:none;width:100%;background:#1f9d4d;font-size:1.15rem;animation:go 1.2s ease-in-out infinite"></button>
+<button id="bGo" class="on" style="display:none;width:100%;font-size:1.15rem;animation:go 1.2s ease-in-out infinite"></button>
 <div class="small" id="pickNote" style="margin-top:6px">Press to start the QSO</div><ul id="pick"></ul></div>
-<div class="row" style="margin-top:8px"><button id="bCqFirst" style="background:#3a4552" title="Run our own CQ: answer callers and activators only">📣 CQ first: off</button></div>
-<div class="row" style="margin-top:8px"><button id="bCQ" style="background:#1f9d4d">🔴 ARM TX</button></div>
-<div id="rig" style="margin-top:8px;padding:8px;border:1px solid #26303c;border-radius:10px">
+<div class="row" style="margin-top:8px"><button id="bCqFirst" class="tog" style="--lit:var(--amber)" title="Run our own CQ: answer callers and activators only">📣 CQ first: off</button></div>
+<div class="row" style="margin-top:8px"><button id="bCQ" class="on">🔴 ARM TX</button></div>
+<div id="rig" style="margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:10px">
 <div class="row small"><b id="rigName">📻 radio</b><span id="rigSt" style="margin-left:auto"></span></div>
 <div class="row" style="margin-top:6px"><span class="small" style="min-width:64px" id="pwL" title="The slider sets the power for this stage: calling, or in a QSO once they answer">TX power</span>
 <button class="mini" id="pwDn">−</button><input id="pw" type="range" min="1" max="20" step="1" style="flex:1;margin:0;padding:0">
 <button class="mini" id="pwUp">+</button><b id="pwV" class="mono" style="min-width:42px;text-align:right">– W</b></div>
-<div class="meter" title="Output power from the rig's meter (the G90's is coarse: full or nothing)"><span class="small">Output</span><div class="bar" style="height:4px"><i id="mO" style="background:#ff9f43"></i></div><span class="mono small" id="vO">–</span></div>
+<div class="meter" title="Output power from the rig's meter (the G90's is coarse: full or nothing)"><span class="small">Output</span><div class="bar" style="height:4px"><i id="mO" style="background:var(--out)"></i></div><span class="mono small" id="vO">–</span></div>
 <div id="swBox" style="display:none">
 <div class="meter" title="The G90's SWR meter over CAT, against its usual reading on this band at this power. The number (FLRig's 0-100 meter) isn't an SWR (its scale is unknown), but a rise means more power is coming back from the antenna"><span class="small">SWR</span><span class="small" id="vSw" style="margin-left:auto;min-width:0">–</span></div>
 <div class="small" id="swLast" style="margin-top:2px"></div></div>
-<div class="meter" id="sRow" style="display:none"><span class="small">S-meter</span><div class="bar"><i id="mS" style="background:#2ecc71"></i></div><span class="mono small" id="vS">–</span></div>
+<div class="meter" id="sRow" style="display:none"><span class="small">S-meter</span><div class="bar"><i id="mS" style="background:var(--good)"></i></div><span class="mono small" id="vS">–</span></div>
 <div class="small" id="rxBest" style="margin-top:2px"></div></div>
-<div class="row" style="margin-top:8px"><button id="bWake" class="mini" style="flex:1;padding:8px;background:#3a4552">📱 Keep screen awake: off</button></div></div>
+<div class="row" style="margin-top:8px"><button id="bWake" class="mini tog" style="flex:1;padding:8px;--lit:var(--go)">📱 Keep screen awake: off</button></div></div>
 <div class="card" data-id="wf"><h2>🌊 Waterfall <span class="small" id="wfsum"></span></h2>
 <canvas id="wf" style="width:100%;display:block;cursor:crosshair"></canvas>
 <div class="small" id="wfinfo" style="margin-top:4px;min-height:2.4em">Tap a spot to see who is there and move your Tx offset to it.</div>
 <div class="row" id="wfact" style="display:none;margin-top:4px"><button class="mini" id="wfGo" style="flex:1;padding:8px"></button></div>
-<div class="row" id="wflk" style="display:none;margin-top:4px"><button class="mini" id="wfLock" style="flex:1;padding:8px" title="Locked: the auto picker never moves your Tx offset, even when someone else is on it. Moving it from the waterfall locks it."></button></div>
+<div class="row" id="wflk" style="display:none;margin-top:4px"><button class="mini tog" id="wfLock" style="flex:1;padding:8px;--lit:var(--lock)" title="Locked: the auto picker never moves your Tx offset, even when someone else is on it. Moving it from the waterfall locks it."></button></div>
 <div class="small" style="margin-top:4px">One row per period, newest on top, colour = dB above the usual noise in that spot.
-<span style="color:#cfd8e3">▭ decoded</span> · <span style="color:#ff6b6b">┆ our Tx</span> · bars: <span style="color:#3fae6a">clear</span> / <span style="color:#d04a4a">taken</span> per period (even, odd), ▲ the hunter's pick · dim = outside the auto range</div></div>
+<span style="color:var(--hi)">▭ decoded</span>, <span class="r-qso">QSO</span> / <span class="r-target">target</span> / <span class="r-waiting">answering us</span> / <span class="r-worked">worked</span> boxed in the band colour · <span style="color:var(--tx)">│ our Tx</span> · bars: <span style="color:var(--clear);filter:brightness(1.6)">clear</span> / <span style="color:var(--taken)">taken</span> per period (even, odd), ▲ the hunter's pick · dim = outside the auto range</div></div>
 <div class="card" data-id="scan"><h2>📶 Band scan <span class="small" id="scsum"></span></h2>
 <div class="chips" id="scModes"></div><div class="chips" id="scBands"></div>
 <div class="row" style="margin-top:6px"><button id="bScan" style="padding:10px">📶 Scan bands</button>
 <select id="scSort" class="sel" title="Sort the results"><option value="band">by band</option><option value="act">most activity</option><option value="worked">least recently worked</option></select></div>
-<div class="meter" id="scProg" style="display:none"><span class="small" id="scCur"></span><div class="bar"><i id="scBar" style="background:#2a6cb6"></i></div><span class="small mono" id="scEta"></span></div>
+<div class="meter" id="scProg" style="display:none"><span class="small" id="scCur"></span><div class="bar"><i id="scBar" style="background:var(--accent)"></i></div><span class="small mono" id="scEta"></span></div>
 <ul id="scRows"></ul>
 <div class="small" style="margin-top:4px">One clean 3.75 s listen per dial frequency, WS in FT2 meanwhile; the hunter pauses and you go back where you were after.
-Chart: dB over the floor, 200–3000 Hz · <span style="color:#2ecc71">▬ FT-like signals</span> · <span style="color:#f1c40f">▮ carriers</span>.
+Chart: dB over the floor, 200–3000 Hz · <span style="color:var(--good)">▬ FT-like signals</span> · <span style="color:var(--mid)">▮ carriers</span>.
 <b>QRM</b> = a broad lump (wideband interference), not narrow signals · <b>noisy</b> = floor 10+ dB over the other bands, weak signals only. <span id="scSrc"></span></div></div>
 <div class="card" data-id="globe"><h2>🌍 Globe <span class="small" id="gsum"></span></h2>
 <canvas id="globe" style="width:100%;aspect-ratio:1;display:block;touch-action:none;cursor:grab"></canvas>
-<div class="small" style="margin-top:4px"><span style="color:#c061ff">━ calling</span> · <span style="color:#ff7a3d">━ QSO</span> · <span style="color:#ffd54a">━ also answering</span> · <span style="color:#2ecc71">━ worked</span> · <span style="color:#7fa8ff99">━ traffic</span> · drag to turn, scroll or pinch to zoom; it drifts back to you</div></div>
+<div class="small" style="margin-top:4px">Colour = band, line = mode, weight = who: <span class="lg qso"></span>QSO · <span class="lg target"></span>calling · <span class="lg waiting"></span>also answering · <span class="lg worked"></span>worked · <span class="lg traffic"></span>traffic · <span class="lg mode"></span>FT8 <span class="lg mode FT4"></span>FT4 <span class="lg mode FT2"></span>FT2 · drag to turn, scroll or pinch to zoom; it drifts back to you</div></div>
 <div class="card" data-id="flow"><h2>🧭 Decision flow <span class="small" id="stepage"></span></h2><div class="flow" id="flow"></div>
 <div class="small" style="margin-top:6px">Checked top to bottom each period; the first “yes” wins.</div></div>
 <div class="card" data-id="dx"><h2>🎯 DX focus <span class="small" id="dxn"></span></h2><ul id="dxf"></ul>
@@ -150,7 +176,7 @@ Chart: dB over the floor, 200–3000 Hz · <span style="color:#2ecc71">▬ FT-li
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Power while calling and calling CQ">TX power calling (W)</span><input id="sWCall" type="number" min="1" max="100" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Power once a station answers us, for the rest of the QSO">TX power in QSO (W)</span><input id="sWQso" type="number" min="1" max="100" style="max-width:90px;margin-top:0"></div>
 <div style="margin-top:10px"><span class="small" title="Our last message in a QSO, sent after our call (KR4MZM GL 73) and picked at random each time. One per line, 6 characters at most. Each needs 73 as its own word or WS won't log the QSO (GL73 is sent as GL 73). 73 alone = the standard THEM US 73.">Sign-off 73s (one per line, picked at random)</span>
-<textarea id="sSignoff" rows="8" spellcheck="false" style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #334;font:0.95rem ui-monospace,monospace;background:#0f1419;color:#fff;margin-top:6px;text-transform:uppercase"></textarea>
+<textarea id="sSignoff" rows="8" spellcheck="false" style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid var(--edge);font:0.95rem ui-monospace,monospace;background:var(--bg);color:#fff;margin-top:6px;text-transform:uppercase"></textarea>
 <div class="small" id="sSignoffNote" style="opacity:.75"></div></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Hold (min)</span><input id="sHold" type="number" min="1" max="60" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Listen every N idle</span><input id="sIdleN" type="number" min="1" max="20" style="max-width:90px;margin-top:0"></div>
@@ -166,9 +192,9 @@ Chart: dB over the floor, 200–3000 Hz · <span style="color:#2ecc71">▬ FT-li
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Back off when non-FT8 signals appear</span><input id="sQrm" type="checkbox" style="width:auto;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="On a new band (not a new mode): move under FT8, run the rig's tuner, then go back, before transmitting">Tune the antenna on a new band</span><input id="sTune" type="checkbox" style="width:auto;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="The tune carrier goes at least this far from the band's FT8 frequency: below if your license allows a carrier there, else above; on bands too narrow for that, as far as your privileges allow. Not on 60m (channels).">Tune away from FT8 (kHz, 50+)</span><input id="sTuneKhz" type="number" min="50" max="150" step="5" style="max-width:90px;margin-top:0"></div>
-<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="US license class: which frequencies the tune carrier may use">License class</span><select id="sLic" style="max-width:120px;padding:10px;border-radius:8px;border:1px solid #334;background:#0f1419;color:#fff"><option value="general">General</option><option value="extra">Extra</option></select></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="US license class: which frequencies the tune carrier may use">License class</span><select id="sLic" style="max-width:120px;padding:10px;border-radius:8px;border:1px solid var(--edge);background:var(--bg);color:#fff"><option value="general">General</option><option value="extra">Extra</option></select></div>
 <button id="bSave" style="margin-top:8px">Save</button>
-<button id="bLayout" class="mini" style="margin-top:8px;background:#3a4552">Reset card order</button></details></div>
+<button id="bLayout" class="mini quiet" style="margin-top:8px">Reset card order</button></details></div>
 <div class="card" data-id="logbooks"><details id="lbBox"><summary>📒 Online logbooks <span id="lbSum" class="small" style="opacity:.75"></span></summary>
 <div class="small" style="opacity:.75;margin-top:6px">Each contact WS logs is sent to every logbook turned on here, and retried until it goes through. Keys and passwords stay on this computer and are never shown again.</div>
 <div id="lbList"></div></details></div>
@@ -177,6 +203,32 @@ Chart: dB over the floor, 200–3000 Hz · <span style="color:#2ecc71">▬ FT-li
 const $=id=>document.getElementById(id);
 async function api(p,b,m){const r=await fetch(p,{method:m||(b?'POST':'GET'),headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});return r.json()}
 function snrC(s){return s>=0?'good':s>=-12?'mid':'bad'}
+const snrH=s=>`<span class="snr ${snrC(s)}">${s>0?'+':''}${s}</span>`;
+// One look for stations everywhere (see the CSS): colour = band, line style =
+// mode, weight = role. The lists, waterfall, time bar and globe all draw
+// through this, and the canvases take their other colours from the CSS tokens.
+const LOOK=(()=>{
+ const css=getComputedStyle(document.documentElement),c=n=>css.getPropertyValue('--'+n).trim();
+ // by wavelength, like light: 160m red through the spectrum to 10m violet, 6m beyond
+ const BANDS={'160m':'#ff5c5c','80m':'#ff8a3d','60m':'#ffb43d','40m':'#ffd93d','30m':'#c6e84a','20m':'#5fdc7a',
+  '17m':'#3fd6c0','15m':'#45b8ff','12m':'#6f8bff','10m':'#a77bff','6m':'#e36cff'};
+ // line width (px) and opacity per role, weakest first; the .lg keys in the CSS match
+ const ROLES={traffic:{w:1,a:.4},worked:{w:1.4,a:.75},waiting:{w:2,a:.95},target:{w:2.6,a:1,pulse:true},qso:{w:3.4,a:1,glow:8}};
+ const band=b=>BANDS[b]||c('muted');
+ const dash=(m,w)=>m==='FT4'?[4*w,2.5*w]:m==='FT2'?[.1,2.4*w]:[];
+ // set ctx up to draw a station: its band, mode and role (t: ms clock, pulses a target)
+ function stroke(ctx,{band:b,mode,role,scale=1,alpha=1,t}){const r=ROLES[role]||ROLES.worked,w=r.w*scale,col=band(b);
+  ctx.strokeStyle=ctx.fillStyle=col;ctx.lineWidth=w;ctx.setLineDash(dash(mode,w));ctx.lineCap=mode==='FT2'?'round':'butt';
+  ctx.globalAlpha=r.a*alpha*(r.pulse&&t!=null?.65+.35*Math.cos(t/300):1);ctx.shadowColor=col;ctx.shadowBlur=r.glow?r.glow*scale:0;return col}
+ function reset(ctx){ctx.setLineDash([]);ctx.lineCap='butt';ctx.globalAlpha=1;ctx.shadowBlur=0}
+ const tag=(b,m)=>`<span class="bm ${m||''}" style="--bc:${band(b)}">${b||'?'}${m?' '+m:''}</span>`;
+ return {BANDS,ROLES,band,dash,stroke,reset,tag,c}})();
+// who each call is to us, from the last state: our target (a QSO once they
+// answer), stations answering us, and the ones worked on this band and mode
+let WHO={target:'',qso:false,waiting:new Set(),worked:new Set()};
+function roleOf(call){const b=baseCall(call||'');
+ return !b?'traffic':b===WHO.target?(WHO.qso?'qso':'target'):WHO.waiting.has(b)?'waiting':WHO.worked.has(b)?'worked':'traffic'}
+const callH=c=>{const r=roleOf(c);return r==='traffic'?c:`<span class="r-${r}">${c}</span>`};
 // engine steps in the order engine_tick checks them: [id, question, yes-action]
 const STEPS=[['stopped','Hunter running?','Stopped'],
  ['newband','Just arrived on this band?','Listen 2 cycles for a clear offset'],
@@ -195,7 +247,7 @@ const STEPS=[['stopped','Hunter running?','Stopped'],
  ['cq_start','CQ calling enabled?','Start a CQ run']];
 // CQ first mode: the hunter runs its own CQ; plain CQs and tail-ends are skipped
 let CQF=false;
-function cqFirstView(on){CQF=on;const b=$('bCqFirst');b.textContent='📣 CQ first: '+(on?'on':'off');b.style.background=on?'#b8860b':'#3a4552'}
+function cqFirstView(on){CQF=on;const b=$('bCqFirst');b.textContent='📣 CQ first: '+(on?'on':'off');b.classList.toggle('lit',on)}
 $('bCqFirst').onclick=()=>{cqFirstView(!CQF);api('/api/config',{cq_first:CQF},'POST').then(tick)};
 // Manual (contest) mode: the hunter ranks stations; nothing new starts without a tap
 let MAN=false;
@@ -203,7 +255,7 @@ let FORCED=false;
 function manualView(on,forced){MAN=on;FORCED=forced;const b=$('bManual');
  b.textContent='🏆 Contest mode: '+(on?'on':'off')+(forced?' (no ws-hunter: always on)':'');
  b.title=forced?'WS here is not the ws-hunter build (or compatibility mode is on): the hunter cannot enable TX or pick a clear offset, so it only suggests and you press to start each QSO':'Contest rules: each QSO started by the operator. The hunter picks the next station; press the button to start it, and the hunter finishes that QSO';
- b.style.background=on?'#7a3fb8':'#3a4552';b.style.opacity=forced?.75:1;$('pickBox').style.display=on?'block':'none'}
+ b.classList.toggle('lit',on);b.style.opacity=forced?.75:1;$('pickBox').style.display=on?'block':'none'}
 $('bManual').onclick=()=>{if(FORCED)return;manualView(!MAN,false);api('/api/config',{manual:MAN},'POST').then(tick)};
 // the press: the hunter's first choice, shown when it is time to start the next QSO
 $('bGo').onclick=()=>pick(0);
@@ -214,7 +266,7 @@ function pickView(s){window._pick=s.suggest||[];if(!MAN)return;
  $('bGo').style.display=top&&free?'block':'none';
  if(top)$('bGo').textContent=`▶ Work ${top.call} · ${top.why} · ${top.snr>0?'+':''}${top.snr} dB`;
  if(!$('pickNote').textContent.startsWith('⚠️')||!window._pick.length)$('pickNote').textContent=!s.running?'Start the hunter to pick stations':busy?'In a QSO with '+s.target.call+': the next one when it is done':s.target&&!s.target.done?'Calling '+s.target.call+' · or pick another:':window._pick.length?'Or pick another:':'Waiting for stations to work';
- $('pick').innerHTML=window._pick.map((e,i)=>`<li><span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="badge${/again|called/.test(e.why)?' me':/^(POTA|SOTA|WWFF|IOTA|BOTA|LOTA)$/.test(e.why)?' act':''}">${e.why}</span>`
+ $('pick').innerHTML=window._pick.map((e,i)=>`<li>${snrH(e.snr)}<span class="badge${/again|called/.test(e.why)?' me':/^(POTA|SOTA|WWFF|IOTA|BOTA|LOTA)$/.test(e.why)?' act':''}">${e.why}</span>`
   +`<span class="mono" style="flex:1">${mark(e.msg)}</span><button class="mini" ${busy||!s.running?'disabled':''} onclick="pick(${i})">work</button></li>`).slice(top&&free?1:0).join('')||(top?'':'<li>— nothing to pick yet —</li>')}
 function flow(st,cfg){const id=(st||{}).step||'stopped',det=(st||{}).detail||'';
  const off=cfg&&cfg.manual?{caller:'contest: press',check:'contest: off',qrm:'contest: off',listen:'contest: off',activator:'contest: press',cq:'contest: press',tail:'contest: press',mycq:'contest: off',cq_end:'contest: off',cq_start:'contest: off'}
@@ -233,7 +285,8 @@ function flow(st,cfg){const id=(st||{}).step||'stopped',det=(st||{}).detail||'';
 function baseCall(t){t=t.replace(/[<>]/g,'').toUpperCase();const p=t.split('/').filter(Boolean);
  return p.sort((a,b)=>((/\d/.test(b))-(/\d/.test(a)))||b.length-a.length)[0]||t}
 let HELD={};  // base call -> seconds left on hold
-function mark(msg){return msg.split(' ').map(w=>HELD[baseCall(w)]?`<span class="held" title="on hold ${Math.ceil(HELD[baseCall(w)]/60)}m">${w}</span>`:w).join(' ')}
+function mark(msg){return msg.split(' ').map(w=>{const h=HELD[baseCall(w)],r=roleOf(w),cls=(r==='traffic'?'':'r-'+r)+(h?' held':'');
+ return cls?`<span class="${cls.trim()}"${h?` title="on hold ${Math.ceil(h/60)}m"`:''}>${w}</span>`:w}).join(' ')}
 const SKIP={'on hold':'hold','in QSO':'busy'};
 function cqBadges(e){let b='';
  if(e.skip==='on hold')b+=`<span class="badge hold">hold ${Math.ceil(e.hold_s/60)}m</span>`;
@@ -246,47 +299,50 @@ const srvNow=()=>Date.now()/1000-(window._skew||0);
 function renderAns(){const all=window._ans||[],q=$('aQ').value.trim().toUpperCase(),max=+$('aAge').value,me=$('aMe').checked,now=srvNow();
  const rows=all.filter(e=>(!q||e.msg.toUpperCase().includes(q))&&(!max||now-e.seen<=max)&&(!me||e.tome));
  $('ansn').textContent=rows.length===all.length?`(${all.length})`:`(${rows.length} of ${all.length})`;
- $('ans').innerHTML=rows.map(e=>`<li>${e.tome?'<span class="badge me">TO ME</span>':''}<span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="mono">${mark(e.msg)}</span><span class="small ago" data-seen="${e.seen}" title="heard at ${e.t}">${ago(Math.max(0,Math.round(now-e.seen)))}</span></li>`).join('')||'<li>—</li>'}
+ $('ans').innerHTML=rows.map(e=>`<li>${e.tome?'<span class="badge me">TO ME</span>':''}${snrH(e.snr)}<span class="mono">${mark(e.msg)}</span><span class="small ago" data-seen="${e.seen}" title="heard at ${e.t}">${ago(Math.max(0,Math.round(now-e.seen)))}</span></li>`).join('')||'<li>—</li>'}
 function ansPrefs(save){const f={q:$('aQ'),age:$('aAge'),me:$('aMe')};
  try{if(save)localStorage.setItem('ansFilter',JSON.stringify({q:f.q.value,age:f.age.value,me:f.me.checked}));
   else{const p=JSON.parse(localStorage.getItem('ansFilter')||'null');if(p){f.q.value=p.q||'';f.age.value=p.age||'300';f.me.checked=!!p.me}}}catch(e){}}
 ansPrefs(false);['aQ','aAge','aMe'].forEach(id=>$(id).addEventListener('input',()=>{ansPrefs(true);renderAns()}));
 setInterval(()=>{const now=srvNow();document.querySelectorAll('#ans .ago').forEach(el=>el.textContent=ago(Math.max(0,Math.round(now-el.dataset.seen))))},1000);
 async function tick(){const s=await api('/api/state');
+const T=s.target;WHO={target:T?baseCall(T.call):'',qso:!!T&&(!!T.resp||T.why==='called us'),
+ waiting:new Set((s.callers||[]).map(baseCall)),worked:new Set((s.worked||[]).map(baseCall))};
+document.documentElement.style.setProperty('--band',LOOK.band(s.band));
 window._cfg=s.config;window._me=s.mycall;fillSettings(s.config);cqFirstView(!!s.config.cq_first);manualView(!!s.manual,!!s.manual_forced);pickView(s);if(s.rig)rigView(s.rig,s.rx);swrView(s.swr);HELD=s.holds||{};flow(s.step,{...s.config,manual:!!s.manual});
 $('dot').className='dot'+(s.running?' run':'');lightView(s.light,s.caps);
-$('st').textContent=(s.running?'RUNNING':'STOPPED')+' · '+s.mycall+' '+s.mygrid;
-$('target').textContent=s.target?('🎯 '+s.target.call+' '+(s.target.grid||'')+' · '+(s.target.why||'')+' · '+(s.target.resp?'in QSO':Math.ceil(s.target.left/2)+' tries left')):(s.cq_calling?('📣 calling CQ · '+s.cq_calling+'s'):'no target');
+$('st').innerHTML=(s.running?'RUNNING':'STOPPED')+' · '+s.mycall+' '+s.mygrid+(s.band?' · '+LOOK.tag(s.band,s.mode):'');
+$('target').innerHTML=T?('🎯 '+callH(T.call)+' '+(T.grid||'')+' · '+(T.why||'')+' · '+(T.resp?'in QSO':Math.ceil(T.left/2)+' tries left')):(s.cq_calling?('📣 calling CQ · '+s.cq_calling+'s'):'no target');
 $('bS').textContent=s.running?'Stop':'Start';$('bS').className=s.running?'warn':'on';
 const tgtCall=s.target?baseCall(s.target.call):'';
-$('cq').innerHTML=s.cq.map(e=>`<li class="${baseCall(e.call)===tgtCall?'tgt':e.skip?'skip':''}"><span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span>
-${e.tag?`<span class="badge${e.special?' act':''}">${e.tag}</span>`:''}<span class="mono"><b class="${e.skip==='on hold'?'held':''}">${e.call}</b> ${e.grid||''}</span>
+$('cq').innerHTML=s.cq.map(e=>`<li class="${baseCall(e.call)===tgtCall?'tgt':e.skip?'skip':''}">${snrH(e.snr)}
+${e.tag?`<span class="badge${e.special?' act':''}">${e.tag}</span>`:''}<span class="mono"><b class="${e.skip==='on hold'?'held':''}">${callH(e.call)}</b> ${e.grid||''}</span>
 ${cqBadges(e)}<span class="small">${e.km!=null?e.km+'km':'?km'} ${e.t}</span>
 ${e.worked?'<span class="badge wkd">wkd</span>':`<button class="mini" onclick="call('${e.call}','${e.grid||''}')">call</button>`}</li>`).join('')||'<li>— quiet —</li>';
 window._skew=Date.now()/1000-(s.now||Date.now()/1000);window._ans=s.answering;renderAns();
 $('log').innerHTML=s.log.map(l=>`<li>${l.t} ${l.msg}</li>`).join('');
 $('stats').textContent=`CQ heard ${s.stats.cq_heard} · calls ${s.stats.calls_made}`;
-window._tx=s.udp.transmitting;window._per=s.period||15;window._mode=s.mode||'FT8';window._dx=s.udp.dxcall||'';
+window._band=s.band;window._tx=s.udp.transmitting;window._per=s.period||15;window._mode=s.mode||'FT8';window._dx=s.udp.dxcall||'';
 $('dx').textContent=window._dx?('DX '+window._dx):'';
 const td=s.txdf||{},lk=!!(s.config||{}).df_lock;$('txdf').textContent=(td.current!=null?('Tx '+td.current+' Hz'+(lk?' 🔒':'')):'')+(td.df&&td.df!==td.current?((lk?' · busy? clear: ':' · clear: ')+td.df+' Hz ('+(td.par?'odd':'even')+')'):'');
 const q=s.qrm||{};$('qrm').style.display=q.secs?'block':'none';if(q.secs)$('qrm').textContent='⚠️ Someone else is on frequency ('+q.why+') — no new calls for '+Math.ceil(q.secs/60)+'m';
 const ago=s.udp.heard_ago;
 if(ago!=null&&ago<45){$('udpdot').className='dot run';$('udp').textContent=`🔗 WS linked (${ago}s ago, id=${s.udp.ws_id}${s.udp.ws_hunter?' · ws-hunter':''})${s.udp.dxcall?' · DX='+s.udp.dxcall:''}`}
 else{$('udpdot').className='dot';$('udp').textContent=`⚪ no WS UDP yet · port: ${s.udp.holder}`}
-$('wn').textContent=s.worked.length;$('wslot').textContent=`${s.band||'this band'} ${s.mode||''}`;const hhmm=t=>t?new Date(t*1000).toISOString().slice(11,16):'--:--';
+$('wn').textContent=s.worked.length;$('wslot').innerHTML=s.band?LOOK.tag(s.band,s.mode):'this band';const hhmm=t=>t?new Date(t*1000).toISOString().slice(11,16):'--:--';
 $('wk').innerHTML=(s.book||[]).map(e=>{const here=e.band===s.band&&e.mode===s.mode;
  return `<li${here?'':' style="opacity:.6"'}><span class="small mono">${hhmm(e.t)}</span><span class="mono" style="flex:1">${e.call}</span>`
- +`<span class="small mono">${e.band||'?'} ${e.mode||'?'}</span>`
+ +`<span class="small mono">${LOOK.tag(e.band,e.mode)}</span>`
  +(e.kind==='worked'?'<span class="badge wkd">worked</span>':`<span class="badge hold">${e.hold_s?'ignored · hold '+Math.ceil(e.hold_s/60)+'m':'ignored'}</span>`)+'</li>'}).join('')||'<li>— none yet —</li>';
 $('dxn').textContent=s.target?('· '+s.target.call):'· no target';
-$('dxf').innerHTML=(s.dxfocus||[]).map(e=>`<li>${e.tome?'<span class="badge me">TO ME</span>':''}<span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="mono">${mark(e.msg)}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';
-$('mytx').innerHTML=(s.mytx||[]).map(e=>`<li><span class="badge me">TX</span><span class="mono">${e.msg}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';
+$('dxf').innerHTML=(s.dxfocus||[]).map(e=>`<li>${e.tome?'<span class="badge me">TO ME</span>':''}${snrH(e.snr)}<span class="mono">${mark(e.msg)}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';
+$('mytx').innerHTML=(s.mytx||[]).map(e=>`<li><span class="badge me">TX</span><span class="mono">${mark(e.msg)}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';
 $('mn').textContent=(s.msgs||[]).length;
 $('par').textContent=(s.parity? s.parity.hot+' ('+s.parity.even+'/'+s.parity.odd+')':'…');
 $('idle').textContent=s.idle?('👂 listening '+s.idle+'s'):'';
 $('callers').textContent=(s.callers&&s.callers.length)?('📥 callers waiting: '+s.callers.join(', ')):'';
 $('holds').innerHTML=(s.holds&&Object.keys(s.holds).length)?('on hold: '+Object.entries(s.holds).map(([c,sec])=>`<span class="badge hold">${c} ${Math.ceil(sec/60)}m</span>`).join(' ')):'';
-$('msgs').innerHTML=(s.msgs||[]).map(e=>`<li>${e.tome?'<span class="badge me">ME</span>':''}${e.dx?'<span class="badge">DX</span>':''}<span class="snr ${snrC(e.snr)}">${e.snr>0?'+':''}${e.snr}</span><span class="mono">${mark(e.msg)}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';
+$('msgs').innerHTML=(s.msgs||[]).map(e=>`<li>${e.tome?'<span class="badge me">ME</span>':''}${e.dx?'<span class="badge">DX</span>':''}${snrH(e.snr)}<span class="mono">${mark(e.msg)}</span><span class="small">${e.t}</span></li>`).join('')||'<li>—</li>';
 }
 // TX light: flashes (and beeps once, and marks the tab title) when WSJT-X needs Enable Tx clicked
 let lastLight='';
@@ -340,7 +396,7 @@ setInterval(tick,2000);tick();
 setInterval(()=>{const per=window._per||15,t=Date.now()/1000,pos=t%per,pct=pos/per*100;
 const b=$('cbar');if(b)b.style.width=pct+'%';
 const tx=window._tx;$('txdot').className='dot'+(tx?' run':'');
-const txEl=$('tx');if(txEl){txEl.textContent=tx?'🔴 TX':'🟢 RX';txEl.style.color=tx?'#ff6b6b':'#2ecc71'}
+const txEl=$('tx');if(txEl){txEl.textContent=tx?'🔴 TX':'🟢 RX';txEl.style.color=tx?'var(--tx)':'var(--good)'}
 const c=$('ctxt');if(c)c.textContent=`${window._mode||'FT8'} · ${pos.toFixed(1)}s / ${per}s · ${pos<per*0.8?'receiving':pos<per*0.87?'decoding':'TX window'}`},200);
 </script>
 <script>
@@ -349,8 +405,6 @@ const c=$('ctxt');if(c)c.textContent=`${window._mode||'FT8'} · ${pos.toFixed(1)
 // grows only as tall as the overlapping callsigns need.
 (()=>{
 const cv=$('tlc'),ctx=cv.getContext('2d'),SPANS=[30,60,120,240,480,720,1440];  // minutes
-const BC={'160m':'#b07cff','80m':'#7c8cff','60m':'#5fb0ff','40m':'#4fd1c5','30m':'#5ad16a','20m':'#f1c40f',
- '17m':'#ffa94d','15m':'#ff7b7b','12m':'#ff6bb5','10m':'#ff9ff3','6m':'#e6e6e6'};
 let zi=2,Q=[],skew=0;
 try{const v=+localStorage.getItem('tlZoom');if(SPANS.includes(v))zi=SPANS.indexOf(v)}catch(e){}
 function zoom(d){zi=Math.max(0,Math.min(SPANS.length-1,zi+d));try{localStorage.setItem('tlZoom',SPANS[zi])}catch(e){}draw()}
@@ -376,25 +430,26 @@ function draw(){const w=cv.clientWidth||300,dpr=devicePixelRatio||1,span=SPANS[z
  cv.style.height=h+'px';cv.width=w*dpr;cv.height=h*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);
  const base=h-AX;
  const step=[5,10,15,30,60,120,240].map(m=>m*60).find(s=>s/span*(w-2*P)>=48)||14400;
- ctx.fillStyle='#667';ctx.font='8px system-ui';ctx.textAlign='center';
+ ctx.fillStyle=LOOK.c('faint');ctx.font='8px system-ui';ctx.textAlign='center';
  for(let t=Math.ceil(t0/step)*step;t<=t1;t+=step){const gx=x(t);ctx.fillRect(gx,base,1,3);ctx.fillText(hm(t),gx,h-1)}
- ctx.fillStyle='#334';ctx.fillRect(P,base,w-2*P,1);
+ ctx.fillStyle=LOOK.c('edge');ctx.fillRect(P,base,w-2*P,1);
  // every contact: a tick on the time scale at its time
- for(const q of qs){ctx.fillStyle=BC[q.band]||'#9ab';ctx.fillRect(Math.round(x(q.t)),base-3,1,6)}
- ctx.fillStyle='#2ecc71';ctx.fillRect(x(t1)-1,base-4,2,8);  // now
- ctx.lineWidth=1;ctx.globalAlpha=.6;
- for(const p of placed){ctx.strokeStyle=BC[p.q.band]||'#9ab';ctx.beginPath();
+ for(const q of qs){ctx.fillStyle=LOOK.band(q.band);ctx.fillRect(Math.round(x(q.t)),base-3,1,6)}
+ ctx.fillStyle=LOOK.c('good');ctx.fillRect(x(t1)-1,base-4,2,8);  // now
+ for(const p of placed){LOOK.stroke(ctx,{band:p.q.band,mode:p.q.mode,role:'worked'});ctx.beginPath();  // leader: band colour, mode's line
   ctx.moveTo(p.l+S/2,LH+1);ctx.lineTo(Math.round(x(p.q.t))+.5,base-3);ctx.stroke()}
- ctx.globalAlpha=1;ctx.font=FONT;ctx.textAlign='left';ctx.textBaseline='middle';
+ LOOK.reset(ctx);ctx.font=FONT;ctx.textAlign='left';ctx.textBaseline='middle';
  for(const p of placed){ctx.save();ctx.translate(p.l+S/2,LH);ctx.rotate(-Math.PI/2);
-  ctx.fillStyle=BC[p.q.band]||'#9ab';ctx.fillText(p.q.call,0,0.5);ctx.restore()}
+  ctx.fillStyle=LOOK.band(p.q.band);ctx.fillText(p.q.call,0,0.5);ctx.restore()}
  ctx.textBaseline='alphabetic';
  const cut=shown.length<qs.length;
  $('tlN').textContent=`🕒 ${qs.length} QSOs · ${SPANS[zi]<60?SPANS[zi]+' min':SPANS[zi]/60+' h'} UTC`+(cut?' · zoom for all':'');
  $('tlN').title=cut?'Not every call fits: the oldest are only ticks. Zoom in to see them all':'';
  // band colors: the bands in view, in band order
- const bs=Object.keys(BC).filter(b=>qs.some(q=>q.band===b)),other=qs.some(q=>!BC[q.band]);
- $('tlSpan').innerHTML=bs.map(b=>`<b style="color:${BC[b]}">${b}</b>`).join(' ')+(other?' <b style="color:#9ab">other</b>':'')}
+ const bs=Object.keys(LOOK.BANDS).filter(b=>qs.some(q=>q.band===b)),other=qs.some(q=>!LOOK.BANDS[q.band]);
+ const ms=['FT8','FT4','FT2'].filter(m=>qs.some(q=>q.mode===m));  // the line key, once more than one mode is in view
+ $('tlSpan').innerHTML=bs.map(b=>`<b style="color:${LOOK.band(b)}">${b}</b>`).join(' ')+(other?` <b style="color:${LOOK.c('muted')}">other</b>`:'')
+  +(ms.length>1?' · '+ms.map(m=>`<span class="lg mode ${m}"></span>${m}`).join(' '):'')}
 async function poll(){if(document.visibilityState!=='visible')return;
  try{const r=await (await fetch('/api/timeline')).json();Q=r.qsos||[];skew=Date.now()/1000-r.now}catch(e){}draw()}
 setInterval(poll,20000);setInterval(draw,10000);addEventListener('resize',draw);
@@ -415,38 +470,41 @@ function geom(){const w=cv.clientWidth||300,n=(W.rows||[]).length||40;return{w,n
  y0:TOP,yS:TOP+n*RH+5,h:TOP+n*RH+5+2*SH+4+4}}
 function draw(){const g=geom(),dpr=devicePixelRatio||1;
  if(cv.width!==Math.round(g.w*dpr)||cv.height!==Math.round(g.h*dpr)){cv.width=g.w*dpr;cv.height=g.h*dpr;cv.style.height=g.h+'px'}
- ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle='#0f1419';ctx.fillRect(0,0,g.w,g.h);
- ctx.font='9px system-ui';ctx.fillStyle='#9ab';ctx.textAlign='center';
+ ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle=LOOK.c('bg');ctx.fillRect(0,0,g.w,g.h);
+ ctx.font='9px system-ui';ctx.fillStyle=LOOK.c('muted');ctx.textAlign='center';
  for(let f=500;f<F1;f+=500){const x=g.x(f);ctx.fillText(f,x,9);ctx.fillRect(x,11,1,3)}
  const bin=W.bin||10,st=W.start||0,bw=W.bw||50,idx={};
  (W.rows||[]).forEach((r,i)=>{const y=g.y0+i*RH;idx[r.t_ms]=i;
-  ctx.fillStyle=r.ex?(r.par?'#b8860b':'#2a6cb6'):r.tx?'#c0392b':'#26303c';ctx.fillRect(2,y,G-6,RH-1);
+  ctx.fillStyle=LOOK.c(r.ex?(r.par?'amber':'accent'):r.tx?'tx':'line');ctx.fillRect(2,y,G-6,RH-1);  // gutter: even / odd / our TX
   if(!r.ex){ctx.fillStyle=r.tx?'#2a1515':'#141b23';ctx.fillRect(G,y,g.w-G,RH);return}
   for(let b=0;b*2<r.ex.length;b++){const f=st+b*bin;if(f+bin<=F0||f>=F1)continue;
    const c=col((parseInt(r.ex.substr(b*2,2),16)-20)/4);ctx.fillStyle=`rgb(${c})`;
    const xa=g.x(Math.max(f,F0));ctx.fillRect(xa,y,g.x(Math.min(f+bin,F1))-xa+.5,RH)}});
  ctx.fillStyle='rgba(15,20,25,.55)';const lo=g.x(W.df_lo||F0),hi=g.x(W.df_hi||F1),yb=g.y0+g.n*RH;
  ctx.fillRect(G,g.y0,lo-G,yb-g.y0);ctx.fillRect(hi,g.y0,g.w-hi,yb-g.y0);
- ctx.strokeStyle='rgba(230,236,243,.75)';ctx.lineWidth=1;
- (W.decodes||[]).forEach(d=>{const i=idx[d.tm];if(i==null)return;ctx.strokeRect(g.x(d.df)+.5,g.y0+i*RH+.5,g.x(d.df+bw)-g.x(d.df)-1,RH-1)});
- if(W.tx_df!=null){ctx.strokeStyle='#ff6b6b';ctx.setLineDash([3,3]);
-  [W.tx_df,W.tx_df+bw].forEach(f=>{const x=Math.round(g.x(f))+.5;ctx.beginPath();ctx.moveTo(x,g.y0);ctx.lineTo(x,yb);ctx.stroke()});ctx.setLineDash([])}
- [0,1].forEach(p=>{const y=g.yS+p*(SH+4);ctx.fillStyle='#9ab';ctx.textAlign='left';ctx.fillText(p?'O':'E',4,y+SH-2);
-  ctx.fillStyle='#26303c';ctx.fillRect(G,y,g.w-G,SH);ctx.fillStyle='#1f5d3a';ctx.fillRect(lo,y,hi-lo,SH);
-  ctx.fillStyle='#d04a4a';((W.occupied||{})[p]||[]).forEach(([a,b])=>{a=Math.max(a,F0);b=Math.min(b,F1);if(b>a)ctx.fillRect(g.x(a),y,g.x(b)-g.x(a),SH)});
+ // decodes: a plain box, or the sender's role in the band colour (as everywhere)
+ (W.decodes||[]).forEach(d=>{const i=idx[d.tm];if(i==null)return;const r=roleOf(sender(d.msg));
+  if(r==='traffic'){ctx.strokeStyle='rgba(230,236,243,.75)';ctx.lineWidth=1}else LOOK.stroke(ctx,{band:window._band,mode:window._mode,role:r,scale:.6});
+  ctx.strokeRect(g.x(d.df)+.5,g.y0+i*RH+.5,g.x(d.df+bw)-g.x(d.df)-1,RH-1);LOOK.reset(ctx)});
+ if(W.tx_df!=null){ctx.strokeStyle=LOOK.c('tx');ctx.lineWidth=1;ctx.globalAlpha=.8;
+  [W.tx_df,W.tx_df+bw].forEach(f=>{const x=Math.round(g.x(f))+.5;ctx.beginPath();ctx.moveTo(x,g.y0);ctx.lineTo(x,yb);ctx.stroke()});ctx.globalAlpha=1}
+ [0,1].forEach(p=>{const y=g.yS+p*(SH+4);ctx.fillStyle=LOOK.c('muted');ctx.textAlign='left';ctx.fillText(p?'O':'E',4,y+SH-2);
+  ctx.fillStyle=LOOK.c('line');ctx.fillRect(G,y,g.w-G,SH);ctx.fillStyle=LOOK.c('clear');ctx.fillRect(lo,y,hi-lo,SH);
+  ctx.fillStyle=LOOK.c('taken');((W.occupied||{})[p]||[]).forEach(([a,b])=>{a=Math.max(a,F0);b=Math.min(b,F1);if(b>a)ctx.fillRect(g.x(a),y,g.x(b)-g.x(a),SH)});
   if(W.tx_df!=null&&W.tx_par===p){ctx.strokeStyle='#fff';ctx.strokeRect(g.x(W.tx_df)+.5,y+.5,g.x(W.tx_df+bw)-g.x(W.tx_df)-1,SH-1)}
-  if(W.suggest!=null&&W.tx_par===p){const x=g.x(W.suggest+bw/2);ctx.fillStyle='#2ecc71';ctx.beginPath();ctx.moveTo(x,y+SH+3);ctx.lineTo(x-5,y+SH+9);ctx.lineTo(x+5,y+SH+9);ctx.fill()}});
- if(sel!=null){const x=Math.round(g.x(sel))+.5;ctx.strokeStyle='#f1c40f';ctx.beginPath();ctx.moveTo(x,g.y0);ctx.lineTo(x,g.yS+2*SH+4);ctx.stroke()}}
+  if(W.suggest!=null&&W.tx_par===p){const x=g.x(W.suggest+bw/2);ctx.fillStyle=LOOK.c('good');ctx.beginPath();ctx.moveTo(x,y+SH+3);ctx.lineTo(x-5,y+SH+9);ctx.lineTo(x+5,y+SH+9);ctx.fill()}});
+ if(sel!=null){const x=Math.round(g.x(sel))+.5;ctx.strokeStyle=LOOK.c('mid');ctx.beginPath();ctx.moveTo(x,g.y0);ctx.lineTo(x,g.yS+2*SH+4);ctx.stroke()}}
+const sender=m=>{const w=(m||'').split(' ');return(w[0]==='CQ'?w[w.length>3?2:1]:w[1]||'').replace(/[<>]/g,'')};
 function taken(p,a,b){return((W.occupied||{})[p]||[]).some(([x,y])=>a<y&&b>x)}
 function info(){if(sel==null)return;const bw=W.bw||50,a=sel,b=sel+bw;
- const who=[...new Set((W.decodes||[]).filter(d=>d.df<b+20&&d.df+bw>a-20).map(d=>{const w=(d.msg||'').split(' ');return(w[0]==='CQ'?w[w.length>3?2:1]:w[1]||'').replace(/[<>]/g,'')}).filter(Boolean))];
+ const who=[...new Set((W.decodes||[]).filter(d=>d.df<b+20&&d.df+bw>a-20).map(d=>sender(d.msg)).filter(Boolean))];
  const pars=[0,1].map(p=>`${parName(p)}: <b class="${taken(p,a,b)?'bad':'good'}">${taken(p,a,b)?'taken':'clear'}</b>`).join(' · ');
  const low=sel<(W.df_lo||0)?' · below your lowest offset (the rig may feed back down here)':'';
- $('wfinfo').innerHTML=`<b>${sel} Hz</b> · ${pars}${who.length?' · heard here: '+who.slice(0,6).join(', '):''}${low}`;
+ $('wfinfo').innerHTML=`<b>${sel} Hz</b> · ${pars}${who.length?' · heard here: '+who.slice(0,6).map(callH).join(', '):''}${low}`;
  const go=$('wfact');go.style.display=W.ws_hunter?'flex':'none';$('wfGo').textContent=`Move Tx to ${sel} Hz and lock it`}
 function lockBtn(){const b=$('wfLock');$('wflk').style.display=W.ws_hunter?'flex':'none';
  b.textContent=W.df_lock?`🔒 Tx offset locked${W.tx_df!=null?' at '+W.tx_df+' Hz':''} · tap for auto`:'🔓 Auto Tx offset · tap to lock where it is';
- b.style.background=W.df_lock?'#8a6d1f':'#3a4552'}
+ b.classList.toggle('lit',!!W.df_lock)}
 $('wfLock').onclick=async()=>{const r=await api('/api/txdf',{lock:!W.df_lock},'POST');if(r&&r.error)alert(r.error);else{W.df_lock=!W.df_lock;lockBtn();poll()}};
 cv.addEventListener('click',e=>{const r=cv.getBoundingClientRect(),g=geom(),f=g.f(e.clientX-r.left);
  if(f<F0)return;sel=Math.max(F0,Math.min(F1-(W.bw||50),Math.round((f-(W.bw||50)/2)/10)*10));info();draw()});
@@ -466,16 +524,16 @@ poll();setInterval(poll,4000);addEventListener('resize',draw);document.addEventL
 const BANDS=['160m','80m','60m','40m','30m','20m','17m','15m','12m','10m'],MODES=['FT8','FT4','FT2'];
 let S={rows:[]},cfg=null;
 const ago=s=>s==null?'never':s<90?s+' s':s<5400?Math.round(s/60)+' min':s<172800?Math.round(s/3600)+' h':Math.round(s/86400)+' d';
-function chips(el,all,on){el.innerHTML=all.map(x=>`<label class="${on.includes(x)?'on':''}"><input type="checkbox" value="${x}" ${on.includes(x)?'checked':''}>${x}</label>`).join('');
+function chips(el,all,on){el.innerHTML=all.map(x=>`<label class="${LOOK.BANDS[x]?'bc':'md '+x}${on.includes(x)?' on':''}" style="--bc:${LOOK.band(x)}"><input type="checkbox" value="${x}" ${on.includes(x)?'checked':''}>${x}</label>`).join('');
  el.querySelectorAll('input').forEach(i=>i.onchange=()=>i.parentElement.classList.toggle('on',i.checked))}
 const picked=el=>[...el.querySelectorAll('input:checked')].map(i=>i.value);
 function spark(cv,r){const w=cv.clientWidth||300,h=26,dpr=devicePixelRatio||1;cv.width=w*dpr;cv.height=h*dpr;
- const c=cv.getContext('2d');c.setTransform(dpr,0,0,dpr,0,0);c.fillStyle='#0f1419';c.fillRect(0,0,w,h);
+ const c=cv.getContext('2d');c.setTransform(dpr,0,0,dpr,0,0);c.fillStyle=LOOK.c('bg');c.fillRect(0,0,w,h);
  const x=f=>(f-200)/2800*w,y=d=>h-3-Math.max(0,Math.min(24,d))/24*(h-4),lv=r.lv||'';
  c.beginPath();c.moveTo(0,h-3);for(let b=0;b*2<lv.length;b++){const f=r.lv_start+b*r.bin;c.lineTo(x(f),y(parseInt(lv.substr(b*2,2),16)/2))}
- c.lineTo(w,h-3);c.closePath();c.fillStyle=r.label==='QRM'?'#8a2f2f':'#2a6cb6';c.fill();
- c.fillStyle='#2ecc71';(r.sigs||[]).forEach(([a,b])=>c.fillRect(x(a),h-3,Math.max(2,x(b)-x(a)),3));
- c.fillStyle='#f1c40f';(r.carriers||[]).forEach(([a,b])=>c.fillRect(x(a),0,2,h-3))}
+ c.lineTo(w,h-3);c.closePath();c.fillStyle=LOOK.c(r.label==='QRM'?'warn':'accent');c.fill();
+ c.fillStyle=LOOK.c('good');(r.sigs||[]).forEach(([a,b])=>c.fillRect(x(a),h-3,Math.max(2,x(b)-x(a)),3));
+ c.fillStyle=LOOK.c('mid');(r.carriers||[]).forEach(([a,b])=>c.fillRect(x(a),0,2,h-3))}
 function order(rows){const k=$('scSort').value,bi=r=>BANDS.indexOf(r.band);
  return rows.slice().sort(k==='act'?(a,b)=>b.signals-a.signals||(b.strength||0)-(a.strength||0)
   :k==='worked'?(a,b)=>(b.worked_ago??1e12)-(a.worked_ago??1e12)||b.signals-a.signals:(a,b)=>bi(a)-bi(b)||a.hz-b.hz)}
@@ -498,7 +556,7 @@ function render(){
   const det=[r.signals?`${r.signals} signal${r.signals>1?'s':''}`+(r.strength!=null?` · +${Math.round(r.strength)} dB`:''):'no signals',
    r.noise>=3?`noise +${Math.round(r.noise)} dB`:'',r.qrm&&lab!=='QRM'?'wideband QRM too':'',r.decodes?`${r.decodes} FT2 decoded`:''].filter(Boolean).join(' · ');
   const n24=g.reduce((a,x)=>a+(x.worked_24h||0),0);
-  li.innerHTML=`<span><b>${r.band} ${g.map(x=>x.mode).join('/')}</b> <span class="small mono">${(hz/1000).toFixed(hz%1000?1:0)}</span></span>
+  li.innerHTML=`<span>${LOOK.tag(r.band,g.map(x=>x.mode).join('/'))} <span class="small mono">${(hz/1000).toFixed(hz%1000?1:0)}</span></span>
    <span class="small"><span class="badge ${cls}">${lab}</span> ${det}<br>worked ${wk?ago(wk.worked_ago)+' ago'+(g.length>1?' ('+wk.mode+')':''):'never'}${n24?` (${n24} in 24 h)`:''} · scanned ${ago(r.age)} ago</span>
    <span style="display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end;max-width:${g.length>1?'64px':'none'}">${g.map(x=>x.here?`<span class="small good">● ${g.length>1?x.mode:'here'}</span>`
      :`<button class="mini" data-mode="${x.mode}" title="Tune WS to ${x.mode} here${on?' (stops the scan)':''}">${g.length>1?x.mode:'Go'}</button>`).join('')}</span><canvas></canvas>`;
@@ -529,7 +587,7 @@ function status(s){
  if(s.held)bits.push(`⚠ ${s.held} refused: ${s.err}. Fix the settings, then Save or Retry`);
  return bits.join(' · ')}
 function build(s){
- const d=document.createElement('div');d.style.cssText='border-top:1px solid #26303c;margin-top:10px;padding-top:8px';
+ const d=document.createElement('div');d.style.cssText='border-top:1px solid var(--line);margin-top:10px;padding-top:8px';
  const h=document.createElement('div');h.className='row';
  const b=document.createElement('b');b.style.flex='1';b.textContent=s.name;
  const lab=document.createElement('label');lab.className='small';lab.textContent='Upload ';
@@ -542,8 +600,8 @@ function build(s){
   const i=document.createElement('input');i.type=f.secret?'password':'text';i.autocomplete='off';i.spellcheck=false;
   i.style.cssText='max-width:260px;margin-top:0';ins[f.key]=i;r.append(l,i);d.appendChild(r)});
  const br=document.createElement('div');br.className='row';br.style.marginTop='8px';
- const mk=(t,bg)=>{const x=document.createElement('button');x.className='mini';x.textContent=t;if(bg)x.style.background=bg;br.appendChild(x);return x};
- const save=mk('Save'),test=mk('Test','#3a4552'),retry=mk('Retry','#3a4552');d.appendChild(br);
+ const mk=(t,cls)=>{const x=document.createElement('button');x.className='mini '+(cls||'');x.textContent=t;br.appendChild(x);return x};
+ const save=mk('Save'),test=mk('Test','quiet'),retry=mk('Retry','quiet');d.appendChild(br);
  const msg=document.createElement('div');msg.className='small';msg.style.marginTop='6px';d.appendChild(msg);
  const st=document.createElement('div');st.className='small';st.style.cssText='margin-top:4px;opacity:.85';d.appendChild(st);
  const fields=()=>Object.fromEntries(Object.entries(ins).map(([k,i])=>[k,i.value]));
@@ -675,19 +733,21 @@ function draw(ts){requestAnimationFrame(draw);
  ctx.strokeStyle='#ffffff10';for(let la=-60;la<=60;la+=30){const p=[];for(let lo=0;lo<=360;lo+=5)p.push(vec(la,lo));line(p,R,cx,cy)}
  for(let lo=0;lo<180;lo+=30){const p=[];for(let la=0;la<=360;la+=5)p.push(vec(90-la,lo));line(p,R,cx,cy)}
  ctx.strokeStyle='#7fb0d0';ctx.lineWidth=dpr;for(const c of coast){line(c,R,cx,cy)}
- const me=G.me,f=(ts/2500)%1;
- ctx.lineWidth=1*dpr;for(const t of G.traffic){  // fades to nothing over G.fade seconds (ages are from the last poll)
-   const al=.4*(1-(t.age+(ts-pollT)/1000)/(G.fade||300));if(al<=0.01)continue;
-   ctx.strokeStyle=`rgba(127,168,255,${al.toFixed(3)})`;line(arcs('t'+t.a+t.b,t.a,t.b),R,cx,cy)}
- if(me){for(const w of G.worked){ctx.strokeStyle=w.here?'rgba(46,204,113,.85)':'rgba(46,204,113,.4)';ctx.lineWidth=(w.here?1.6:1)*dpr;
-   const p=arcs('w'+w.ll,me,w.ll);line(p,R,cx,cy);comet(p,f,R,cx,cy,'#b8ffd2');dot(w.ll,R,cx,cy,2*dpr,'#2ecc71')}
-  for(const c of G.callers||[]){  // others answering us at the same time: yellow, waiting their turn
-   const p=arcs('c'+c.ll,me,c.ll);ctx.strokeStyle='rgba(255,213,74,.85)';ctx.lineWidth=2*dpr;line(p,R,cx,cy);
-   comet(p,1-f,R,cx,cy,'#fff1b8');dot(c.ll,R,cx,cy,3*dpr,'#ffd54a')}
-  const T=G.target;if(T&&T.ll){  // purple while calling, orange once they answer (QSO in progress)
-   const [c,cc]=T.resp?['#ff7a3d','#ffd2b8']:['#c061ff','#ead0ff'];
-   const p=arcs('T'+T.ll,me,T.ll);ctx.strokeStyle=c;ctx.lineWidth=3.2*dpr;line(p,R,cx,cy);
-   for(let k=0;k<3;k++)comet(p,(f*2+k/3)%1,R,cx,cy,cc);dot(T.ll,R,cx,cy,4*dpr,c)}
+ // stations in the shared look: band colour, mode's line, role's weight
+ const me=G.me,f=(ts/2500)%1,on={band:G.band,mode:G.mode,scale:dpr},COMET='rgba(255,255,255,.85)';
+ for(const t of G.traffic){  // fades to nothing over G.fade seconds (ages are from the last poll)
+   const al=1-(t.age+(ts-pollT)/1000)/(G.fade||300);if(al<=0.03)continue;
+   LOOK.stroke(ctx,{...on,role:'traffic',alpha:al});line(arcs('t'+t.a+t.b,t.a,t.b),R,cx,cy)}
+ LOOK.reset(ctx);
+ if(me){for(const w of G.worked){  // today's contacts on every band and mode; this band and mode's brighter
+   const p=arcs('w'+w.ll,me,w.ll),col=LOOK.stroke(ctx,{band:w.band,mode:w.mode,role:'worked',scale:dpr,alpha:w.here?1:.55});
+   line(p,R,cx,cy);LOOK.reset(ctx);comet(p,f,R,cx,cy,COMET);dot(w.ll,R,cx,cy,2*dpr,col)}
+  for(const c of G.callers||[]){  // others answering us at the same time, waiting their turn
+   const p=arcs('c'+c.ll,me,c.ll),col=LOOK.stroke(ctx,{...on,role:'waiting'});line(p,R,cx,cy);LOOK.reset(ctx);
+   comet(p,1-f,R,cx,cy,COMET);dot(c.ll,R,cx,cy,3*dpr,col)}
+  const T=G.target;if(T&&T.ll){  // calling them: bold and pulsing; once they answer, the QSO: boldest, glowing
+   const p=arcs('T'+T.ll,me,T.ll),col=LOOK.stroke(ctx,{...on,role:T.resp?'qso':'target',t:ts});line(p,R,cx,cy);LOOK.reset(ctx);
+   for(let k=0;k<3;k++)comet(p,(f*2+k/3)%1,R,cx,cy,'#fff');dot(T.ll,R,cx,cy,4*dpr,col)}
   dot(me,R,cx,cy,4*dpr,'#fff')}}
 requestAnimationFrame(draw);
 let pollT=0;
@@ -726,7 +786,7 @@ cv.addEventListener('dblclick',()=>{uz=1});
 const b=document.getElementById('bWake');if(!window.NoSleep){b.style.display='none';return}
 const ns=new NoSleep();let want=false;
 try{want=localStorage.getItem('keepAwake')==='1'}catch(e){}
-const show=()=>{b.textContent='📱 Keep screen awake: '+(ns.isEnabled?'on':want?'tap anywhere':'off');b.style.background=ns.isEnabled?'#1f9d4d':'#3a4552'};
+const show=()=>{b.textContent='📱 Keep screen awake: '+(ns.isEnabled?'on':want?'tap anywhere':'off');b.classList.toggle('lit',ns.isEnabled)};
 async function on(){try{await ns.enable()}catch(e){}show()}
 b.onclick=async e=>{e.stopPropagation();want=!ns.isEnabled;try{localStorage.setItem('keepAwake',want?'1':'0')}catch(_){}
  if(want)await on();else{ns.disable();show()}};
