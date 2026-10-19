@@ -746,17 +746,17 @@ function draw(ts){requestAnimationFrame(draw);
  for(let lo=0;lo<180;lo+=30){const p=[];for(let la=0;la<=360;la+=5)p.push(vec(90-la,lo));line(p,R,cx,cy)}
  ctx.strokeStyle='#7fb0d0';ctx.lineWidth=dpr;for(const c of coast){line(c,R,cx,cy)}
  // stations in the shared look: band colour, mode's line, role's weight
- const me=G.me,f=(ts/2500)%1,on={band:G.band,mode:G.mode,scale:dpr},COMET='rgba(255,255,255,.85)';
+ const me=G.me,f=(ts/2500)%1,on={band:G.band,mode:G.mode,scale:dpr};
  for(const t of G.traffic){  // fades to nothing over G.fade seconds (ages are from the last poll)
    const al=1-(t.age+(ts-pollT)/1000)/(G.fade||300);if(al<=0.03)continue;
    LOOK.stroke(ctx,{...on,role:'traffic',alpha:al});line(arcs('t'+t.a+t.b,t.a,t.b),R,cx,cy)}
  LOOK.reset(ctx);
  if(me){for(const w of G.worked){  // today's contacts on every band and mode; this band and mode's brighter
    const p=arcs('w'+w.ll,me,w.ll),col=LOOK.stroke(ctx,{band:w.band,mode:w.mode,role:'worked',scale:dpr,alpha:w.here?1:.55});
-   line(p,R,cx,cy);LOOK.reset(ctx);comet(p,f,R,cx,cy,COMET);dot(w.ll,R,cx,cy,2*dpr,col)}
+   line(p,R,cx,cy);LOOK.reset(ctx);comet(p,f,R,cx,cy,col,1.6*dpr);dot(w.ll,R,cx,cy,2*dpr,col)}
   for(const c of G.callers||[]){  // others answering us at the same time, waiting their turn
    const p=arcs('c'+c.ll,me,c.ll),col=LOOK.stroke(ctx,{...on,role:'waiting'});line(p,R,cx,cy);LOOK.reset(ctx);
-   comet(p,1-f,R,cx,cy,COMET);dot(c.ll,R,cx,cy,3*dpr,col)}
+   comet(p,1-f,R,cx,cy,col,1.6*dpr);dot(c.ll,R,cx,cy,3*dpr,col)}
   const T=G.target;if(T&&T.ll){  // calling them: bold and pulsing; once they answer, the QSO: boldest, glowing
    const p=arcs('T'+T.ll,me,T.ll),col=LOOK.stroke(ctx,{...on,role:T.resp?'qso':'target',t:ts});line(p,R,cx,cy);
    if(T.resp)line(p,R,cx,cy);LOOK.reset(ctx);  // a QSO's glow drawn twice: brighter
