@@ -48,11 +48,11 @@ li.skip{opacity:.55}li.tgt{background:var(--here);border-radius:8px}
 .r-target{font-weight:800;color:var(--band);box-shadow:inset 0 0 0 1.5px var(--band);border-radius:4px;padding:0 3px}
 /* the QSO: the brightest thing on the page, pure white with a pip and glow of the band colour */
 .r-qso{font-weight:900;color:#000;background:#fff;border-radius:4px;padding:0 4px;box-shadow:0 0 0 1px var(--band),0 0 10px var(--band),0 0 22px var(--band)}
-.r-qso::before{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--band);margin-right:4px;vertical-align:middle}
+.r-qso::before{content:'';display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--band);margin-right:3px;vertical-align:middle}
 /* line keys for the canvases: the same weights as LOOK.ROLES */
 .lg{display:inline-block;width:18px;margin:0 3px 0 1px;vertical-align:middle;border:0 solid var(--band);border-top-width:2px}
 .lg.traffic{border-top-width:1px;opacity:.4}.lg.worked{border-top-width:1.5px;opacity:.75}.lg.waiting{border-top-width:2px}
-.lg.target{border-top-width:3px;animation:pulse 1.9s ease-in-out infinite}.lg.qso{height:4px;border-top-width:0;background:radial-gradient(circle,var(--band) 1.5px,#fff 2px) 0 0/7px 4px;box-shadow:0 0 8px var(--band)}
+.lg.target{border-top-width:3px;animation:pulse 1.9s ease-in-out infinite}.lg.qso{height:4px;border-top-width:0;background:radial-gradient(circle,var(--band) 1px,#fff 1.4px) 0 0/7px 4px;box-shadow:0 0 8px var(--band)}
 .lg.mode{border-color:var(--hi);border-top-width:2px}
 @keyframes pulse{50%{opacity:.3}}
 /* decision flow: question on the left, its "yes" action on the right */
@@ -760,8 +760,8 @@ function draw(ts){requestAnimationFrame(draw);
   const T=G.target;if(T&&T.ll){  // calling them: bold and pulsing; once they answer, the QSO: boldest, glowing
    const p=arcs('T'+T.ll,me,T.ll),col=LOOK.stroke(ctx,{...on,role:T.resp?'qso':'target',t:ts});line(p,R,cx,cy);
    if(T.resp)line(p,R,cx,cy);LOOK.reset(ctx);  // a QSO's glow drawn twice: brighter
-   // pips running along it: band-coloured on a QSO's white line, white on the target's
-   for(let k=0;k<(T.resp?5:3);k++)comet(p,(f*2+k/(T.resp?5:3))%1,R,cx,cy,T.resp?col:'#fff',T.resp?3.2*dpr:2.2);dot(T.ll,R,cx,cy,(T.resp?5:4)*dpr,col)}
+   // small band-coloured pips running along it, beads inside a QSO's white line
+   for(let k=0;k<(T.resp?5:3);k++)comet(p,(f*2+k/(T.resp?5:3))%1,R,cx,cy,col,(T.resp?1.4:1.2)*dpr);dot(T.ll,R,cx,cy,(T.resp?5:4)*dpr,col)}
   dot(me,R,cx,cy,4*dpr,'#fff')}}
 requestAnimationFrame(draw);
 let pollT=0;
