@@ -681,7 +681,7 @@ check("...and left alone while WS is on them", REPLY not in CTX["tx"].sent)
 st["udp"]["dxcall"] = ""
 
 # --- real UDP packets through udp_listener
-ns["udp_port"] = 22999; st["fwd_port"] = 22998
+ns["udp_port"] = 22999; st["config"]["wrl_port"] = 22998
 time.sleep = real_sleep
 threading.Thread(target=ns["udp_listener"], daemon=True).start(); time.sleep(0.3)
 tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -910,7 +910,7 @@ for name, f in {"rig.get_xcvr": lambda: "Xiegu-G90", "rig.get_maxpwr": lambda: 0
                 "rig.cat_string": cat}.items():
     fl.register_function(f, name)
 threading.Thread(target=fl.serve_forever, daemon=True).start()
-ns["RIG"]["url"] = f"http://127.0.0.1:{fl.server_address[1]}"
+st["config"]["flrig_url"] = f"http://127.0.0.1:{fl.server_address[1]}"
 threading.Thread(target=ns["rig_poll"], daemon=True).start(); time.sleep(1.0)
 R = ns["RIG"]
 check("FLRig polled: rig, max power from the table, PTT, no S-meter",
@@ -1146,6 +1146,23 @@ st["udp"]["mode"] = "FT4"; ENG["arrived"] = None; ns["set_mode"]("FT8")
 check("a mode change on the same band doesn't start a listen", not ENG.get("arrived"))
 ENG["arrived"] = None
 ENG["tuned_band"] = None; st["udp"]["revision"] = ""; st["running"] = False
+# call sign and grid: Settings first, else what WS reports; no call, no start
+saved = dict(st["config"]), st["mycall"], st["mygrid"]
+st["config"].update(mycall="", mygrid=""); st["udp"].update(de_call="", de_grid=""); ns["set_identity"]()
+try:
+    post("/api/start", {}); code = 200
+except urllib.error.HTTPError as e:
+    code = e.code
+check("no call sign anywhere: the hunter won't start", code == 409 and not st["running"] and st["mycall"] == "")
+st["udp"].update(de_call="w1aw", de_grid="FN31pr"); ns["set_identity"]()
+check("empty Settings: WS's DE call and grid are used", st["mycall"] == "W1AW" and st["mygrid"] == "FN31pr")
+post("/api/config", {"mycall": "kr4mzm/ag", "mygrid": "em84"})
+check("Settings' call and grid win over WS's", st["mycall"] == "KR4MZM/AG" and st["mygrid"] == "EM84")
+post("/api/config", {"mycall": "NOT A CALL", "mygrid": "ZZ99"})
+check("a bad call or grid isn't saved (falls back to WS's)", st["config"]["mycall"] == "" and st["mygrid"] == "FN31pr")
+post("/api/config", {"udp_port": 80, "swr_high": 2.0, "swr_bad": 1.1})
+check("ports and SWR levels kept sane", st["config"]["udp_port"] == 1024 and st["config"]["swr_bad"] >= 2.0)
+st["config"].clear(); st["config"].update(saved[0]); st["mycall"], st["mygrid"] = saved[1], saved[2]; st["running"] = False
 fl.shutdown(); srv.shutdown()
 
 print("ALL PASS" if ok else "SOME FAILED")

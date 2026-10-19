@@ -195,9 +195,18 @@ restarts.
 ## Run
 
 ```bash
-python3 ft8_server.py --mycall YOURCALL --mygrid YOURGRID --port 2237 --http 8080   # stdlib only
+python3 ft8_server.py   # stdlib only
 # open http://localhost:8080/ (mobile-friendly UI)
 ```
+
+Everything is set in the UI's **Settings** and saved in `hunter_config.json`:
+your **call sign** and **grid** (no defaults: left empty, the hunter uses the
+ones WS has in its Settings → General, and it won't start without a call), the
+license class, the ports (WS UDP 2237, web UI 8080, WRL Desktop 2238: these take
+effect on restart), the FLRig URL, the WS data folder (empty: the usual places)
+and a few advanced levels (globe traffic fade, tuner wait, cycles heard on a new
+band, the SWR warnings). `--mycall`, `--mygrid`, `--port`, `--http` and
+`--flrig` still work: each one given is saved into Settings.
 
 In WS / WSJT-X, open Settings → Reporting, set the UDP server to `127.0.0.1:2237`
 and tick **Accept UDP requests**. You can change retries, hold time, CQ and listen
@@ -223,8 +232,7 @@ cat > ~/Library/LaunchAgents/com.ft8hunter.plist <<PLIST
 <plist version="1.0"><dict>
  <key>Label</key><string>com.ft8hunter</string>
  <key>ProgramArguments</key><array><string>/usr/bin/python3</string>
-  <string>$HOME/FT8-Hunter/ft8_server.py</string><string>--mycall</string><string>YOURCALL</string>
-  <string>--mygrid</string><string>YOURGRID</string></array>
+  <string>$HOME/FT8-Hunter/ft8_server.py</string></array>
  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
  <key>StandardOutPath</key><string>/tmp/ft8-hunter.log</string>
  <key>StandardErrorPath</key><string>/tmp/ft8-hunter.log</string>
@@ -288,7 +296,7 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
 - **Someone else on frequency** (ws-hunter build): wide undecoded energy in the
   spectrum for two cycles running pauses new calls for 5 minutes.
 - **Radio power**: the status card sets TX power through FLRig's XML-RPC server
-  (`--flrig`, default `http://127.0.0.1:12345`), and shows the strongest decode
+  (Settings → Connections, default `http://127.0.0.1:12345`), and shows the strongest decode
   of the last period as the incoming signal. Power has two settings: **calling**
   (default 10 W, also used for CQ) and **in QSO** (default 20 W), switched up as
   soon as the station answers and back down once the QSO is over. The slider sets
@@ -326,7 +334,7 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
   the page only shows whether one is saved. So far: **QRZ Logbook** (API key
   from qrz.com → My Logbook → Settings; uploading through the API needs a QRZ
   XML subscription).
-- **WRL Desktop bridge**: every WS packet is rebroadcast to `127.0.0.1:2238` — set
+- **WRL Desktop bridge**: every WS packet is rebroadcast to `127.0.0.1:2238` (Settings → Connections) — set
   WRL Desktop's UDP server to that port — and whatever WRL sends back is relayed to
   WS, so WRL logs as if it were talking to WS directly. (Two apps can't share 2237:
   Linux REUSEPORT *load-balances*, so they'd each miss half the traffic.)

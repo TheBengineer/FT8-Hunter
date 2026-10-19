@@ -172,12 +172,15 @@ Chart: dB over the floor, 200–3000 Hz · <span style="color:var(--good)">▬ F
 <div class="card" data-id="log"><h2>📝 Log</h2><ul id="log"></ul><div class="small" id="stats"></div></div>
 <div class="card" data-id="worked"><details><summary>✅ Worked / ignored today (<span id="wn">0</span> on <span id="wslot">this band</span>)</summary><ul id="wk"></ul></details></div>
 <div class="card" data-id="settings"><details><summary>⚙️ Settings</summary>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Yours, as sent on the air (a portable suffix like /AG is fine). Empty: the call WS has in its Settings → General. The hunter won't start without one.">Call sign</span><input id="sCall" type="text" autocapitalize="characters" spellcheck="false" style="max-width:170px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Your Maidenhead locator, 4 or 6 characters. Empty: WS's.">Grid</span><input id="sGrid" type="text" spellcheck="false" style="max-width:170px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="US license class: which frequencies the tune carrier may use. Not set: General's limits (the narrower ones).">License class</span><select id="sLic" style="max-width:120px;padding:10px;border-radius:8px;border:1px solid var(--edge);background:var(--bg);color:#fff"><option value="">Not set</option><option value="general">General</option><option value="extra">Extra</option></select></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">CQ tries</span><input id="sCq" type="number" min="1" max="10" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Tail-end tries</span><input id="sTail" type="number" min="1" max="10" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Our transmissions in a QSO without hearing back before giving up">Replies without an answer</span><input id="sQso" type="number" min="1" max="20" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Power while calling and calling CQ">TX power calling (W)</span><input id="sWCall" type="number" min="1" max="100" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Power once a station answers us, for the rest of the QSO">TX power in QSO (W)</span><input id="sWQso" type="number" min="1" max="100" style="max-width:90px;margin-top:0"></div>
-<div style="margin-top:10px"><span class="small" title="Our last message in a QSO, sent after our call (KR4MZM GL 73) and picked at random each time. One per line, 6 characters at most. Each needs 73 as its own word or WS won't log the QSO (GL73 is sent as GL 73). 73 alone = the standard THEM US 73.">Sign-off 73s (one per line, picked at random)</span>
+<div style="margin-top:10px"><span class="small" title="Our last message in a QSO, sent after our call (e.g. W1AW GL 73) and picked at random each time. One per line, 6 characters at most. Each needs 73 as its own word or WS won't log the QSO (GL73 is sent as GL 73). 73 alone = the standard THEM US 73.">Sign-off 73s (one per line, picked at random)</span>
 <textarea id="sSignoff" rows="8" spellcheck="false" style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid var(--edge);font:0.95rem ui-monospace,monospace;background:var(--bg);color:#fff;margin-top:6px;text-transform:uppercase"></textarea>
 <div class="small" id="sSignoffNote" style="opacity:.75"></div></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Hold (min)</span><input id="sHold" type="number" min="1" max="60" style="max-width:90px;margin-top:0"></div>
@@ -194,7 +197,20 @@ Chart: dB over the floor, 200–3000 Hz · <span style="color:var(--good)">▬ F
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Back off when non-FT8 signals appear</span><input id="sQrm" type="checkbox" style="width:auto;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="On a new band (not a new mode): move under FT8, run the rig's tuner, then go back, before transmitting">Tune the antenna on a new band</span><input id="sTune" type="checkbox" style="width:auto;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="The tune carrier goes at least this far from the band's FT8 frequency: below if your license allows a carrier there, else above; on bands too narrow for that, as far as your privileges allow. Not on 60m (channels).">Tune away from FT8 (kHz, 50+)</span><input id="sTuneKhz" type="number" min="50" max="150" step="5" style="max-width:90px;margin-top:0"></div>
-<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="US license class: which frequencies the tune carrier may use">License class</span><select id="sLic" style="max-width:120px;padding:10px;border-radius:8px;border:1px solid var(--edge);background:var(--bg);color:#fff"><option value="general">General</option><option value="extra">Extra</option></select></div>
+<details style="margin-top:10px"><summary class="small">Connections (ports take effect on restart)</summary>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="WS / WSJT-X Settings → Reporting → UDP Server port. Restart the hunter after changing it.">WS UDP port</span><input id="sUdp" type="number" min="1024" max="65535" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Port this page is served on. Restart the hunter after changing it.">Web UI port</span><input id="sHttp" type="number" min="1024" max="65535" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="FLRig's XML-RPC server, for TX power, PTT and the meters">FLRig URL</span><input id="sFlrig" type="text" spellcheck="false" style="max-width:170px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Every WS packet is rebroadcast to 127.0.0.1 on this port, for WRL Desktop. Restart after changing it.">WRL Desktop port</span><input id="sWrl" type="number" min="1024" max="65535" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Folder holding WS / WSJT-X's ALL.TXT and wsjtx_log.adi. Empty: the usual places (~/.local/share/WS, ~/Library/Application Support/WS, and the WSJT-X ones).">WS data folder</span><input id="sWsDir" type="text" spellcheck="false" placeholder="auto" style="max-width:170px;margin-top:0"></div>
+</details>
+<details style="margin-top:6px"><summary class="small">Advanced</summary>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Globe: how long other stations' traffic lines take to fade out">Globe traffic fade (s)</span><input id="sFade" type="number" min="30" max="3600" step="30" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="How long the antenna tuner may take before giving up">Tuner wait (s)</span><input id="sTuneWait" type="number" min="5" max="120" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Full cycles (an even and an odd period each) heard on a new band before transmitting">Listen on a new band (cycles)</span><input id="sNewBand" type="number" min="0" max="10" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="An SWR reading this many times the usual one for that band and power shows as higher than usual">SWR higher than usual (×)</span><input id="sSwrHi" type="number" min="1.05" max="5" step="0.05" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="...and this many times as much higher: check the antenna">SWR much higher (×)</span><input id="sSwrBad" type="number" min="1.05" max="10" step="0.05" style="max-width:90px;margin-top:0"></div>
+</details>
 <button id="bSave" style="margin-top:8px">Save</button>
 <button id="bLayout" class="mini quiet" style="margin-top:8px">Reset card order</button></details></div>
 <div class="card" data-id="logbooks"><details id="lbBox"><summary>📒 Online logbooks <span id="lbSum" class="small" style="opacity:.75"></span></summary>
@@ -312,7 +328,7 @@ async function tick(){const s=await api('/api/state');
 const T=s.target;WHO={target:T?baseCall(T.call):'',qso:!!T&&(!!T.resp||T.why==='called us'),
  waiting:new Set((s.callers||[]).map(baseCall)),worked:new Set((s.worked||[]).map(baseCall))};
 document.documentElement.style.setProperty('--band',LOOK.band(s.band));
-window._cfg=s.config;window._me=s.mycall;fillSettings(s.config);cqFirstView(!!s.config.cq_first);manualView(!!s.manual,!!s.manual_forced);pickView(s);if(s.rig)rigView(s.rig,s.rx);swrView(s.swr);HELD=s.holds||{};flow(s.step,{...s.config,manual:!!s.manual});
+window._cfg=s.config;window._me=s.mycall;fillSettings(s.config,s.udp||{});cqFirstView(!!s.config.cq_first);manualView(!!s.manual,!!s.manual_forced);pickView(s);if(s.rig)rigView(s.rig,s.rx);swrView(s.swr);HELD=s.holds||{};flow(s.step,{...s.config,manual:!!s.manual});
 $('dot').className='dot'+(s.running?' run':'');lightView(s.light,s.caps);
 $('st').innerHTML=(s.running?'RUNNING':'STOPPED')+' · '+s.mycall+' '+s.mygrid+(s.band?' · '+LOOK.tag(s.band,s.mode):'');
 $('target').innerHTML=T?('🎯 '+callH(T.call)+' '+(T.grid||'')+' · '+(T.why||'')+' · '+(T.resp?'in QSO':Math.ceil(T.left/2)+' tries left')):(s.cq_calling?('📣 calling CQ · '+s.cq_calling+'s'):'no target');
@@ -357,7 +373,7 @@ function lightView(l,caps){const el=$('txl'),st=l?l.state:'';
  if(alert&&st!==lastLight)beep();lastLight=st;
  document.title=(alert?'🟡 Enable TX · ':'')+'FT8 Hunter'}
 async function call(c,g){await api('/api/call',{call:c,grid:g||''})}
-$('bS').onclick=async()=>{const s=await api('/api/state');await api(s.running?'/api/stop':'/api/start',{},'POST');tick()};
+$('bS').onclick=async()=>{const s=await api('/api/state');const r=await api(s.running?'/api/stop':'/api/start',{},'POST');if(r.error)alert(r.error);tick()};
 $('bX').onclick=()=>api('/api/skip',{},'POST').then(tick);
 $('bCQ').onclick=()=>api('/api/cq',{},'POST').then(tick);
 // Radio (FLRig): TX power slider; S-meter only if the rig reports one over CAT.
@@ -383,17 +399,23 @@ function swrView(w){$('swBox').style.display=w?'block':'none';if(!w)return;
  $('swLast').innerHTML=l?`Last TX ${l.t.slice(11,16)}Z, ${l.band} at ${l.watts} W: `+swrVs(l.vs):'No transmission logged yet'}
 $('bC').onclick=()=>api('/api/call',{call:$('mc').value,grid:$('mg').value}).then(tick);
 let sLoaded=false;
-function fillSettings(c){if(sLoaded)return;sLoaded=true;
+function fillSettings(c,u={}){$('sCall').placeholder=u.de_call?`from WS: ${u.de_call}`:'required';$('sGrid').placeholder=u.de_grid?`from WS: ${u.de_grid}`:'e.g. FN31';  // WS's call shows up once it's heard
+if(sLoaded)return;sLoaded=true;
 $('sCq').value=c.cq_tries;$('sTail').value=c.tail_tries;$('sQso').value=c.qso_tries;$('sWCall').value=c.watts_call;$('sWQso').value=c.watts_qso;$('sHold').value=c.hold_min;$('sSignoff').value=(c.signoff||[]).join('\n');signoffNote();
 $('sIdleN').value=c.idle_every;$('sIdleS').value=c.idle_secs;$('sSpec').checked=c.special_first!==false;
 $('sCallCq').checked=c.call_cq!==false;$('sCqSecs').value=c.cq_secs;
 $('sAutoDf').checked=c.auto_df!==false;$('sDfLo').value=c.df_lo;$('sQrm').checked=c.qrm_detect!==false;$('sCompat').checked=!!c.compat;$('sCheck').value=c.check_every??10;$('sMinSnr').value=c.min_snr;
-$('sTune').checked=c.tune_new_band!==false;$('sTuneKhz').value=c.tune_away_khz;$('sLic').value=c.license||'general'}
+$('sTune').checked=c.tune_new_band!==false;$('sTuneKhz').value=c.tune_away_khz;$('sLic').value=c.license||'';
+$('sCall').value=c.mycall||'';$('sGrid').value=c.mygrid||'';
+$('sUdp').value=c.udp_port;$('sHttp').value=c.http_port;$('sFlrig').value=c.flrig_url;$('sWrl').value=c.wrl_port;$('sWsDir').value=c.ws_dir||'';
+$('sFade').value=c.traffic_secs;$('sTuneWait').value=c.tune_wait;$('sNewBand').value=c.new_band_cycles;$('sSwrHi').value=c.swr_high;$('sSwrBad').value=c.swr_bad}
 function signoffNote(){const me=(window._me||'').split('/').sort((a,b)=>(/\d/.test(b)-/\d/.test(a))||b.length-a.length)[0]||'',
 ls=$('sSignoff').value.split('\n').map(x=>x.trim().toUpperCase().replace(/\s+/g,' ').replace(/([A-Z])(R?R?73)\b/,'$1 $2')).filter(Boolean),long=ls.filter(x=>me.length+1+x.length>13);
 $('sSignoffNote').textContent=`${ls.length} lines, sent as ${me} + the line. FT8 free text is 13 characters in all, so 6 are left for the line`+(long.length?`; too long: ${long.join(', ')}`:'')+'.'}
 $('sSignoff').oninput=signoffNote;
-$('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,qso_tries:+$('sQso').value,watts_call:+$('sWCall').value,watts_qso:+$('sWQso').value,hold_min:+$('sHold').value,signoff:$('sSignoff').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value,special_first:$('sSpec').checked,call_cq:$('sCallCq').checked,cq_secs:+$('sCqSecs').value,auto_df:$('sAutoDf').checked,df_lo:+$('sDfLo').value,qrm_detect:$('sQrm').checked,compat:$('sCompat').checked,check_every:+$('sCheck').value,tune_new_band:$('sTune').checked,tune_away_khz:+$('sTuneKhz').value,license:$('sLic').value,min_snr:+$('sMinSnr').value},'POST');sLoaded=false;tick()};
+$('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,qso_tries:+$('sQso').value,watts_call:+$('sWCall').value,watts_qso:+$('sWQso').value,hold_min:+$('sHold').value,signoff:$('sSignoff').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value,special_first:$('sSpec').checked,call_cq:$('sCallCq').checked,cq_secs:+$('sCqSecs').value,auto_df:$('sAutoDf').checked,df_lo:+$('sDfLo').value,qrm_detect:$('sQrm').checked,compat:$('sCompat').checked,check_every:+$('sCheck').value,tune_new_band:$('sTune').checked,tune_away_khz:+$('sTuneKhz').value,license:$('sLic').value,min_snr:+$('sMinSnr').value,
+mycall:$('sCall').value.trim(),mygrid:$('sGrid').value.trim(),udp_port:+$('sUdp').value,http_port:+$('sHttp').value,flrig_url:$('sFlrig').value.trim(),wrl_port:+$('sWrl').value,ws_dir:$('sWsDir').value.trim(),
+traffic_secs:+$('sFade').value,tune_wait:+$('sTuneWait').value,new_band_cycles:+$('sNewBand').value,swr_high:+$('sSwrHi').value,swr_bad:+$('sSwrBad').value},'POST');sLoaded=false;tick()};
 setInterval(tick,2000);tick();
 // T/R cycle bar (15 s FT8, 7.5 s FT4, 3.75 s FT2) + TX badge, updated locally every 200ms
 setInterval(()=>{const per=window._per||15,t=Date.now()/1000,pos=t%per,pct=pos/per*100;

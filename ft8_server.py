@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """FT8 hunter daemon: UDP watcher + stdlib JSON API + serves webapp. No deps.
-Run: python3 ft8_server.py --mycall KR4MZM --mygrid EM84 --port 2237 --http 8080
+Run: python3 ft8_server.py   (call sign, grid, ports and the rest: Settings in the UI;
+     --mycall/--mygrid/--port/--http/--flrig, when given, are saved into those settings)
 API: GET /api/state -> {running, target, cq[], answering[], worked[], log[], config, stats}
      POST /api/start|stop|call|work|skip|config   Webapp: GET /
      GET|POST /api/logbooks (+ /test, /retry): online logbook uploads
@@ -20,7 +21,16 @@ state = {
     "target": None, "cq": {}, "answering": {},
     "worked": {}, "log": deque(maxlen=50),
     "msgs": deque(maxlen=80), "mytx": deque(maxlen=20),
-    "config": {"max_cycles": 3, "cooldown": 2, "cq_only": True,
+    "config": {"mycall": "", "mygrid": "",  # yours, no default: empty = what WS reports (its Settings -> General)
+               "udp_port": 2237, "http_port": 8080,  # WS UDP server / web UI (take effect on restart)
+               "flrig_url": "http://127.0.0.1:12345",  # FLRig XML-RPC (power + meters)
+               "wrl_port": 2238,  # WS packets rebroadcast here for WRL Desktop (restart)
+               "ws_dir": "",  # WS / WSJT-X data folder (ALL.TXT, wsjtx_log.adi); empty = look in the usual places
+               "traffic_secs": 300,  # globe: other stations' traffic lines fade out over this long
+               "tune_wait": 20,  # s the antenna tuner may take
+               "new_band_cycles": 2,  # full cycles heard on a new band before transmitting
+               "swr_high": 1.2, "swr_bad": 1.5,  # SWR reading this many times the usual: higher / much higher
+               "max_cycles": 3, "cooldown": 2, "cq_only": True,
                "cq_tries": 3, "tail_tries": 2, "qso_tries": 7, "hold_min": 10,
                "idle_every": 4, "idle_secs": 60, "special_first": True,
                "call_cq": True, "cq_secs": 120, "cq_first": False,
@@ -34,7 +44,7 @@ state = {
                # is 13 characters and our call goes first, so 6 are left for the text
                "signoff": list(SIGNOFF_CATALOG),
                "tune_new_band": True, "tune_away_khz": 50,  # ATU tune at least this far from FT8 (below if allowed)
-               "license": "general",  # US class: where a tune carrier may go (see PRIV)
+               "license": "",  # US class: where a tune carrier may go (see PRIV); unset = General's limits
                "scan_modes": ["FT8", "FT4", "FT2"],  # band scan: what to visit
                "scan_bands": ["160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m"]},  # TX power held on the radio: calling / once they answer
     "stats": {"cq_heard": 0, "calls_made": 0},
@@ -294,9 +304,9 @@ def km(a, b):
 CTY = {"exact": {}, "prefix": {}}  # call/prefix -> (country, continent, lat, lon)
 GRIDS = {}  # base call -> grid, learned from decodes and the log (for the globe)
 PAIRS = {}  # frozenset of two base calls -> {"a", "b", "t"}: who is working whom (globe)
-TRAFFIC_SECS = 300  # traffic lines fade out over this long
 RECENT = {}  # (call, band, mode) -> epoch time, last 24 h: the globe keeps them past UTC midnight
 GRID_RE = re.compile(r"^[A-R]{2}\d{2}([A-X]{2})?$")
+MYCALL_RE = re.compile(r"([A-Z0-9]{1,4}/)?[A-Z0-9]*\d[A-Z0-9]*[A-Z](/[A-Z0-9]{1,4})?")  # VE3/K1ABC, KR4MZM/AG
 CTY_PATHS = ("~/ws-hunter-app/share/ws/cty.dat", "~/ws/usr/share/ws/cty.dat",
              "~/ws-wide/usr/share/ws/cty.dat", "/usr/share/wsjtx/cty.dat",
              # macOS: inside the app bundle
@@ -308,7 +318,8 @@ WS_DIRS = ("~/.local/share/WS", "~/.local/share/WSJT-X",
            "~/Library/Application Support/WS", "~/Library/Application Support/WSJT-X")
 def ws_files(name, extra=()):
     """That file in each WS / WSJT-X data folder, expanded (existing or not)."""
-    return [os.path.expanduser(os.path.join(d, name)) for d in WS_DIRS + tuple(extra)]
+    own = (state["config"]["ws_dir"],) if state["config"]["ws_dir"] else ()
+    return [os.path.expanduser(os.path.join(d, name)) for d in own + WS_DIRS + tuple(extra)]
 
 def load_cty():
     """Parse the country file WS ships (AD1C cty.dat format)."""
@@ -464,7 +475,6 @@ state["udp"] = {"holder": "?", "last_rx": 0, "dxcall": "", "tx_enabled": False,
                  "transmitting": False, "rx_count": 0}
 state["decparams"] = {}  # msg -> {t_ms, snr, dt, df}
 
-state["fwd_port"] = 2238  # passthrough port: hunter rebroadcasts WS packets here for WRL Desktop
 def wrl_relay(fwd):
     """Other half of the WRL Desktop bridge: anything WRL sends back to the
     socket we forward from (Heartbeats, Replies, Halt...) goes on to WS, as
@@ -509,9 +519,9 @@ def udp_listener():
             # passthrough: rebroadcast WS packets so WRL Desktop can listen on fwd_port
             try:
                 if state.get("ws_addr") and addr[0] == state["ws_addr"][0]:
-                    fwd.sendto(data, ("127.0.0.1", state["fwd_port"]))
+                    fwd.sendto(data, ("127.0.0.1", state["config"]["wrl_port"]))
                 elif not state.get("ws_addr"):
-                    fwd.sendto(data, ("127.0.0.1", state["fwd_port"]))
+                    fwd.sendto(data, ("127.0.0.1", state["config"]["wrl_port"]))
             except Exception:
                 pass
             off = 8  # magic(4) + schema(4)
@@ -604,8 +614,12 @@ def udp_listener():
                             # Special op u8, Freq tol u32, T/R u32, Config name, Tx message
                             try:  # absent from older senders
                                 q = p + 9
-                                for _ in range(3):
-                                    _, q = read_qstr(data, q)
+                                de_call, q = read_qstr(data, q)
+                                de_grid, q = read_qstr(data, q)
+                                _, q = read_qstr(data, q)  # DX grid
+                                if (de_call, de_grid) != (state["udp"].get("de_call"), state["udp"].get("de_grid")):
+                                    state["udp"]["de_call"], state["udp"]["de_grid"] = de_call, de_grid
+                                    set_identity()
                                 wd = bool(data[q]); q += 1
                                 _, q = read_qstr(data, q)
                                 q += 1 + 1 + 4 + 4
@@ -734,6 +748,18 @@ def load_config():
         return
     state["config"].update({k: v for k, v in saved.items() if k in state["config"]})
 
+def set_identity():
+    """Our call and grid: the Settings ones, else what WS reports (DE call / grid)."""
+    c, u = state["config"], state["udp"]
+    call = (c["mycall"] or u.get("de_call") or "").strip().upper()
+    grid = (c["mygrid"] or u.get("de_grid") or "").strip()
+    grid = grid[:2].upper() + grid[2:4] + grid[4:6].lower()
+    if (call, grid) != (state["mycall"], state["mygrid"]):
+        state["mycall"], state["mygrid"] = call, grid
+        CTX["myll"] = grid_to_latlon(grid) if grid else None
+        if call:
+            log(f"station: {call} {grid}" + ("" if c["mycall"] else " (from WS)"))
+
 def ws_dest():
     return state["ws_addr"] or ("127.0.0.1", udp_port)
 
@@ -794,7 +820,7 @@ def prune(now):
     for d in (state["cq"], state["answering"]):
         for k in [k for k, e in list(d.items()) if now - e["seen"] > 600]:
             d.pop(k, None)
-    for k in [k for k, p in list(PAIRS.items()) if now - p["t"] > TRAFFIC_SECS]:
+    for k in [k for k, p in list(PAIRS.items()) if now - p["t"] > state["config"]["traffic_secs"]]:
         PAIRS.pop(k, None)
     for c in [c for c, until in list(ENG["holds"].items()) if until <= now]:
         ENG["holds"].pop(c, None)
@@ -1638,7 +1664,7 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
 
 # Radio via FLRig's XML-RPC server: TX power control, PTT and S-meter.
 # One multicall per poll (FLRig answers in ~0.5 s, serialised with its CAT polling).
-RIG = {"ok": False, "url": "http://127.0.0.1:12345", "err": ""}
+RIG = {"ok": False, "err": ""}
 RIG_WAKE = threading.Event()  # poll now: e.g. the power for this QSO stage changed
 MAX_W = {"Xiegu-G90": 20, "Xiegu-X6100": 10, "IC-705": 10, "FT-818": 6, "FT-817": 5}  # rig.get_maxpwr often says 0
 
@@ -1647,7 +1673,7 @@ def flrig():
     class T(xmlrpc.client.Transport):
         def make_connection(self, host):
             c = super().make_connection(host); c.timeout = 3; return c
-    return xmlrpc.client.ServerProxy(RIG["url"], transport=T())  # one per call: not thread-safe
+    return xmlrpc.client.ServerProxy(state["config"]["flrig_url"], transport=T())  # one per call: not thread-safe
 
 # FLRig's get_power reads 0 on the G90, so its power setting is read with a
 # raw CI-V 14 0A instead. The G90 answers on its own scale (not BCD 0-255),
@@ -1729,8 +1755,6 @@ def hold_power(fl, now):
 # reading is logged and a new one is compared with the usual reading for that
 # band and power.
 SWR_LEARN = 3     # transmissions on a band and power before "usual" means anything
-SWR_HIGH = 1.2    # raw reading this many times the usual: higher than usual
-SWR_BAD = 1.5     # ...and this many: much higher (check the antenna)
 SWR_TOP = 100     # top of FLRig's scale
 SWR_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "swr_log.json")
 SWR = {"on": None, "cur": [], "log": deque(maxlen=500)}
@@ -1786,7 +1810,7 @@ def swr_judge(raw, b, watts, skip=None):
         return {"usual": usual, "n": n, "level": "off scale"}
     x = raw / usual
     return {"usual": usual, "n": n, "x": round(x, 2),
-            "level": "much higher" if x >= SWR_BAD else "higher" if x >= SWR_HIGH else "normal"}
+            "level": "much higher" if x >= state["config"]["swr_bad"] else "higher" if x >= state["config"]["swr_high"] else "normal"}
 
 def swr_state():
     """The reading on the air now and the last transmission's, each against
@@ -1876,14 +1900,14 @@ def globe():
     traffic = []
     for p in sorted(list(PAIRS.values()), key=lambda p: -p["t"]):
         age = now - p["t"]
-        if age > TRAFFIC_SECS or len(traffic) >= 150:
+        if age > state["config"]["traffic_secs"] or len(traffic) >= 150:
             continue
         a, b = (me if is_me(c) else locate(c) for c in (p["a"], p["b"]))
         if a and b and a != b:
             traffic.append({"from": p["a"], "to": p["b"], "a": a, "b": b, "age": round(age),
                             "tome": is_me(p["b"])})
     return {"me": me, "mycall": state["mycall"], "worked": worked[:300], "target": tgt, "callers": callers,
-            "traffic": traffic, "fade": TRAFFIC_SECS, "band": here[0], "mode": here[1]}
+            "traffic": traffic, "fade": state["config"]["traffic_secs"], "band": here[0], "mode": here[1]}
 
 # --- Band scan: visit the published FT8/FT4/FT2 dial frequencies and take
 # one clean ws-hunter spectrum on each, to see which bands are busy. WS runs
@@ -2226,18 +2250,16 @@ def load_scan():
 # is heard first (new_band_wait); then, just before the first transmission
 # there, move just under its FT8 frequency (clear of everyone using FT8 above
 # the dial), start the rig's tuner, then go back to the operating frequency.
-TUNE_WAIT = 20  # s the tuner may take
-NEW_BAND_CYCLES = 2  # full cycles (an even and an odd period each) heard on a new band before transmitting
 def new_band_wait(now):
     """Seconds still to listen after arriving on a band (or tuning there):
-    until NEW_BAND_CYCLES whole cycles have been heard, so the offset
+    until the new_band_cycles setting's whole cycles have been heard, so the offset
     picker has the last two periods of each parity before we transmit."""
     t = ENG.get("arrived")
     if not t:
         return 0
     per = period()
     first = math.ceil(t / per) * per  # the first whole period after we got here
-    return first + 2 * NEW_BAND_CYCLES * per - now
+    return first + 2 * state["config"]["new_band_cycles"] * per - now
 def need_tune():
     b = band()
     return bool(state["config"].get("tune_new_band") and has_ws_hunter() and b and ENG.get("tuned_band")
@@ -2271,7 +2293,7 @@ def tune_freq(b):
     80/40/30m) the allowed spot nearest to that distance. Returns (hz, note);
     hz None on 60m (channels) or an unknown band."""
     ft8 = next((khz for khz, m in SCAN["freqs"]["list"] if m == "FT8" and band_of(khz * 1000) == b), None)
-    lic = state["config"].get("license", "general")
+    lic = state["config"].get("license") or "general"
     segs = PRIV.get(lic, PRIV["general"]).get(b)
     if not ft8 or not segs:
         return None, "60m is channelized" if b == "60m" else f"no FT8 frequency known for {b}"
@@ -2331,14 +2353,14 @@ def atu_tune():
         ENG["tuning"] = f"{b}: tuning at {hz / 1e6:.4f} MHz"
         fl.rig.tune()
         time.sleep(1.5)
-        end, st = time.time() + TUNE_WAIT, None
+        end, st = time.time() + state["config"]["tune_wait"], None
         while time.time() < end:
             st = tuner_state(fl)
             if st is not None and st != 2:
                 break
             time.sleep(0.5)
         log(f"antenna tuned on {b} at {hz / 1e6:.4f} MHz, {why} ({round(time.time() - t0)} s)" if st is not None and st != 2
-            else f"antenna tune on {b}: no word from the tuner after {TUNE_WAIT} s")
+            else f"antenna tune on {b}: no word from the tuner after {state['config']['tune_wait']} s")
     except Exception as e:
         log(f"antenna tune: {e}")
     finally:
@@ -2612,11 +2634,12 @@ class H(BaseHTTPRequestHandler):
                 "udp": {"holder": u["holder"], "ws_id": state["ws_id"],
                         "revision": u.get("revision", ""), "ws_hunter": has_ws_hunter(),
                         "dxcall": u["dxcall"], "rx_count": u["rx_count"],
+                        "de_call": u.get("de_call", ""), "de_grid": u.get("de_grid", ""),
                         "tx_enabled": u.get("tx_enabled", False),
                         "tx_msg": u.get("tx_msg", ""), "watchdog": u.get("watchdog", False),
                         "transmitting": u.get("transmitting", False) if u.get("tx_t", 0) and time.time() - u.get("tx_t", 0) < 20 else False,
                         "by_type": u.get("by_type", {}),
-                        "fwd_port": state.get("fwd_port", 2238),
+                        "fwd_port": state["config"]["wrl_port"],
                         "wrl_by_type": u.get("wrl_by_type", {}),
                         "heard_ago": round(time.time() - u["last_rx"], 1) if u["last_rx"] else None}})
         self.send_error(404)
@@ -2624,6 +2647,8 @@ class H(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", 0) or 0)
         body = json.loads(self.rfile.read(n) or b"{}") if n else {}
         p = urlparse(self.path).path
+        if p == "/api/start" and not state["mycall"]:
+            return self._json({"error": "set your call sign in Settings (or in WS's Settings -> General)"}, 409)
         if p == "/api/start": state["running"] = True; log("hunter started"); at("idle", "starting at next period")
         elif p == "/api/stop":
             state["running"] = False; state["target"] = None; ENG["cq_until"] = 0
@@ -2780,7 +2805,23 @@ class H(BaseHTTPRequestHandler):
                 c[k] = max(1, min(int(c[k]), RIG.get("max", 100)))
             c["check_every"] = max(0, min(int(c["check_every"]), 100))
             c["tune_away_khz"] = max(50.0, min(float(c["tune_away_khz"]), 150.0))  # off FT8, near enough to match
-            c["license"] = c["license"] if c["license"] in PRIV else "general"
+            c["license"] = c["license"] if c["license"] in PRIV else ""
+            c["mycall"] = str(c["mycall"]).strip().upper()
+            if c["mycall"] and not MYCALL_RE.fullmatch(c["mycall"]):
+                log(f"call sign not saved: {c['mycall']} doesn't look like one"); c["mycall"] = ""
+            c["mygrid"] = str(c["mygrid"]).strip()
+            if c["mygrid"] and not GRID_RE.match(c["mygrid"].upper()):
+                log(f"grid not saved: {c['mygrid']} isn't a 4 or 6 character locator"); c["mygrid"] = ""
+            for k in ("udp_port", "http_port", "wrl_port"):
+                c[k] = max(1024, min(int(c[k]), 65535))
+            c["flrig_url"] = str(c["flrig_url"]).strip() or "http://127.0.0.1:12345"
+            c["ws_dir"] = str(c["ws_dir"]).strip()
+            c["traffic_secs"] = max(30, min(int(c["traffic_secs"]), 3600))
+            c["tune_wait"] = max(5, min(int(c["tune_wait"]), 120))
+            c["new_band_cycles"] = max(0, min(int(c["new_band_cycles"]), 10))
+            c["swr_high"] = max(1.05, min(float(c["swr_high"]), 5.0))
+            c["swr_bad"] = max(c["swr_high"], min(float(c["swr_bad"]), 10.0))
+            set_identity()
             if isinstance(c["signoff"], str):
                 c["signoff"] = [x for x in re.split(r"[,\n]", c["signoff"]) if x.strip()]
             raw = [" ".join(str(x).upper().split()) for x in c["signoff"] if str(x).strip()][:100]
@@ -2807,13 +2848,19 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--mycall", default="KR4MZM"); ap.add_argument("--mygrid", default="EM84")
-ap.add_argument("--port", type=int, default=2237); ap.add_argument("--http", type=int, default=8080)
-ap.add_argument("--flrig", default="http://127.0.0.1:12345", help="FLRig XML-RPC URL (power + meters)")
+# Optional: each one given is saved into Settings (which hold them from then on)
+ap.add_argument("--mycall"); ap.add_argument("--mygrid")
+ap.add_argument("--port", type=int, help="WS UDP server port (default 2237)")
+ap.add_argument("--http", type=int, help="web UI port (default 8080)")
+ap.add_argument("--flrig", help="FLRig XML-RPC URL (default http://127.0.0.1:12345)")
 a = ap.parse_args()
 load_config()
-state["mycall"] = a.mycall.upper(); state["mygrid"] = a.mygrid.upper(); udp_port = a.port
-RIG["url"] = a.flrig
+flags = {k: v for k, v in (("mycall", a.mycall and a.mycall.upper()), ("mygrid", a.mygrid), ("udp_port", a.port),
+                           ("http_port", a.http), ("flrig_url", a.flrig)) if v}
+if flags:
+    state["config"].update(flags); save_config()
+udp_port = state["config"]["udp_port"]
+set_identity()
 def shutdown(signum, frame):
     """Service stop/restart: halt WS so it isn't left transmitting unattended."""
     if CTX["tx"] is not None and state.get("ws_addr"):
@@ -2830,6 +2877,7 @@ load_swr()
 lb_load()
 threading.Thread(target=lb_worker, daemon=True).start()
 threading.Thread(target=load_freqs, daemon=True).start()
-log(f"hunter ready as {state['mycall']} {state['mygrid']}")
-print(f"open http://0.0.0.0:{a.http}/")
-ThreadingHTTPServer(("0.0.0.0", a.http), H).serve_forever()
+log(f"hunter ready as {state['mycall']} {state['mygrid']}" if state["mycall"] else
+    "hunter ready: no call sign yet (Settings, or WS's own); it won't start until it has one")
+print(f"open http://0.0.0.0:{state['config']['http_port']}/")
+ThreadingHTTPServer(("0.0.0.0", state["config"]["http_port"]), H).serve_forever()
