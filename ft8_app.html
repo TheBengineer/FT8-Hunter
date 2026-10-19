@@ -134,8 +134,8 @@ details summary{font-weight:700;padding:4px}
 <div class="small" id="rxBest" style="margin-top:2px"></div></div>
 <div class="row" style="margin-top:8px"><button id="bWake" class="mini tog" style="flex:1;padding:8px;--lit:var(--go)">📱 Keep screen awake: off</button></div></div>
 <div class="card" data-id="wf"><h2>🌊 Waterfall <span class="small" id="wfsum"></span></h2>
-<canvas id="wf" style="width:100%;display:block;cursor:crosshair"></canvas>
-<div class="small" id="wfinfo" style="margin-top:4px;min-height:2.4em">Tap a spot to see who is there and move your Tx offset to it.</div>
+<canvas id="wf" style="width:100%;display:block;cursor:crosshair;touch-action:pan-y"></canvas>
+<div class="small" id="wfinfo" style="margin-top:4px;min-height:2.4em">Tap a spot (it snaps to the nearest 100 Hz, as your signal's lower edge) to see who is there and move your Tx offset to it; drag to fine-tune.</div>
 <div class="row" id="wfact" style="display:none;margin-top:4px"><button class="mini" id="wfGo" style="flex:1;padding:8px"></button></div>
 <div class="row" id="wflk" style="display:none;margin-top:4px"><button class="mini tog" id="wfLock" style="flex:1;padding:8px;--lit:var(--lock)" title="Locked: the auto picker never moves your Tx offset, even when someone else is on it. Moving it from the waterfall locks it."></button></div>
 <div class="small" style="margin-top:4px">One row per period, newest on top, colour = dB above the usual noise in that spot.
@@ -496,7 +496,8 @@ function draw(){const g=geom(),dpr=devicePixelRatio||1;
   ctx.fillStyle=LOOK.c('taken');((W.occupied||{})[p]||[]).forEach(([a,b])=>{a=Math.max(a,F0);b=Math.min(b,F1);if(b>a)ctx.fillRect(g.x(a),y,g.x(b)-g.x(a),SH)});
   if(W.tx_df!=null&&W.tx_par===p){ctx.strokeStyle='#fff';ctx.strokeRect(g.x(W.tx_df)+.5,y+.5,g.x(W.tx_df+bw)-g.x(W.tx_df)-1,SH-1)}
   if(W.suggest!=null&&W.tx_par===p){const x=g.x(W.suggest+bw/2);ctx.fillStyle=LOOK.c('good');ctx.beginPath();ctx.moveTo(x,y+SH+3);ctx.lineTo(x-5,y+SH+9);ctx.lineTo(x+5,y+SH+9);ctx.fill()}});
- if(sel!=null){const x=Math.round(g.x(sel))+.5;ctx.strokeStyle=LOOK.c('mid');ctx.beginPath();ctx.moveTo(x,g.y0);ctx.lineTo(x,g.yS+2*SH+4);ctx.stroke()}}
+ if(sel!=null){ctx.strokeStyle=LOOK.c('mid');  // the picked spot: solid at its lower edge (where Tx goes), faint at the top
+  [[sel,1],[sel+bw,.4]].forEach(([f,a])=>{const x=Math.round(g.x(f))+.5;ctx.globalAlpha=a;ctx.beginPath();ctx.moveTo(x,g.y0);ctx.lineTo(x,g.yS+2*SH+4);ctx.stroke()});ctx.globalAlpha=1}}
 const sender=m=>{const w=(m||'').split(' ');return(w[0]==='CQ'?w[w.length>3?2:1]:w[1]||'').replace(/[<>]/g,'')};
 function taken(p,a,b){return((W.occupied||{})[p]||[]).some(([x,y])=>a<y&&b>x)}
 function info(){if(sel==null)return;const bw=W.bw||50,a=sel,b=sel+bw;
@@ -509,8 +510,16 @@ function lockBtn(){const b=$('wfLock');$('wflk').style.display=W.ws_hunter?'flex
  b.textContent=W.df_lock?`🔒 Tx offset locked${W.tx_df!=null?' at '+W.tx_df+' Hz':''} · tap for auto`:'🔓 Auto Tx offset · tap to lock where it is';
  b.classList.toggle('lit',!!W.df_lock)}
 $('wfLock').onclick=async()=>{const r=await api('/api/txdf',{lock:!W.df_lock},'POST');if(r&&r.error)alert(r.error);else{W.df_lock=!W.df_lock;lockBtn();poll()}};
-cv.addEventListener('click',e=>{const r=cv.getBoundingClientRect(),g=geom(),f=g.f(e.clientX-r.left);
- if(f<F0)return;sel=Math.max(F0,Math.min(F1-(W.bw||50),Math.round((f-(W.bw||50)/2)/10)*10));info();draw()});
+// Pick a Tx offset: press and the spot under the pointer, snapped to the
+// nearest 100 Hz, is the lower edge of our signal; drag to fine-tune it at a
+// quarter of the pointer's speed (to the Hz) for a precise pick.
+const FINE=4;let pk=null;
+const fAt=e=>geom().f(e.clientX-cv.getBoundingClientRect().left);
+const setSel=f=>{sel=Math.max(F0,Math.min(F1-(W.bw||50),Math.round(f)));info();draw()};
+cv.addEventListener('pointerdown',e=>{const f=fAt(e);if(f<F0)return;
+ e.preventDefault();setSel(Math.round(f/100)*100);pk={f,sel};try{cv.setPointerCapture(e.pointerId)}catch(_){}});
+cv.addEventListener('pointermove',e=>{if(pk)setSel(pk.sel+(fAt(e)-pk.f)/FINE)});
+const pkEnd=()=>{pk=null};cv.addEventListener('pointerup',pkEnd);cv.addEventListener('pointercancel',pkEnd);
 $('wfGo').onclick=async()=>{const r=await api('/api/txdf',{df:sel,lock:true});if(r.error)alert(r.error);else{W.tx_df=sel;W.df_lock=true;lockBtn();draw();poll()}};
 async function poll(){if(document.visibilityState!=='visible')return;
  try{W=await (await fetch('/api/waterfall')).json();

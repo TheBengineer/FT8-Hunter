@@ -89,7 +89,9 @@ The web UI draws this same flow and lights up the step the hunter is on, with
 the steps it passed marked "no". A waterfall (ws-hunter build) shows the last 40
 periods with the decodes boxed, so undecoded signals stand out, and bars marking
 which offsets the picker counts as taken on the even and odd periods; tap a spot
-to see who is there and move your Tx offset to it. A move from the waterfall
+to see who is there and move your Tx offset to it. The tap picks the lower
+edge of your signal, snapped to the nearest 100 Hz; drag to fine-tune it to the
+Hz (the pick moves at a quarter of the pointer's speed). A move from the waterfall
 locks the offset (🔒): the auto picker then leaves it alone even when someone
 else turns up on it, and only shows where it would go. The lock button under
 the waterfall locks the offset where it is (say, one you set in WS) or hands it
