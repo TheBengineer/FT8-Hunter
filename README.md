@@ -114,9 +114,9 @@ Stations look the same on every card (lists, waterfall, time bar, globe):
 **colour = band** (by wavelength, like light: 160m red through 20m green to
 10m violet, 6m magenta), **line style = mode** (FT8 solid, FT4 dashed, FT2
 dotted), and **weight = who they are to you**, rising from other stations'
-traffic (plain, faint) to worked (dimmed), answering us (bold), our target
-(outlined; a pulsing bold arc on the globe) and the QSO in progress (pure white
-with pips and a glow of the band colour, the brightest thing on the page). All of the page's other colours are named tokens at the top of
+traffic (plain, faint, neutral grey rather than the band colour) to worked (dimmed), answering us (bold), our target
+(outlined; a pulsing bold white arc with white pips on the globe) and the QSO in progress (pure white
+with white pips and a glow of the band colour, the brightest thing on the page). All of the page's other colours are named tokens at the top of
 `ft8_app.html`, and the canvases draw with the same tokens. On a desktop the cards spread into two or
 three columns; move cards with the arrows or by dragging, and each stays in the
 column you put it in.
