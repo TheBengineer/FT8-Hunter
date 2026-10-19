@@ -425,13 +425,17 @@ for i, df in enumerate(range(300, 2700, 80)):  # crowd the odd period except one
     if not 1800 <= df < 2000:
         dec(f"W{i}AA K{i}BB -10", df=df, t_ms=recent_tm(1))
 f = pick(1)
-check("picks the only clear gap (1800-2000)", f is not None and 1800 <= f and f + 50 <= 2000)
+check("picks the only clear gap (1790-2060, between the stations at 1740 and 2060)",
+      f is not None and 1790 + 15 <= f and f + 50 + 15 <= 2060)
 check("even period unaffected by odd-period crowd", 1900 <= pick(0) <= 2050)
 check("keeps current offset while clear", pick(1, current=1850) == 1850)
 check("moves off an occupied current offset", pick(1, current=700) != 700)
 for i, df in enumerate(range(1800, 2000, 40)):
     dec(f"W{i}CC K{i}DD -10", df=df, t_ms=recent_tm(1))
-check("fully crowded period -> no pick", pick(1) is None)
+dec("K9LOUD W9LOUD -01", df=1700, t_ms=recent_tm(1))
+f = pick(1, current=1710)
+check("fully crowded: off a strong station onto a weaker one", f is not None and not 1650 < f < 1750)
+check("...but no hopping between equally crowded spots", pick(1, current=1460) == 1460)
 f = pick(1, current=800)
 check("crowded but below the lowest offset -> least-bad spot inside the range", f is not None and 1300 <= f)
 fresh(); dec("K1OLD W2LEFT -10", df=1900, t_ms=recent_tm(1, back=2))  # 3 odd periods ago
@@ -448,6 +452,9 @@ for k in (2, 1, 0): tx_in(recent_tm(1, back=k))
 check("transmitting for cycles doesn't make the frequency look free", pick(1, current=1900) != 1900)
 fresh(); dec("K1OLD W2HERE -10", df=1900, t_ms=recent_tm(1, back=3))
 check("...while heard-and-quiet cycles still free it", 1900 <= pick(1, current=1900) < 1950)
+fresh(); dec("K1EDGE W2EDGE -18", df=1940, t_ms=recent_tm(1))  # brushes 10 Hz of [1900, 1950)
+check("a weak station brushing our edge isn't worth a move", pick(1, current=1900) == 1900)
+check("...one on top of us is", pick(1, current=1940) != 1940)
 st["config"]["df_lo"] = 300
 fresh(); check("lowest offset setting is honoured (300 -> mid-band)", 1400 <= pick(1) <= 1500)
 st["config"]["df_lo"] = 1300

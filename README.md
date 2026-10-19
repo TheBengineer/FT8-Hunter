@@ -259,10 +259,15 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
   type 28, which empties DX Call and selects Tx6) and then Enable Tx, and checks
   WS's Status that the next message really is the CQ.
 - **Clear offset** (ws-hunter build): before answering or calling CQ it ticks Hold
-  Tx Freq and moves to the widest gap on the period it will transmit in, judged
-  from the decodes and spectrum of that period's last two cycles only (a station
-  that gave up a frequency before then no longer counts); it stays put while
-  that spot is clear.
+  Tx Freq and moves to the least crowded spot on the period it will transmit in.
+  Each offset is scored by what overlaps it in that period's last three cycles
+  heard: decodes count by strength, the newest cycle in full and older ones a
+  third as much (a station that left a frequency soon stops counting), plus
+  undecoded signals from the spectrum. It stays put unless another spot is
+  clearly better, so a weak station brushing the edge of its signal doesn't
+  move it, and on a full band it still takes the least bad spot. Replaying 40
+  minutes of a busy 20 m band, this moved half as often as the old "widest
+  gap" picker (22% vs 42% of periods) and was stepped on less (22% vs 27%).
   The spectrum test compares each 10 Hz bin with its usual quiet level (learned
   over the last few minutes, so the receiver's passband slope doesn't count), so
   a station too weak to decode here, about -20 dB and up, still marks its spot

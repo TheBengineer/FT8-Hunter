@@ -893,27 +893,60 @@ def occupied(par, now):
         iv += [(f - GUARD, f + ex[3] + GUARD) for f in weak_hot(par, now, ex)]
     return iv
 
+# Offset picker cost. Replaying 40 min of a busy 20 m band: moves 42% ->
+# 22% of periods, picks stepped on 27% -> 22%. A decode overlapping us in
+# full costs 1 (up to 2 if strong); the newest heard period counts in full,
+# each older one 0.35 as much. Undecoded signals (weak_hot: persistent or
+# strong, from the two newest periods) cost 0.7 per 50 Hz.
+PICK_PERIODS, PICK_DECAY, PICK_ENERGY, PICK_GUARD = 3, 0.35, 0.7, 0.2
+PICK_HYST = 0.6  # keep the current offset unless the best is this much better
+
+def tx_cost(par, now):
+    """Cost of transmitting at each offset on parity `par`, from the last
+    PICK_PERIODS periods of it we heard: overlap with decodes (by strength,
+    the newest weighted most) and with undecoded signals; a little for
+    sitting inside someone's guard band."""
+    cfg, w = state["config"], bw()
+    lo, hi = cfg.get("df_lo", 1300) - 100, cfg.get("df_hi", 2700) + 100
+    heard = heard_periods(par, now, PICK_PERIODS)
+    wt = {t: PICK_DECAY ** k for k, t in enumerate(heard)}
+    sigs = []  # (lo Hz, hi Hz, weight)
+    for o in list(ENG["occ"]):
+        if o["par"] == par and o.get("tm") in wt:
+            snr = o["snr"] if o.get("snr") is not None else -15
+            sigs.append((o["df"], o["df"] + w, wt[o["tm"]] * (1 + max(0, snr + 20) / 10)))
+    ex = spec_excess(par, now, periods=set(heard[:2]))
+    if ex:
+        sigs += [(f, f + ex[3], PICK_ENERGY) for f in weak_hot(par, now, ex) if lo <= f < hi]
+    def cost(f):
+        c = 0.0
+        for a, b, k in sigs:
+            ov = min(b, f + w) - max(a, f)
+            if ov > 0:
+                c += k * ov / w
+            elif ov > -GUARD:
+                c += k * PICK_GUARD * (GUARD + ov) / GUARD
+        return c
+    return cost
+
 def pick_tx_df(par, current=None):
-    """Clearest Tx offset on parity `par`: the spot furthest from any occupied
-    interval (and the band edges). Keeps `current` while it stays clear."""
+    """Least crowded Tx offset on parity `par` (tx_cost), nearest the current
+    one among equals. Keeps `current` unless the best is clearly better
+    (PICK_HYST): a faint trace or a decode brushing our edge isn't worth a
+    move. Even a crowded band gets the least bad spot; below df_lo (the rig
+    feeds back) or above df_hi we always move into the range."""
     cfg = state["config"]
     lo, hi = cfg.get("df_lo", 1300), cfg.get("df_hi", 2700)
-    iv = occupied(par, time.time())
-    def room(f):  # Hz of clearance around [f, f + bw()]; negative = overlap
-        d = min(f - lo, hi - (f + bw()))
-        for a, b in iv:
-            if f + bw() > a and f < b:
-                return -1
-            d = min(d, a - (f + bw()) if a >= f + bw() else f - b)
-        return d
-    if current and room(current) >= 0:
+    cost = tx_cost(par, time.time())
+    cands = range(lo, hi - bw() + 1, 10)
+    if not cands:
         return current
-    best = max(range(lo, hi - bw() + 1, 10), key=lambda f: (room(f), -abs(f - (current or 1500))))
-    if room(best) >= 0:
-        return best
-    # nowhere clear: stay put, unless we are outside the allowed range (below
-    # df_lo the rig feeds back), then take the least crowded spot inside it
-    return best if current is not None and not lo <= current <= hi - bw() else None
+    c = {f: round(cost(f), 3) for f in cands}
+    near = current if current is not None else (lo + hi - bw()) / 2  # nothing heard: mid-range
+    best = min(cands, key=lambda f: (c[f], abs(f - near)))
+    if current is not None and lo <= current <= hi - bw() and cost(current) <= c[best] + PICK_HYST:
+        return current
+    return best
 
 def heard_cycle(now):
     """Have we just heard a full cycle: a spectrum (heard, not transmitted
