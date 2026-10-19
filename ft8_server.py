@@ -3,6 +3,7 @@
 Run: python3 ft8_server.py --mycall KR4MZM --mygrid EM84 --port 2237 --http 8080
 API: GET /api/state -> {running, target, cq[], answering[], worked[], log[], config, stats}
      POST /api/start|stop|call|work|skip|config   Webapp: GET /
+     GET|POST /api/logbooks (+ /test, /retry): online logbook uploads
 """
 import argparse, json, socket, struct, threading, time, re, os, math, random
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -571,6 +572,11 @@ def udp_listener():
                             log(f"logged QSO with {dxcall}")
                 except Exception as e:
                     log_err("QSO Logged parse", e)
+            if mtype == 12:  # Logged ADIF: the contact as WS logged it, for the online logbooks
+                try:
+                    lb_enqueue(read_qstr(data, off)[0])
+                except Exception as e:
+                    log_err("Logged ADIF", e)
             if mtype == 1:  # Status body: DialFreq u64, Mode, DXcall, Report,
                 try:           # TxMode, TxEnabled?, Transmitting?, ...
                     state["udp"]["dial"] = struct.unpack(">Q", data[off:off+8])[0]
@@ -2346,6 +2352,175 @@ def atu_tune():
         iv[1] = time.time()
         ENG["tuning"] = None
 
+# ---- online logbooks: each contact WS logs (its Logged ADIF packet) is queued
+# for every service turned on and sent from a background thread, retried while
+# the service can't be reached. Keys and passwords live in logbooks.json (owner
+# only) and never go to the web page; the queue survives a restart.
+LB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logbooks.json")
+LB_QUEUE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logbooks_queue.json")
+LB = {"cfg": {}, "queue": [], "status": {}, "lock": threading.Lock(), "wake": threading.Event()}
+
+def lb_post(url, data, timeout=20):
+    """POST a form: (HTTP status, body). Can't reach it: OSError."""
+    import urllib.request, urllib.error, urllib.parse
+    req = urllib.request.Request(url, urllib.parse.urlencode(data).encode(),
+                                 headers={"User-Agent": "FT8-Hunter/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", "replace")
+
+def adif_record(text):
+    """One ADIF record from WS's Logged ADIF text: the header dropped, <eor> kept."""
+    m = re.search(r"<eoh>", text, re.I)
+    rec = " ".join((text[m.end():] if m else text).split())
+    return rec if re.search(r"<eor>\s*$", rec, re.I) else rec + " <eor>"
+
+def adif_field(rec, name):
+    m = re.search(rf"<{name}:(\d+)(?::[^>]*)?>", rec, re.I)
+    return rec[m.end():m.end() + int(m.group(1))].strip() if m else ""
+
+def qrz_reply(body):
+    """QRZ answers with a form: RESULT=OK&LOGID=...; REASON can hold spaces."""
+    return {k.strip().upper(): " ".join(v.split()) for k, _, v in (kv.partition("=") for kv in body.strip().split("&"))}
+
+def qrz_send(cfg, rec):
+    code, body = lb_post("https://logbook.qrz.com/api", {"KEY": cfg["key"], "ACTION": "INSERT", "ADIF": rec})
+    r = qrz_reply(body)
+    res, why = r.get("RESULT", "").upper(), r.get("REASON", "")
+    if res in ("OK", "REPLACE"):
+        return "ok", ""
+    if "duplicate" in why.lower():
+        return "dupe", ""
+    if res == "AUTH" or "api key" in why.lower():
+        return "hold", why or "the API key was refused"
+    if res == "FAIL":
+        return "hold", why or "rejected"
+    return "retry", f"HTTP {code}: {body.strip()[:60]}"
+
+def qrz_test(cfg):
+    code, body = lb_post("https://logbook.qrz.com/api", {"KEY": cfg["key"], "ACTION": "STATUS"})
+    r = qrz_reply(body)
+    if r.get("RESULT", "").upper() == "OK":
+        return True, f"logbook {r.get('CALLSIGN', '?')}, {r.get('COUNT', '?')} contacts"
+    return False, r.get("REASON") or f"HTTP {code}: {body.strip()[:60]}"
+
+# service: name, settings (key, label, secret), where to find them, send, test
+LOGBOOKS = {
+    "qrz": {"name": "QRZ Logbook", "fields": [("key", "API key", True)],
+            "help": "qrz.com → My Logbook → Settings: the API key (uploads need a QRZ XML subscription)",
+            "send": qrz_send, "test": qrz_test},
+}
+
+def lb_ready(svc):
+    c = LB["cfg"].get(svc, {})
+    return bool(c.get("on")) and all(c.get(k) for k, _, _ in LOGBOOKS[svc]["fields"])
+
+def lb_save():
+    for path, obj in ((LB_FILE, LB["cfg"]), (LB_QUEUE_FILE, LB["queue"])):
+        try:  # keys and passwords: owner only
+            with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+                json.dump(obj, f, indent=1)
+        except OSError as e:
+            log(f"logbooks not saved: {e}")
+
+def lb_load():
+    for path, key in ((LB_FILE, "cfg"), (LB_QUEUE_FILE, "queue")):
+        try:
+            LB[key] = json.load(open(path))
+        except (OSError, ValueError):
+            pass
+
+def lb_enqueue(adif):
+    """A contact WS just logged goes to every logbook turned on."""
+    rec = adif_record(adif)
+    call = adif_field(rec, "call").upper()
+    if not call:
+        return
+    with LB["lock"]:
+        for svc in LOGBOOKS:
+            if lb_ready(svc) and not any(i["svc"] == svc and i["rec"] == rec for i in LB["queue"]):
+                LB["queue"].append({"svc": svc, "rec": rec, "call": call, "tries": 0, "next": 0})
+        lb_save()
+    LB["wake"].set()
+
+def lb_run(now=None):
+    """Send what's due. ok / dupe: done; retry: later, backing off; hold: the
+    service refused it (bad key, rejected) and it waits for Save or Retry."""
+    now = now or time.time()
+    with LB["lock"]:
+        due = [i for i in LB["queue"] if not i.get("held") and i["next"] <= now and lb_ready(i["svc"])]
+    for it in due:
+        svc = LOGBOOKS[it["svc"]]
+        try:
+            res, why = svc["send"](LB["cfg"][it["svc"]], it["rec"])
+        except Exception as e:  # OSError: offline, DNS, timeout
+            res, why = "retry", str(getattr(e, "reason", e))[:80]
+        st = LB["status"].setdefault(it["svc"], {"sent": 0, "dupes": 0})
+        with LB["lock"]:
+            if res in ("ok", "dupe"):
+                LB["queue"].remove(it)
+                st["sent" if res == "ok" else "dupes"] += 1
+                st.update(last=it["call"], last_t=time.time(), err="")
+                log(f"{svc['name']}: {it['call']} " + ("logged" if res == "ok" else "was already there"))
+            elif res == "hold":
+                it.update(held=True, err=why); st["err"] = why
+                log(f"{svc['name']} refused {it['call']}: {why}. Fix it in Online logbooks, then Retry")
+            else:
+                it["tries"] += 1
+                wait = min(3600, 60 * 2 ** (it["tries"] - 1))
+                it.update(next=now + wait, err=why); st["err"] = why
+                if it["tries"] == 1:
+                    log(f"{svc['name']}: can't send {it['call']} ({why}); retrying, every hour at most")
+            lb_save()
+
+def lb_worker():
+    while True:
+        LB["wake"].wait(20); LB["wake"].clear()
+        try:
+            lb_run()
+        except Exception as e:
+            log_err("logbooks", e)
+
+def lb_view():
+    """Logbook settings for the page: secrets only say whether they're set."""
+    out = []
+    for svc, d in LOGBOOKS.items():
+        c, st = LB["cfg"].get(svc, {}), LB["status"].get(svc, {})
+        q = [i for i in LB["queue"] if i["svc"] == svc]
+        out.append({"id": svc, "name": d["name"], "help": d["help"], "on": bool(c.get("on")),
+                    "ready": lb_ready(svc),
+                    "fields": [{"key": k, "label": lab, "secret": sec, "set": bool(c.get(k)),
+                                "value": "" if sec else c.get(k, "")} for k, lab, sec in d["fields"]],
+                    "sent": st.get("sent", 0), "dupes": st.get("dupes", 0),
+                    "last": st.get("last"), "last_t": st.get("last_t"),
+                    "waiting": sum(not i.get("held") for i in q), "held": sum(bool(i.get("held")) for i in q),
+                    "err": next((i["err"] for i in q if i.get("held")), "") or (st.get("err", "") if q else "")})
+    return out
+
+def lb_update(svc, body):
+    """Settings from the page. A blank secret keeps the saved one; saving lets
+    held contacts go again."""
+    c = LB["cfg"].setdefault(svc, {})
+    for k, _, sec in LOGBOOKS[svc]["fields"]:
+        v = str(body.get("fields", {}).get(k, "")).strip()
+        if v or not sec:
+            c[k] = v
+    if "on" in body:
+        c["on"] = bool(body["on"])
+    lb_retry(svc)
+    log(f"{LOGBOOKS[svc]['name']}: " + ("uploading each contact" if lb_ready(svc) else
+                                        "off" if not c.get("on") else "on, but needs its settings filled in"))
+
+def lb_retry(svc):
+    with LB["lock"]:
+        for i in LB["queue"]:
+            if i["svc"] == svc:
+                i.update(held=False, next=0)
+        lb_save()
+    LB["wake"].set()
+
 class H(BaseHTTPRequestHandler):
     def _json(self, obj, code=200):
         b = json.dumps(obj).encode()
@@ -2375,6 +2550,8 @@ class H(BaseHTTPRequestHandler):
             qs = {k: ts for k, ts in list({**state["worked"], **RECENT}.items()) if ts and now - ts < 86400}
             return self._json({"now": now, "qsos": [{"call": c, "band": b, "mode": m, "t": ts}
                                                      for (c, b, m), ts in sorted(qs.items(), key=lambda kv: kv[1])]})
+        if self.path == "/api/logbooks":
+            return self._json({"services": lb_view()})
         if self.path == "/api/scan":
             return self._json(scan_state())
         if self.path == "/api/waterfall":
@@ -2531,6 +2708,25 @@ class H(BaseHTTPRequestHandler):
                 log(f"TX power {'in QSO' if answered() else 'calling'} set to {w} W")
             except Exception as e:
                 return self._json({"error": str(e)[:80]}, 502)
+        elif p in ("/api/logbooks", "/api/logbooks/test", "/api/logbooks/retry"):
+            svc = body.get("id")
+            if svc not in LOGBOOKS:
+                return self._json({"error": "unknown logbook"}, 404)
+            if p == "/api/logbooks":
+                lb_update(svc, body)
+            elif p == "/api/logbooks/retry":
+                lb_retry(svc)
+            else:  # what's typed, else what's saved
+                d = LOGBOOKS[svc]
+                cfg = {**LB["cfg"].get(svc, {}), **{k: v.strip() for k, v in body.get("fields", {}).items() if v.strip()}}
+                if not all(cfg.get(k) for k, _, _ in d["fields"]):
+                    return self._json({"ok": False, "detail": "fill in " + ", ".join(lab for k, lab, _ in d["fields"] if not cfg.get(k))})
+                try:
+                    good, detail = d["test"](cfg)
+                except Exception as e:
+                    good, detail = False, f"can't reach it: {str(getattr(e, 'reason', e))[:80]}"
+                return self._json({"ok": good, "detail": detail})
+            return self._json({"ok": True, "services": lb_view()})
         elif p == "/api/scan/start":
             if not has_ws_hunter():
                 return self._json({"error": "needs the ws-hunter build of WS"}, 409)
@@ -2631,6 +2827,8 @@ threading.Thread(target=watcher, daemon=True).start()
 threading.Thread(target=rig_poll, daemon=True).start()
 load_scan()
 load_swr()
+lb_load()
+threading.Thread(target=lb_worker, daemon=True).start()
 threading.Thread(target=load_freqs, daemon=True).start()
 log(f"hunter ready as {state['mycall']} {state['mygrid']}")
 print(f"open http://0.0.0.0:{a.http}/")

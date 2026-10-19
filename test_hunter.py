@@ -14,6 +14,7 @@ _tmp = tempfile.mkdtemp()
 ns["CONFIG_FILE"] = os.path.join(_tmp, "hunter_config.json")  # never the real settings
 ns["SCAN_FILE"], ns["FREQ_FILE"] = os.path.join(_tmp, "scan.json"), os.path.join(_tmp, "freqs.json")
 ns["SWR_FILE"] = os.path.join(_tmp, "swr.json")
+ns["LB_FILE"], ns["LB_QUEUE_FILE"] = os.path.join(_tmp, "lb.json"), os.path.join(_tmp, "lbq.json")
 
 
 class FakeSock:
@@ -700,6 +701,56 @@ send(5, struct.pack(">qIB", 2461327, 52_000_000, 1) + ps("K7ABC") + ps("DN31")
 check("QSO Logged records its own band and mode (40m FT4)",
       ("K7ABC", "40m", "FT4") in st["worked"] and not ns["is_worked"]("K7ABC"))
 st["udp"]["band"] = None
+
+# --- online logbooks: WS's Logged ADIF goes to each logbook turned on
+LB = ns["LB"]
+ADIF = ("\n<adif_ver:5>3.1.0\n<programid:6>WSJT-X\n<EOH>\n<call:5>K7ABC <gridsquare:4>DN31 <mode:3>FT8 "
+        "<qso_date:8>20261019 <time_on:6>140300 <band:3>20m <station_callsign:6>KR4MZM <EOR>\n")
+rec = ns["adif_record"](ADIF)
+check("ADIF record: header dropped, one line, ends <eor>",
+      rec.startswith("<call:5>K7ABC") and rec.endswith("<EOR>") and "\n" not in rec)
+check("ADIF field read by its length", ns["adif_field"](rec, "station_callsign") == "KR4MZM")
+LB["queue"].clear(); LB["cfg"].clear()
+send(12, ps(ADIF))
+check("no logbook turned on: nothing queued", not LB["queue"])
+LB["cfg"]["qrz"] = {"on": True, "key": ""}
+ns["lb_enqueue"](ADIF)
+check("turned on without its key: nothing queued", not LB["queue"])
+LB["cfg"]["qrz"]["key"] = "ABCD-1234"
+LB["wake"].set = lambda: None  # no worker thread here: lb_run is called by hand
+send(12, ps(ADIF)); ns["lb_enqueue"](ADIF)
+check("Logged ADIF packet queues the contact for QRZ, once",
+      len(LB["queue"]) == 1 and LB["queue"][0]["call"] == "K7ABC")
+posts, answers = [], []
+def fake_post(url, data, timeout=20):
+    posts.append(data); a = answers.pop(0)
+    if isinstance(a, Exception): raise a
+    return a
+ns["lb_post"] = fake_post
+answers.append(OSError("Network is unreachable")); ns["lb_run"]()
+it = LB["queue"][0]
+check("QRZ unreachable: kept, retried in a minute", it["tries"] == 1 and 50 < it["next"] - time.time() < 70)
+ns["lb_run"]()
+check("...and not before", len(posts) == 1)
+answers.append((200, "RESULT=FAIL&REASON=invalid api key ABCD-1234&EXTENDED=")); ns["lb_run"](it["next"] + 1)
+check("bad key: held for the operator, with QRZ's reason",
+      it.get("held") and "api key" in it["err"] and posts[-1]["ADIF"] == rec and posts[-1]["ACTION"] == "INSERT")
+ns["lb_run"](time.time() + 99999)
+check("...held contacts aren't sent again by themselves", len(posts) == 2)
+v = ns["lb_view"]()[0]
+check("the page sees the key is set, never the key", v["fields"][0]["set"] and v["fields"][0]["value"] == "" and v["held"] == 1)
+ns["lb_update"]("qrz", {"on": True, "fields": {"key": ""}})
+check("Save with the key left blank keeps it and lets held contacts go",
+      LB["cfg"]["qrz"]["key"] == "ABCD-1234" and not it.get("held"))
+answers.append((200, "RESULT=OK&LOGID=130877825&LOGIDS=130877825&COUNT=1")); ns["lb_run"]()
+check("QRZ OK: sent and off the queue", not LB["queue"] and LB["status"]["qrz"]["sent"] == 1)
+ns["lb_enqueue"](ADIF); answers.append((200, "RESULT=FAIL&REASON=Unable to add QSO to database: duplicate&COUNT=0"))
+ns["lb_run"]()
+check("QRZ duplicate counts as done", not LB["queue"] and LB["status"]["qrz"]["dupes"] == 1)
+check("logbook keys saved owner-only", os.stat(ns["LB_FILE"]).st_mode & 0o777 == 0o600)
+answers.append((200, "RESULT=OK&CALLSIGN=KR4MZM&COUNT=812&BOOKID=1"))
+check("QRZ test: the logbook's call and size", ns["qrz_test"]({"key": "x"}) == (True, "logbook KR4MZM, 812 contacts"))
+LB["cfg"].clear(); LB["status"].clear()
 
 # --- FT4 / FT2: everything follows the mode WS reports in Status
 def status(mode_name, tx_df=1500):

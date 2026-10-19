@@ -305,6 +305,16 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
   logs the QSO when it sends the 73 and only recognises `73` as a word of its
   own, so `GL73` is sent as `GL 73`; a line without a 73, or too long, is
   refused when saved. `73` alone means the standard message.
+- **Online logbooks** (📒 card): each contact WS logs (its Logged ADIF
+  packet) is uploaded to every logbook turned on, from a background queue that
+  survives a restart. If the service can't be reached it retries, backing off
+  to once an hour. A duplicate counts as done. If the service refuses the
+  contact (bad key, wrong station call), it waits until you fix the settings
+  and press Save or Retry. **Test** checks what you've typed without saving it.
+  Keys and passwords are kept in `logbooks.json` (owner-only, not in git) and
+  the page only shows whether one is saved. So far: **QRZ Logbook** (API key
+  from qrz.com → My Logbook → Settings; uploading through the API needs a QRZ
+  XML subscription).
 - **WRL Desktop bridge**: every WS packet is rebroadcast to `127.0.0.1:2238` — set
   WRL Desktop's UDP server to that port — and whatever WRL sends back is relayed to
   WS, so WRL logs as if it were talking to WS directly. (Two apps can't share 2237:

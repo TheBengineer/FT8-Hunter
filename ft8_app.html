@@ -169,6 +169,9 @@ Chart: dB over the floor, 200–3000 Hz · <span style="color:#2ecc71">▬ FT-li
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="US license class: which frequencies the tune carrier may use">License class</span><select id="sLic" style="max-width:120px;padding:10px;border-radius:8px;border:1px solid #334;background:#0f1419;color:#fff"><option value="general">General</option><option value="extra">Extra</option></select></div>
 <button id="bSave" style="margin-top:8px">Save</button>
 <button id="bLayout" class="mini" style="margin-top:8px;background:#3a4552">Reset card order</button></details></div>
+<div class="card" data-id="logbooks"><details id="lbBox"><summary>📒 Online logbooks <span id="lbSum" class="small" style="opacity:.75"></span></summary>
+<div class="small" style="opacity:.75;margin-top:6px">Each contact WS logs is sent to every logbook turned on here, and retried until it goes through. Keys and passwords stay on this computer and are never shown again.</div>
+<div id="lbList"></div></details></div>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -514,6 +517,53 @@ const wait=setInterval(()=>{if(window._cfg){clearInterval(wait);render()}},500);
 })();
 </script>
 <script>
+// Online logbooks: each service's settings built once (so a refresh never
+// clears what you're typing), its status line refreshed every 15 s.
+(()=>{
+const LBS={},ago=t=>{const m=Math.round((Date.now()/1000-t)/60);return m<1?'just now':m<60?m+' min ago':Math.round(m/60)+' h ago'};
+function status(s){
+ const bits=[];if(!s.on)bits.push('off');else if(!s.ready)bits.push('needs its settings');
+ bits.push(`${s.sent} sent`+(s.dupes?`, ${s.dupes} already there`:''));
+ if(s.last)bits.push(`last ${s.last} ${ago(s.last_t)}`);
+ if(s.waiting)bits.push(`${s.waiting} waiting to send`+(s.err?` (${s.err})`:''));
+ if(s.held)bits.push(`⚠ ${s.held} refused: ${s.err}. Fix the settings, then Save or Retry`);
+ return bits.join(' · ')}
+function build(s){
+ const d=document.createElement('div');d.style.cssText='border-top:1px solid #26303c;margin-top:10px;padding-top:8px';
+ const h=document.createElement('div');h.className='row';
+ const b=document.createElement('b');b.style.flex='1';b.textContent=s.name;
+ const lab=document.createElement('label');lab.className='small';lab.textContent='Upload ';
+ const on=document.createElement('input');on.type='checkbox';on.style.cssText='width:auto;margin-top:0';lab.appendChild(on);
+ h.append(b,lab);d.appendChild(h);
+ const help=document.createElement('div');help.className='small';help.style.opacity='.75';help.textContent=s.help;d.appendChild(help);
+ const ins={};
+ s.fields.forEach(f=>{const r=document.createElement('div');r.className='row';r.style.marginTop='6px';
+  const l=document.createElement('span');l.className='small';l.style.flex='1';l.textContent=f.label;
+  const i=document.createElement('input');i.type=f.secret?'password':'text';i.autocomplete='off';i.spellcheck=false;
+  i.style.cssText='max-width:260px;margin-top:0';ins[f.key]=i;r.append(l,i);d.appendChild(r)});
+ const br=document.createElement('div');br.className='row';br.style.marginTop='8px';
+ const mk=(t,bg)=>{const x=document.createElement('button');x.className='mini';x.textContent=t;if(bg)x.style.background=bg;br.appendChild(x);return x};
+ const save=mk('Save'),test=mk('Test','#3a4552'),retry=mk('Retry','#3a4552');d.appendChild(br);
+ const msg=document.createElement('div');msg.className='small';msg.style.marginTop='6px';d.appendChild(msg);
+ const st=document.createElement('div');st.className='small';st.style.cssText='margin-top:4px;opacity:.85';d.appendChild(st);
+ const fields=()=>Object.fromEntries(Object.entries(ins).map(([k,i])=>[k,i.value]));
+ save.onclick=async()=>{const r=await api('/api/logbooks',{id:s.id,on:on.checked,fields:fields()});
+  msg.textContent=r.error||'Saved.';if(r.services){Object.values(ins).forEach(i=>{if(i.type==='password')i.value=''});r.services.forEach(fill)}};
+ test.onclick=async()=>{msg.textContent='Testing...';const r=await api('/api/logbooks/test',{id:s.id,fields:fields()});
+  msg.textContent=(r.ok?'✓ ':'✗ ')+(r.detail||r.error||'')};
+ retry.onclick=async()=>{const r=await api('/api/logbooks/retry',{id:s.id});msg.textContent=r.error||'Sending again.';if(r.services)r.services.forEach(fill)};
+ $('lbList').appendChild(d);LBS[s.id]={on,ins,st,retry,first:true}}
+function fill(s){if(!LBS[s.id])build(s);const e=LBS[s.id];
+ if(e.first){e.on.checked=s.on;s.fields.forEach(f=>{if(!f.secret)e.ins[f.key].value=f.value});e.first=false}
+ s.fields.forEach(f=>{if(f.secret)e.ins[f.key].placeholder=f.set?'saved (type to replace)':''});
+ e.st.textContent=status(s);e.retry.style.display=s.waiting||s.held?'':'none'}
+async function load(){try{const r=await api('/api/logbooks');(r.services||[]).forEach(fill);
+ const on=r.services.filter(s=>s.on);
+ $('lbSum').textContent=on.length?'· '+on.map(s=>s.name.split(' ')[0]+(s.held?' ⚠':s.waiting?' …':' ✓')).join(' '):''}catch(e){}}
+load();setInterval(load,15000);
+})();
+</script>
+<script>
 // Card layout: ▲ / ▼ move a card within its column, ◀ / ▶ to the next column,
 // or drag the ⠿ grip (mouse or touch) anywhere. Each column count (1, 2, 3)
 // keeps its own layout, saved per browser.
@@ -521,8 +571,8 @@ const wait=setInterval(()=>{if(window._cfg){clearInterval(wait);render()}},500);
 const box=document.querySelector('.cards'),KEY='cardCols';
 const all=[...box.querySelectorAll(':scope>.card')],by=Object.fromEntries(all.map(c=>[c.dataset.id,c]));
 const DEF={1:[all.map(c=>c.dataset.id)],
- 2:[['tl','status','wf','scan','globe','flow','dx','manual'],['cq','seq','ans','msgs','log','worked','settings']],
- 3:[['tl','status','wf','scan','globe','flow','dx'],['cq','seq','ans','msgs'],['manual','log','worked','settings']]};
+ 2:[['tl','status','wf','scan','globe','flow','dx','manual'],['cq','seq','ans','msgs','log','worked','settings','logbooks']],
+ 3:[['tl','status','wf','scan','globe','flow','dx'],['cq','seq','ans','msgs'],['manual','log','worked','settings','logbooks']]};
 let saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||'{}')||{}}catch(e){}
 const ncols=()=>innerWidth>=1350?3:innerWidth>=900?2:1;
 let n=0;
