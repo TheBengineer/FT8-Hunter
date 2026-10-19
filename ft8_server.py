@@ -25,7 +25,7 @@ state = {
                "call_cq": True, "cq_secs": 120, "cq_first": False,
                "manual": False,
                "compat": False,  # plain WSJT-X/WS UDP only (no ws-hunter commands): a light asks you to Enable Tx  # contest mode: the hunter ranks, the operator taps to start each QSO
-               "auto_df": True, "df_lo": 1300, "df_hi": 2700,  # df_lo: rig feeds back below 1300 Hz
+               "auto_df": True, "df_lock": False, "df_lo": 1300, "df_hi": 2700,  # df_lo: rig feeds back below 1300 Hz
                "qrm_detect": True, "qrm_backoff_min": 5, "min_snr": -20,
                "check_every": 10,  # transmissions between one-cycle listens for interference (0 = never)
                "watts_call": 10, "watts_qso": 20,
@@ -921,12 +921,13 @@ def tune_tx(par):
     on stock WS the pick is only shown in the UI."""
     cur = state["udp"].get("tx_df")
     f = pick_tx_df(par, cur)
-    ENG["suggest"] = {"par": par, "df": f}
+    lock = bool(state["config"].get("df_lock")) and cur is not None
+    ENG["suggest"] = {"par": par, "df": f, "locked": lock, "busy": lock and f != cur}
     if not (has_ws_hunter() and state["config"].get("auto_df", True)):
         return
     tx, wid = CTX["tx"], state["ws_id"]
     tx.sendto(pack_set_bool(SET_HOLD_TX_FREQ, wid, True), ws_dest())
-    if f and f != cur:
+    if f and f != cur and not lock:  # locked: the operator chose this offset, keep it
         tx.sendto(pack_set_u32(SET_TX_DF, wid, f), ws_dest())
         log(f"Tx offset {cur} -> {f} Hz ({'even' if par == 0 else 'odd'})")
 
@@ -1077,7 +1078,8 @@ def waterfall(rows=40):
             "occupied": {p: merged(occupied(p, now)) for p in (0, 1)},
             "tx_df": state["udp"].get("tx_df"), "tx_par": sug.get("par"), "suggest": sug.get("df"),
             "df_lo": cfg.get("df_lo", 1300), "df_hi": cfg.get("df_hi", 2700),
-            "learned": len(by_t) >= 8, "ws_hunter": has_ws_hunter()}
+            "learned": len(by_t) >= 8, "ws_hunter": has_ws_hunter(),
+            "df_lock": bool(state["config"].get("df_lock"))}
 
 def check_qrm(now=None):
     """Busy-frequency check for spectra whose decodes are in by now (decoding
@@ -2489,15 +2491,25 @@ class H(BaseHTTPRequestHandler):
                 return self._json({"error": f"in a QSO with {state['target']['call']}: change band when it is done"}, 409)
             threading.Thread(target=scan_go, args=(int(body["hz"]), md), daemon=True).start()
         elif p == "/api/txdf":
-            # manual Tx offset from the waterfall; the auto picker keeps it while it stays clear
-            if not has_ws_hunter():
-                return self._json({"error": "needs the ws-hunter build of WS"}, 409)
-            f = max(200, min(int(body.get("df", 0)), 3000 - bw()))
-            tx, wid = CTX["tx"], state["ws_id"]
-            tx.sendto(pack_set_bool(SET_HOLD_TX_FREQ, wid, True), ws_dest())
-            tx.sendto(pack_set_u32(SET_TX_DF, wid, f), ws_dest())
-            state["udp"]["tx_df"] = f
-            log(f"Tx offset set to {f} Hz from the waterfall")
+            # manual Tx offset from the waterfall, locked (the auto picker leaves it
+            # alone) unless lock is false; {"lock": bool} alone locks/unlocks the current one
+            c = state["config"]
+            if "df" in body:
+                if not has_ws_hunter():
+                    return self._json({"error": "needs the ws-hunter build of WS"}, 409)
+                f = max(200, min(int(body["df"]), 3000 - bw()))
+                tx, wid = CTX["tx"], state["ws_id"]
+                tx.sendto(pack_set_bool(SET_HOLD_TX_FREQ, wid, True), ws_dest())
+                tx.sendto(pack_set_u32(SET_TX_DF, wid, f), ws_dest())
+                state["udp"]["tx_df"] = f
+                c["df_lock"] = bool(body.get("lock", True))
+                log(f"Tx offset set to {f} Hz from the waterfall" + (", locked" if c["df_lock"] else ""))
+            elif "lock" in body:
+                c["df_lock"] = bool(body["lock"])
+                cur = state["udp"].get("tx_df")
+                log(f"Tx offset locked at {cur} Hz: the auto picker leaves it alone" if c["df_lock"]
+                    else "Tx offset unlocked: the auto picker moves it off busy spots")
+            save_config()
         elif p == "/api/config":
             state["config"].update({k: v for k, v in body.items() if k in state["config"]})
             c = state["config"]  # keep the offset range usable: 200 Hz up, room for a signal

@@ -109,6 +109,7 @@ details summary{font-weight:700;padding:4px}
 <canvas id="wf" style="width:100%;display:block;cursor:crosshair"></canvas>
 <div class="small" id="wfinfo" style="margin-top:4px;min-height:2.4em">Tap a spot to see who is there and move your Tx offset to it.</div>
 <div class="row" id="wfact" style="display:none;margin-top:4px"><button class="mini" id="wfGo" style="flex:1;padding:8px"></button></div>
+<div class="row" id="wflk" style="display:none;margin-top:4px"><button class="mini" id="wfLock" style="flex:1;padding:8px" title="Locked: the auto picker never moves your Tx offset, even when someone else is on it. Moving it from the waterfall locks it."></button></div>
 <div class="small" style="margin-top:4px">One row per period, newest on top, colour = dB above the usual noise in that spot.
 <span style="color:#cfd8e3">▭ decoded</span> · <span style="color:#ff6b6b">┆ our Tx</span> · bars: <span style="color:#3fae6a">clear</span> / <span style="color:#d04a4a">taken</span> per period (even, odd), ▲ the hunter's pick · dim = outside the auto range</div></div>
 <div class="card" data-id="scan"><h2>📶 Band scan <span class="small" id="scsum"></span></h2>
@@ -264,7 +265,7 @@ $('log').innerHTML=s.log.map(l=>`<li>${l.t} ${l.msg}</li>`).join('');
 $('stats').textContent=`CQ heard ${s.stats.cq_heard} · calls ${s.stats.calls_made}`;
 window._tx=s.udp.transmitting;window._per=s.period||15;window._mode=s.mode||'FT8';window._dx=s.udp.dxcall||'';
 $('dx').textContent=window._dx?('DX '+window._dx):'';
-const td=s.txdf||{};$('txdf').textContent=(td.current!=null?('Tx '+td.current+' Hz'):'')+(td.df&&td.df!==td.current?(' · clear: '+td.df+' Hz ('+(td.par?'odd':'even')+')'):'');
+const td=s.txdf||{},lk=!!(s.config||{}).df_lock;$('txdf').textContent=(td.current!=null?('Tx '+td.current+' Hz'+(lk?' 🔒':'')):'')+(td.df&&td.df!==td.current?((lk?' · busy? clear: ':' · clear: ')+td.df+' Hz ('+(td.par?'odd':'even')+')'):'');
 const q=s.qrm||{};$('qrm').style.display=q.secs?'block':'none';if(q.secs)$('qrm').textContent='⚠️ Someone else is on frequency ('+q.why+') — no new calls for '+Math.ceil(q.secs/60)+'m';
 const ago=s.udp.heard_ago;
 if(ago!=null&&ago<45){$('udpdot').className='dot run';$('udp').textContent=`🔗 WS linked (${ago}s ago, id=${s.udp.ws_id}${s.udp.ws_hunter?' · ws-hunter':''})${s.udp.dxcall?' · DX='+s.udp.dxcall:''}`}
@@ -437,17 +438,21 @@ function taken(p,a,b){return((W.occupied||{})[p]||[]).some(([x,y])=>a<y&&b>x)}
 function info(){if(sel==null)return;const bw=W.bw||50,a=sel,b=sel+bw;
  const who=[...new Set((W.decodes||[]).filter(d=>d.df<b+20&&d.df+bw>a-20).map(d=>{const w=(d.msg||'').split(' ');return(w[0]==='CQ'?w[w.length>3?2:1]:w[1]||'').replace(/[<>]/g,'')}).filter(Boolean))];
  const pars=[0,1].map(p=>`${parName(p)}: <b class="${taken(p,a,b)?'bad':'good'}">${taken(p,a,b)?'taken':'clear'}</b>`).join(' · ');
- const low=sel<(W.df_lo||0)?' · below your lowest offset: the auto picker will move it back up':'';
+ const low=sel<(W.df_lo||0)?' · below your lowest offset (the rig may feed back down here)':'';
  $('wfinfo').innerHTML=`<b>${sel} Hz</b> · ${pars}${who.length?' · heard here: '+who.slice(0,6).join(', '):''}${low}`;
- const go=$('wfact');go.style.display=W.ws_hunter?'flex':'none';$('wfGo').textContent=`Move Tx to ${sel} Hz`}
+ const go=$('wfact');go.style.display=W.ws_hunter?'flex':'none';$('wfGo').textContent=`Move Tx to ${sel} Hz and lock it`}
+function lockBtn(){const b=$('wfLock');$('wflk').style.display=W.ws_hunter?'flex':'none';
+ b.textContent=W.df_lock?`🔒 Tx offset locked${W.tx_df!=null?' at '+W.tx_df+' Hz':''} · tap for auto`:'🔓 Auto Tx offset · tap to lock where it is';
+ b.style.background=W.df_lock?'#8a6d1f':'#3a4552'}
+$('wfLock').onclick=async()=>{const r=await api('/api/txdf',{lock:!W.df_lock},'POST');if(r&&r.error)alert(r.error);else{W.df_lock=!W.df_lock;lockBtn();poll()}};
 cv.addEventListener('click',e=>{const r=cv.getBoundingClientRect(),g=geom(),f=g.f(e.clientX-r.left);
  if(f<F0)return;sel=Math.max(F0,Math.min(F1-(W.bw||50),Math.round((f-(W.bw||50)/2)/10)*10));info();draw()});
-$('wfGo').onclick=async()=>{const r=await api('/api/txdf',{df:sel});if(r.error)alert(r.error);else{W.tx_df=sel;draw();poll()}};
+$('wfGo').onclick=async()=>{const r=await api('/api/txdf',{df:sel,lock:true});if(r.error)alert(r.error);else{W.tx_df=sel;W.df_lock=true;lockBtn();draw();poll()}};
 async function poll(){if(document.visibilityState!=='visible')return;
  try{W=await (await fetch('/api/waterfall')).json();
   const n=(W.rows||[]).filter(r=>r.ex).length;
-  $('wfsum').textContent=!W.ws_hunter?'· needs the ws-hunter build':!n?'· waiting for spectra':(W.learned?'':'· learning the noise')+` · Tx ${W.tx_df??'?'} Hz`+(W.tx_par!=null?' '+parName(W.tx_par):'');
-  draw();info()}catch(e){}}
+  $('wfsum').textContent=!W.ws_hunter?'· needs the ws-hunter build':!n?'· waiting for spectra':(W.learned?'':'· learning the noise')+` · Tx ${W.tx_df??'?'} Hz`+(W.df_lock?' 🔒':'')+(W.tx_par!=null?' '+parName(W.tx_par):'');
+  draw();info();lockBtn()}catch(e){}}
 poll();setInterval(poll,4000);addEventListener('resize',draw);document.addEventListener('visibilitychange',poll);
 })();
 </script>

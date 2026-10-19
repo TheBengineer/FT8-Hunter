@@ -89,7 +89,11 @@ The web UI draws this same flow and lights up the step the hunter is on, with
 the steps it passed marked "no". A waterfall (ws-hunter build) shows the last 40
 periods with the decodes boxed, so undecoded signals stand out, and bars marking
 which offsets the picker counts as taken on the even and odd periods; tap a spot
-to see who is there and move your Tx offset to it. Each CQ shows why it is or isn't being called
+to see who is there and move your Tx offset to it. A move from the waterfall
+locks the offset (🔒): the auto picker then leaves it alone even when someone
+else turns up on it, and only shows where it would go. The lock button under
+the waterfall locks the offset where it is (say, one you set in WS) or hands it
+back to the picker. Each CQ shows why it is or isn't being called
 (on hold, in QSO, pileup size, stale, weak, region/DX-only), and calls on hold
 are underlined wherever they appear. A slim time bar card (first in the
 first column) shows the contacts of the last 2 hours (−/+ or the mouse wheel

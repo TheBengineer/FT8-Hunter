@@ -462,6 +462,13 @@ fresh(); st["udp"]["revision"] = ""; st["udp"]["tx_df"] = 1500
 dec("CQ K4PRK EM85", snr=-3, df=900, t_ms=recent_tm(0)); ns["engine_tick"]()
 check("stock WS: no control messages, suggestion only",
       CTX["tx"].sent == [REPLY] and ENG["suggest"]["par"] == 1)
+fresh(); st["udp"]["revision"] = "260926-hunter"; st["udp"]["tx_df"] = 1500; st["config"]["df_lock"] = True
+dec("K1CQ W2BUSY -05", df=1480, t_ms=recent_tm(1))       # busy on our locked offset
+dec("CQ K4PRK EM85", snr=-3, df=900, t_ms=recent_tm(0)); ns["engine_tick"]()
+s = CTX["tx"].sent
+check("locked offset: hold sent, offset never moved, shown as busy",
+      SET_HOLD in s and SET_TX_DF not in s and REPLY in s and ENG["suggest"]["locked"] and ENG["suggest"]["busy"])
+st["config"]["df_lock"] = False
 
 # --- spectrum + someone else on frequency
 def spectrum(levels, t_ms=15000, floor=-20.0, step=0.25, tr=15000):
@@ -829,6 +836,12 @@ def post(path, body):
     req = urllib.request.Request(f"http://127.0.0.1:{srv.server_address[1]}{path}", json.dumps(body).encode(),
                                  {"Content-Type": "application/json"})
     return json.load(urllib.request.urlopen(req))
+st["udp"]["revision"] = "260926-hunter"; st["config"]["df_lock"] = False
+post("/api/txdf", {"df": 1720})
+check("waterfall move sets the offset and locks it",
+      st["udp"]["tx_df"] == 1720 and st["config"]["df_lock"] and json.load(open(ns["CONFIG_FILE"]))["df_lock"])
+post("/api/txdf", {"lock": False})
+check("lock button unlocks without moving", not st["config"]["df_lock"] and st["udp"]["tx_df"] == 1720)
 post("/api/rig/power", {"watts": 50})
 check("TX power set through FLRig, clamped to the rig's max", RADIO["power"] == 20)
 post("/api/rig/power", {"watts": 5})
