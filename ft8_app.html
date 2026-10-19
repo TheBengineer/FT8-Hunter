@@ -760,8 +760,8 @@ function draw(ts){requestAnimationFrame(draw);
   const T=G.target;if(T&&T.ll){  // calling them: bold and pulsing; once they answer, the QSO: boldest, glowing
    const p=arcs('T'+T.ll,me,T.ll),col=LOOK.stroke(ctx,{...on,role:T.resp?'qso':'target',t:ts});line(p,R,cx,cy);
    if(T.resp)line(p,R,cx,cy);LOOK.reset(ctx);  // a QSO's glow drawn twice: brighter
-   // small band-coloured pips running along it, beads inside a QSO's white line
-   for(let k=0;k<(T.resp?5:3);k++)comet(p,(f*2+k/(T.resp?5:3))%1,R,cx,cy,col,(T.resp?1.4:1.2)*dpr);dot(T.ll,R,cx,cy,(T.resp?5:4)*dpr,col)}
+   // bold white pips running along it, so the line we're working stands apart from the band-coloured ones
+   for(let k=0;k<(T.resp?5:3);k++)comet(p,(f*2+k/(T.resp?5:3))%1,R,cx,cy,'#fff',(T.resp?3.2:2.4)*dpr);dot(T.ll,R,cx,cy,(T.resp?5:4)*dpr,col)}
   dot(me,R,cx,cy,4*dpr,'#fff')}}
 requestAnimationFrame(draw);
 let pollT=0;
