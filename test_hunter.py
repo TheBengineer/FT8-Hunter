@@ -1147,6 +1147,12 @@ st["udp"]["mode"] = "FT4"; ENG["arrived"] = None; ns["set_mode"]("FT8")
 check("a mode change on the same band doesn't start a listen", not ENG.get("arrived"))
 ENG["arrived"] = None
 ENG["tuned_band"] = None; st["udp"]["revision"] = ""; st["running"] = False
+# WRL Desktop warning: is anything bound to the bridge port?
+probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); probe.bind(("127.0.0.1", 0))
+st["config"]["wrl_port"] = probe.getsockname()[1]; ns["WRL"].update(on=None, t=0); ns["wrl_check"](time.time())
+check("WRL listening on its port: no warning", ns["WRL"]["on"] is True)
+probe.close(); ns["WRL"]["t"] = 0; ns["wrl_check"](time.time())
+check("nothing on the port: WRL is off, and the log says so", ns["WRL"]["on"] is False and "isn't running" in st["log"][0]["msg"])
 # each logged QSO records how it started and the hunter's mode
 O = ns["ORIGIN"]; O["qsos"].clear(); O["secs"].clear(); O["recent"].clear(); st["config"]["cq_first"] = True
 ENG["cq_until"] = time.time() + 60; ns["note_origin"]("K1CQA", "called us"); ENG["cq_until"] = 0

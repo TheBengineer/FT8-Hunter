@@ -342,5 +342,7 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
   (once it has run 10 minutes in it).
 - **WRL Desktop bridge**: every WS packet is rebroadcast to `127.0.0.1:2238` (Settings → Connections) — set
   WRL Desktop's UDP server to that port — and whatever WRL sends back is relayed to
-  WS, so WRL logs as if it were talking to WS directly. (Two apps can't share 2237:
+  WS, so WRL logs as if it were talking to WS directly. If nothing is listening on that
+  port (WRL Desktop closed), the status card shows a warning, since QSOs logged
+  then never reach WRL; Settings → Connections turns it off if you don't use WRL. (Two apps can't share 2237:
   Linux REUSEPORT *load-balances*, so they'd each miss half the traffic.)

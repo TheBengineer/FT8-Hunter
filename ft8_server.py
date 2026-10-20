@@ -25,7 +25,8 @@ state = {
                "udp_port": 2237, "http_port": 8080,  # WS UDP server / web UI (take effect on restart)
                "flrig_url": "http://127.0.0.1:12345",  # FLRig XML-RPC (power + meters)
                "wrl_port": 2238,  # WS packets rebroadcast here for WRL Desktop (restart)
-               "ws_dir": "",  # WS / WSJT-X data folder (ALL.TXT, wsjtx_log.adi); empty = look in the usual places
+               "ws_dir": "",
+               "wrl_warn": True,  # warn when nothing (WRL Desktop) is listening on wrl_port  # WS / WSJT-X data folder (ALL.TXT, wsjtx_log.adi); empty = look in the usual places
                "traffic_secs": 300,  # globe: other stations' traffic lines fade out over this long
                "tune_wait": 20,  # s the antenna tuner may take
                "new_band_cycles": 2,  # full cycles heard on a new band before transmitting
@@ -491,6 +492,30 @@ def wrl_relay(fwd):
         except Exception as e:
             log_err("WRL relay", e)
             time.sleep(1)
+
+WRL = {"on": None, "t": 0}
+def wrl_listening():
+    """Is something (WRL Desktop) bound to the bridge port? If we can bind
+    it ourselves, nothing is: forwarded packets, logged QSOs among them, are lost."""
+    p = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        p.bind(("127.0.0.1", state["config"]["wrl_port"]))
+        return False
+    except OSError:
+        return True
+    finally:
+        p.close()
+
+def wrl_check(now):
+    """Every 10 s: note WRL Desktop coming and going, in the log too."""
+    if now - WRL["t"] < 10:
+        return
+    WRL["t"] = now
+    on = wrl_listening()
+    if on != WRL["on"] and state["config"].get("wrl_warn", True):
+        log(f"WRL Desktop is listening on {state['config']['wrl_port']}" if on else
+            f"⚠️ WRL Desktop isn't running (nothing on port {state['config']['wrl_port']}): QSOs logged now won't reach it")
+    WRL["on"] = on
 
 def udp_listener():
     """Passive REUSEPORT listener: learns WS id, tracks Status/TX state."""
@@ -1340,6 +1365,7 @@ def engine_tick():
     activator CQs > other CQs > tail-end > our own CQ."""
     now = time.time()
     tick_origins(now)
+    wrl_check(now)
     # refresh today's worked if a log file changed
     try:
         for p, mt in list(state.get("adi_mtime", {}).items()):
@@ -2701,6 +2727,7 @@ class H(BaseHTTPRequestHandler):
                 "light": tx_light(now), "caps": ws_caps(),
                 "step": ENG.get("step") or {"step": "stopped" if not state["running"] else "idle"},
                 "qrm": {"secs": max(0, round(ENG["qrm_until"] - time.time())), "why": ENG["qrm_why"]},
+                "wrl": {"on": WRL["on"], "port": state["config"]["wrl_port"], "warn": state["config"].get("wrl_warn", True)},
                 "txdf": {"current": u.get("tx_df"), **ENG.get("suggest", {})},
                 "log": list(state["log"]), "config": state["config"], "stats": state["stats"],
                 "udp": {"holder": u["holder"], "ws_id": state["ws_id"],
@@ -2888,6 +2915,7 @@ class H(BaseHTTPRequestHandler):
                 c[k] = max(1024, min(int(c[k]), 65535))
             c["flrig_url"] = str(c["flrig_url"]).strip() or "http://127.0.0.1:12345"
             c["ws_dir"] = str(c["ws_dir"]).strip()
+            c["wrl_warn"] = bool(c["wrl_warn"]); WRL["t"] = 0  # re-check at the next tick
             c["traffic_secs"] = max(30, min(int(c["traffic_secs"]), 3600))
             c["tune_wait"] = max(5, min(int(c["tune_wait"]), 120))
             c["new_band_cycles"] = max(0, min(int(c["new_band_cycles"]), 10))
