@@ -334,6 +334,13 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
   the page only shows whether one is saved. So far: **QRZ Logbook** (API key
   from qrz.com → My Logbook → Settings; uploading through the API needs a QRZ
   XML subscription).
+- **Radio out of sync**: if FLRig stops answering for 15 s (the G90's CAT
+  stalls), WS's dial goes off the ham bands (it shows 30.000 MHz when it has lost
+  the radio), the radio's frequency and WS's dial disagree by more than 5 kHz for
+  15 s, or nothing is decoded for 5 minutes while hunting, the hunter stops, turns
+  WS's TX off and shows a warning in the status card. Start is refused until it's
+  back in sync. Settings → Advanced turns it off or changes the 5 minutes (0 = no
+  decode check).
 - **Where QSOs come from**: each logged QSO is recorded in `qso_origins.json`
   with how it started (we answered a CQ, they answered our CQ, they called us,
   tail-end, a 73 again, a manual call, or worked by hand in WS) and the hunter's

@@ -26,7 +26,9 @@ state = {
                "flrig_url": "http://127.0.0.1:12345",  # FLRig XML-RPC (power + meters)
                "wrl_port": 2238,  # WS packets rebroadcast here for WRL Desktop (restart)
                "ws_dir": "",
-               "wrl_warn": True,  # warn when nothing (WRL Desktop) is listening on wrl_port  # WS / WSJT-X data folder (ALL.TXT, wsjtx_log.adi); empty = look in the usual places
+               "wrl_warn": True,
+               "desync_stop": True,  # stop the hunter (and WS's TX) when the radio and WS are out of step
+               "silent_min": 5,  # ...or nothing decoded for this long while hunting (0 = don't check)  # warn when nothing (WRL Desktop) is listening on wrl_port  # WS / WSJT-X data folder (ALL.TXT, wsjtx_log.adi); empty = look in the usual places
                "traffic_secs": 300,  # globe: other stations' traffic lines fade out over this long
                "tune_wait": 20,  # s the antenna tuner may take
                "new_band_cycles": 2,  # full cycles heard on a new band before transmitting
@@ -516,6 +518,55 @@ def wrl_check(now):
         log(f"WRL Desktop is listening on {state['config']['wrl_port']}" if on else
             f"⚠️ WRL Desktop isn't running (nothing on port {state['config']['wrl_port']}): QSOs logged now won't reach it")
     WRL["on"] = on
+
+# The radio out of step with WS: FLRig stops answering (the G90's CAT
+# stalls), WS's dial goes to a frequency off the ham bands (30.000 MHz when
+# it loses the rig) or away from the radio's VFO, or nothing is decoded. WS
+# would go on transmitting blind, so the hunter stops and WS's TX is halted.
+DESYNC = {"why": "", "t": 0, "since": {}, "stopped": False}
+DESYNC_SECS = 15  # a sign must last this long (a band change moves the dial and the VFO a moment apart)
+def desync_signs(now):
+    """What is out of step right now, or ''."""
+    if SCAN["on"] or ENG.get("tuning"):
+        return ""  # moving the radio on purpose
+    u, c = state["udp"], state["config"]
+    dial, fs = u.get("dial"), RIG.get("fail_since")
+    if dial and not band_of(dial):
+        return f"WS's dial is {dial / 1e6:.3f} MHz, off the ham bands: it has lost the radio"
+    if fs and now - fs >= DESYNC_SECS:
+        return f"FLRig hasn't answered for {round(now - fs)} s ({RIG.get('err') or 'no reply'})"
+    vfo = RIG.get("vfo") if RIG.get("ok") and now - RIG.get("t", 0) < 10 else None
+    if dial and vfo and abs(vfo - dial) > 5000:
+        return f"the radio is on {vfo / 1e6:.3f} MHz but WS's dial says {dial / 1e6:.3f}"
+    last = max(u.get("last_decode", 0), max((m["seen"] for m in list(state["msgs"])[:1]), default=0))
+    if c.get("silent_min") and state["running"] and now - u.get("last_rx", 0) < 10 \
+            and now - max(last, DESYNC.get("started", 0)) > c["silent_min"] * 60:
+        return f"nothing decoded for {c['silent_min']} min: no audio from the radio?"
+    return ""
+
+def desync_check(now):
+    """Each period: a sign that lasts DESYNC_SECS stops the hunter and halts WS's TX."""
+    why = desync_signs(now)
+    key = why.split(":")[0][:20] if why else ""
+    DESYNC["since"] = {key: DESYNC["since"].get(key, now)} if why else {}
+    if why and now - DESYNC["since"][key] >= (DESYNC_SECS if why.startswith("the radio is on") else 0):
+        if not DESYNC["why"]:
+            DESYNC.update(why=why, t=now)
+            stop = state["config"].get("desync_stop", True)
+            log(f"⚠️ radio out of sync: {why}" + (" — hunter stopped, TX halted" if stop and state["running"] else ""))
+            if stop:
+                was = state["running"]
+                state["running"] = False; state["target"] = None; ENG["cq_until"] = 0; ENG["callers"].clear()
+                DESYNC["stopped"] = was or DESYNC["stopped"]
+                if CTX["tx"] is not None:
+                    halt_ws()
+                    CTX["tx"].sendto(pack_set_bool(SET_TX_ENABLED, state["ws_id"], False), ws_dest())
+                at("stopped", "radio out of sync")
+        else:
+            DESYNC["why"] = why  # keep the count of seconds current
+    elif not why and DESYNC["why"]:
+        log("radio back in sync with WS" + (": press Start to resume" if DESYNC["stopped"] else ""))
+        DESYNC.update(why="", t=0)
 
 def udp_listener():
     """Passive REUSEPORT listener: learns WS id, tracks Status/TX state."""
@@ -1366,6 +1417,7 @@ def engine_tick():
     now = time.time()
     tick_origins(now)
     wrl_check(now)
+    desync_check(now)
     # refresh today's worked if a log file changed
     try:
         for p, mt in list(state.get("adi_mtime", {}).items()):
@@ -1931,10 +1983,11 @@ def rig_poll():
                 RIG["max"] = int(float(fl.rig.get_maxpwr() or 0)) or MAX_W.get(RIG["xcvr"], 100)
             m = xmlrpc.client.MultiCall(flrig())
             m.rig.get_ptt(); m.rig.get_power(); m.rig.get_smeter(); m.rig.get_pwrmeter(); m.rig.get_swrmeter()
-            ptt, power, sm, out, swr = list(m())
+            m.rig.get_vfo()
+            ptt, power, sm, out, swr, vfo = list(m())
             # (the G90's power meter is coarse, full or nothing, but shows we put out power)
             ptt = bool(int(ptt))
-            RIG.update(ok=True, err="", t=time.time(), ptt=ptt, s=float(sm),
+            RIG.update(ok=True, err="", t=time.time(), ptt=ptt, s=float(sm), vfo=int(float(vfo or 0)), fail_since=0,
                        out=max(0.0, float(out or 0)) if ptt else 0.0)
             if RIG.get("xcvr") not in CIV:
                 RIG["power"] = int(float(power))
@@ -1946,6 +1999,9 @@ def rig_poll():
             if RIG["ok"] or not RIG["err"]:
                 log(f"FLRig: {e}")
             RIG.update(ok=False, err=str(e)[:80])
+            # it was answering before, or it's there but stuck (a timeout, not a refused connection)
+            if (RIG.get("xcvr") or "timed out" in str(e)) and not RIG.get("fail_since"):
+                RIG["fail_since"] = time.time()
         RIG_WAKE.wait(1 if RIG.get("ptt") else 2)
         RIG_WAKE.clear()
 
@@ -2727,6 +2783,7 @@ class H(BaseHTTPRequestHandler):
                 "light": tx_light(now), "caps": ws_caps(),
                 "step": ENG.get("step") or {"step": "stopped" if not state["running"] else "idle"},
                 "qrm": {"secs": max(0, round(ENG["qrm_until"] - time.time())), "why": ENG["qrm_why"]},
+                "desync": {"why": DESYNC["why"], "t": DESYNC["t"], "stopped": DESYNC["stopped"]},
                 "wrl": {"on": WRL["on"], "port": state["config"]["wrl_port"], "warn": state["config"].get("wrl_warn", True)},
                 "txdf": {"current": u.get("tx_df"), **ENG.get("suggest", {})},
                 "log": list(state["log"]), "config": state["config"], "stats": state["stats"],
@@ -2748,7 +2805,11 @@ class H(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
         if p == "/api/start" and not state["mycall"]:
             return self._json({"error": "set your call sign in Settings (or in WS's Settings -> General)"}, 409)
-        if p == "/api/start": state["running"] = True; log("hunter started"); at("idle", "starting at next period")
+        if p == "/api/start" and DESYNC["why"] and state["config"].get("desync_stop", True):
+            return self._json({"error": f"radio out of sync: {DESYNC['why']}. Fix it first (FLRig, the radio, WS's dial)"}, 409)
+        if p == "/api/start":
+            state["running"] = True; DESYNC.update(stopped=False, started=time.time())
+            log("hunter started"); at("idle", "starting at next period")
         elif p == "/api/stop":
             state["running"] = False; state["target"] = None; ENG["cq_until"] = 0
             ENG["callers"].clear(); halt_ws(); log("stopped, TX halted"); at("stopped")
@@ -2915,6 +2976,8 @@ class H(BaseHTTPRequestHandler):
                 c[k] = max(1024, min(int(c[k]), 65535))
             c["flrig_url"] = str(c["flrig_url"]).strip() or "http://127.0.0.1:12345"
             c["ws_dir"] = str(c["ws_dir"]).strip()
+            c["desync_stop"] = bool(c["desync_stop"])
+            c["silent_min"] = max(0, min(int(c["silent_min"]), 60))
             c["wrl_warn"] = bool(c["wrl_warn"]); WRL["t"] = 0  # re-check at the next tick
             c["traffic_secs"] = max(30, min(int(c["traffic_secs"]), 3600))
             c["tune_wait"] = max(5, min(int(c["tune_wait"]), 120))

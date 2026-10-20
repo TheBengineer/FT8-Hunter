@@ -906,7 +906,7 @@ fl = SimpleXMLRPCServer(("127.0.0.1", 0), logRequests=False, allow_none=True)
 fl.register_multicall_functions()
 for name, f in {"rig.get_xcvr": lambda: "Xiegu-G90", "rig.get_maxpwr": lambda: 0,
                 "rig.get_ptt": lambda: RADIO["ptt"], "rig.get_power": lambda: RADIO["power"],
-                "rig.get_pwrmeter": lambda: "15", "rig.get_swrmeter": lambda: str(RADIO["swr"] if RADIO["ptt"] else 0), "rig.get_smeter": lambda: "0",
+                "rig.get_pwrmeter": lambda: "15", "rig.get_swrmeter": lambda: str(RADIO["swr"] if RADIO["ptt"] else 0), "rig.get_smeter": lambda: "0", "rig.get_vfo": lambda: str(st["udp"].get("dial") or 14074000),
                 "rig.set_power": lambda w: RADIO.update(power=w) or 0,
                 "rig.cat_string": cat}.items():
     fl.register_function(f, name)
@@ -1153,6 +1153,33 @@ st["config"]["wrl_port"] = probe.getsockname()[1]; ns["WRL"].update(on=None, t=0
 check("WRL listening on its port: no warning", ns["WRL"]["on"] is True)
 probe.close(); ns["WRL"]["t"] = 0; ns["wrl_check"](time.time())
 check("nothing on the port: WRL is off, and the log says so", ns["WRL"]["on"] is False and "isn't running" in st["log"][0]["msg"])
+# radio out of sync with WS: warn, stop the hunter, halt WS's TX
+D, RIGd = ns["DESYNC"], ns["RIG"]
+def desync_reset():
+    D.update(why="", t=0, since={}, stopped=False); RIGd.update(fail_since=0, vfo=None, ok=False)
+desync_reset(); st["running"] = True; st["udp"]["dial"] = 30000000; CTX["tx"].sent.clear()
+ns["desync_check"](time.time())
+check("WS's dial off the ham bands (30.000 MHz): hunter stopped, TX halted",
+      not st["running"] and "30.000" in D["why"] and HALT in CTX["tx"].sent and SET_TX_ENABLED in CTX["tx"].sent)
+try:
+    post("/api/start", {}); code = 200
+except urllib.error.HTTPError as e:
+    code = e.code
+check("...and Start is refused while it lasts", code == 409 and not st["running"])
+st["udp"]["dial"] = 14074000; ns["desync_check"](time.time())
+check("back in sync: the warning clears", D["why"] == "" and "back in sync" in st["log"][0]["msg"])
+desync_reset(); st["running"] = True; RIGd.update(ok=True, t=time.time(), vfo=21074000)
+ns["desync_check"](time.time())
+check("the radio's VFO away from WS's dial: not at once (a band change)", st["running"] and not D["why"])
+RIGd["t"] = time.time() + 16; ns["desync_check"](time.time() + 16)
+check("...but after 15 s, stopped", not st["running"] and "21.074" in D["why"])
+desync_reset(); st["running"] = True; RIGd.update(xcvr="Xiegu-G90", fail_since=time.time() - 20, err="timed out")
+ns["desync_check"](time.time())
+check("FLRig not answering for 15 s: stopped", not st["running"] and "FLRig" in D["why"])
+desync_reset(); st["running"] = True; st["udp"].update(last_rx=time.time(), last_decode=time.time() - 400); st["msgs"].clear()
+D["started"] = time.time() - 400; ns["desync_check"](time.time())
+check("nothing decoded for 5 min while hunting: stopped", not st["running"] and "nothing decoded" in D["why"])
+desync_reset(); st["udp"]["last_decode"] = time.time(); st["running"] = False; RIGd.pop("xcvr", None)
 # each logged QSO records how it started and the hunter's mode
 O = ns["ORIGIN"]; O["qsos"].clear(); O["secs"].clear(); O["recent"].clear(); st["config"]["cq_first"] = True
 ENG["cq_until"] = time.time() + 60; ns["note_origin"]("K1CQA", "called us"); ENG["cq_until"] = 0
