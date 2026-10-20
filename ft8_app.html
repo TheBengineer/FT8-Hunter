@@ -115,12 +115,10 @@ details summary{font-weight:700;padding:4px}
 <div id="cbar" style="height:100%;width:0%;background:var(--accent)"></div></div>
 <div class="small" id="ctxt" style="text-align:center;margin-top:2px">cycle</div>
 <div class="row"><button id="bS">Start</button><button id="bX" class="warn">Skip</button></div>
-<div class="row" style="margin-top:8px"><button id="bManual" class="tog" style="--lit:var(--contest)" title="Contest rules: each QSO started by the operator. The hunter picks the next station; press the button to start it, and the hunter finishes that QSO">🏆 Contest mode: off</button></div>
 <div id="pickBox" style="display:none;margin-top:6px">
 <button id="bGo" class="on" style="display:none;width:100%;font-size:1.15rem;animation:go 1.2s ease-in-out infinite"></button>
-<div class="small" id="pickNote" style="margin-top:6px">Press to start the QSO</div><ul id="pick"></ul></div>
-<div class="row" style="margin-top:8px"><button id="bCqFirst" class="tog" style="--lit:var(--amber)" title="Run our own CQ: answer callers and activators only">📣 CQ first: off</button></div>
-<div class="row" style="margin-top:8px"><button id="bCQ" class="on">🔴 ARM TX</button></div>
+<div class="small" id="pickNote" style="margin-top:6px">🏆 Contest mode: press to start the QSO</div><ul id="pick"></ul></div>
+<div class="row" style="margin-top:8px"><button id="bCqFirst" class="tog" style="--lit:var(--amber)" title="Run our own CQ: answer callers and activators only">📣 CQ first: off</button><button id="bCQ" class="on">🔴 ARM TX</button></div>
 <div id="rig" style="margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:10px">
 <div class="row small"><b id="rigName">📻 radio</b><span id="rigSt" style="margin-left:auto"></span></div>
 <div class="row" style="margin-top:6px"><span class="small" style="min-width:64px" id="pwL" title="The slider sets the power for this stage: calling, or in a QSO once they answer">TX power</span>
@@ -175,6 +173,7 @@ Chart: dB over the floor, 200–3000 Hz · <span style="color:var(--good)">▬ F
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Yours, as sent on the air (a portable suffix like /AG is fine). Empty: the call WS has in its Settings → General. The hunter won't start without one.">Call sign</span><input id="sCall" type="text" autocapitalize="characters" spellcheck="false" style="max-width:170px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Your Maidenhead locator, 4 or 6 characters. Empty: WS's.">Grid</span><input id="sGrid" type="text" spellcheck="false" style="max-width:170px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="US license class: which frequencies the tune carrier may use. Not set: General's limits (the narrower ones).">License class</span><select id="sLic" style="max-width:120px;padding:10px;border-radius:8px;border:1px solid var(--edge);background:var(--bg);color:#fff"><option value="">Not set</option><option value="general">General</option><option value="extra">Extra</option></select></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" id="sManualL" title="Contest rules: each QSO started by the operator. The hunter picks the next station; press the button in the status card to start it, and the hunter finishes that QSO. Applies at once.">🏆 Contest mode (you start each QSO)</span><input id="sManual" type="checkbox" style="width:auto;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">CQ tries</span><input id="sCq" type="number" min="1" max="10" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1">Tail-end tries</span><input id="sTail" type="number" min="1" max="10" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Our transmissions in a QSO without hearing back before giving up">Replies without an answer</span><input id="sQso" type="number" min="1" max="20" style="max-width:90px;margin-top:0"></div>
@@ -271,11 +270,11 @@ $('bCqFirst').onclick=()=>{cqFirstView(!CQF);api('/api/config',{cq_first:CQF},'P
 // Manual (contest) mode: the hunter ranks stations; nothing new starts without a tap
 let MAN=false;
 let FORCED=false;
-function manualView(on,forced){MAN=on;FORCED=forced;const b=$('bManual');
- b.textContent='🏆 Contest mode: '+(on?'on':'off')+(forced?' (no ws-hunter: always on)':'');
- b.title=forced?'WS here is not the ws-hunter build (or compatibility mode is on): the hunter cannot enable TX or pick a clear offset, so it only suggests and you press to start each QSO':'Contest rules: each QSO started by the operator. The hunter picks the next station; press the button to start it, and the hunter finishes that QSO';
- b.classList.toggle('lit',on);b.style.opacity=forced?.75:1;$('pickBox').style.display=on?'block':'none'}
-$('bManual').onclick=()=>{if(FORCED)return;manualView(!MAN,false);api('/api/config',{manual:MAN},'POST').then(tick)};
+function manualView(on,forced){MAN=on;FORCED=forced;const b=$('sManual'),l=$('sManualL');
+ b.checked=on;b.disabled=forced;l.textContent='🏆 Contest mode (you start each QSO)'+(forced?': always on, no ws-hunter':'');
+ if(forced)l.title='WS here is not the ws-hunter build (or compatibility mode is on): the hunter cannot enable TX or pick a clear offset, so it only suggests and you press to start each QSO';
+ $('pickBox').style.display=on?'block':'none'}
+$('sManual').onchange=()=>{if(FORCED)return;manualView($('sManual').checked,false);api('/api/config',{manual:MAN},'POST').then(tick)};  // applies at once, no Save
 // the press: the hunter's first choice, shown when it is time to start the next QSO
 $('bGo').onclick=()=>pick(0);
 async function pick(i){const e=(window._pick||[])[i];if(!e)return;const r=await api('/api/work',{msg:e.msg});

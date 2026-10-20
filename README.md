@@ -19,7 +19,7 @@ Each T/R period (15 s FT8, 7.5 s FT4, 3.75 s FT2) it does the first of these tha
 everyone who answers, still leaves its CQ for an activator if "Activations first"
 is on, and skips steps 3 and 4.
 
-**Contest mode** (the 🏆 button) is for contests and awards that don't accept
+**Contest mode** (🏆 in Settings; applies at once) is for contests and awards that don't accept
 automated contacts (ARRL contests, DXCC, WAS; WW Digi): each QSO must be started
 by the operator. The hunter starts nothing on its own. When it is time for the
 next QSO a big green **▶ Work CALL** button shows its first choice; press it, or
