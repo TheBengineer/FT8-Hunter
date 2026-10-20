@@ -334,6 +334,12 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
   the page only shows whether one is saved. So far: **QRZ Logbook** (API key
   from qrz.com → My Logbook → Settings; uploading through the API needs a QRZ
   XML subscription).
+- **Where QSOs come from**: each logged QSO is recorded in `qso_origins.json`
+  with how it started (we answered a CQ, they answered our CQ, they called us,
+  tail-end, a 73 again, a manual call, or worked by hand in WS) and the hunter's
+  mode then (standard, CQ first or contest), along with the time spent running in
+  each mode. The Log card shows today's split and QSOs per hour for each mode
+  (once it has run 10 minutes in it).
 - **WRL Desktop bridge**: every WS packet is rebroadcast to `127.0.0.1:2238` (Settings → Connections) — set
   WRL Desktop's UDP server to that port — and whatever WRL sends back is relayed to
   WS, so WRL logs as if it were talking to WS directly. (Two apps can't share 2237:

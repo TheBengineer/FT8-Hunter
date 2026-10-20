@@ -339,7 +339,10 @@ ${cqBadges(e)}<span class="small">${e.km!=null?e.km+'km':'?km'} ${e.t}</span>
 ${e.worked?'<span class="badge wkd">wkd</span>':`<button class="mini" onclick="call('${e.call}','${e.grid||''}')">call</button>`}</li>`).join('')||'<li>— quiet —</li>';
 window._skew=Date.now()/1000-(s.now||Date.now()/1000);window._ans=s.answering;renderAns();
 $('log').innerHTML=s.log.map(l=>`<li>${l.t} ${l.msg}</li>`).join('');
-$('stats').textContent=`CQ heard ${s.stats.cq_heard} · calls ${s.stats.calls_made}`;
+{const o=s.origins||{},H={hunt:'we called',cq:'answered our CQ','called us':'called us','tail-end':'tail-end',again:'73 again',manual:'manual','by hand':'by hand in WS'},
+M={hunt:'standard',cq_first:'CQ first',contest:'contest',stopped:'stopped'},how=Object.entries(o.how||{}).sort((a,b)=>b[1]-a[1]).map(([k,n])=>`${n} ${H[k]||k}`).join(' · '),
+rate=Object.entries(o.hours||{}).map(([k,h])=>`${M[k]||k} ${(o.mode||{})[k]||0} in ${h<1?Math.round(h*60)+' min':h.toFixed(1)+' h'}`+(o.rate&&k in o.rate?` (${o.rate[k]}/h)`:'')).join(' · ');
+$('stats').textContent=`CQ heard ${s.stats.cq_heard} · calls ${s.stats.calls_made}`+(how?`\nToday's QSOs: ${how}`:'')+(rate?`\nBy mode: ${rate}`:'');$('stats').style.whiteSpace='pre-line'}
 window._band=s.band;window._tx=s.udp.transmitting;window._per=s.period||15;window._mode=s.mode||'FT8';window._dx=s.udp.dxcall||'';
 $('dx').textContent=window._dx?('DX '+window._dx):'';
 const td=s.txdf||{},lk=!!(s.config||{}).df_lock;$('txdf').textContent=(td.current!=null?('Tx '+td.current+' Hz'+(lk?' 🔒':'')):'')+(td.df&&td.df!==td.current?((lk?' · busy? clear: ':' · clear: ')+td.df+' Hz ('+(td.par?'odd':'even')+')'):'');

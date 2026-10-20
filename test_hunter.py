@@ -14,6 +14,7 @@ _tmp = tempfile.mkdtemp()
 ns["CONFIG_FILE"] = os.path.join(_tmp, "hunter_config.json")  # never the real settings
 ns["SCAN_FILE"], ns["FREQ_FILE"] = os.path.join(_tmp, "scan.json"), os.path.join(_tmp, "freqs.json")
 ns["SWR_FILE"] = os.path.join(_tmp, "swr.json")
+ns["ORIGIN_FILE"] = os.path.join(_tmp, "origins.json")
 ns["LB_FILE"], ns["LB_QUEUE_FILE"] = os.path.join(_tmp, "lb.json"), os.path.join(_tmp, "lbq.json")
 
 
@@ -1146,6 +1147,22 @@ st["udp"]["mode"] = "FT4"; ENG["arrived"] = None; ns["set_mode"]("FT8")
 check("a mode change on the same band doesn't start a listen", not ENG.get("arrived"))
 ENG["arrived"] = None
 ENG["tuned_band"] = None; st["udp"]["revision"] = ""; st["running"] = False
+# each logged QSO records how it started and the hunter's mode
+O = ns["ORIGIN"]; O["qsos"].clear(); O["secs"].clear(); O["recent"].clear(); st["config"]["cq_first"] = True
+ENG["cq_until"] = time.time() + 60; ns["note_origin"]("K1CQA", "called us"); ENG["cq_until"] = 0
+ns["record_origin"]("K1CQA", "20m", "FT8")
+check("a caller during our CQ run: answered our CQ, in CQ-first mode", O["qsos"][-1]["how"] == "cq" and O["qsos"][-1]["mode"] == "cq_first")
+st["config"]["cq_first"] = False; ns["note_origin"]("W2HNT", "CQ"); ns["record_origin"]("W2HNT", "20m", "FT8")
+ns["note_origin"]("N3TAL", "called us"); ns["record_origin"]("N3TAL", "20m", "FT8")
+ns["record_origin"]("K4HND", "20m", "FT8")
+check("we answered a CQ / they called us / worked by hand in WS",
+      [x["how"] for x in O["qsos"][1:]] == ["hunt", "called us", "by hand"] and O["qsos"][1]["mode"] == "hunt")
+day = time.strftime("%Y-%m-%d", time.gmtime())
+st["running"] = True; O["last"] = time.time() - 30; ns["tick_origins"](time.time()); st["running"] = False
+check("running time is counted for the current mode", 29 <= sum(O["secs"][day].values()) <= 31)
+O["secs"][day] = {"hunt": 1800}
+r = ns["origin_stats"]()
+check("QSOs per hour by mode, from the time spent in it", r["rate"].get("hunt") == 4.0 and r["how"]["cq"] == 1)
 # call sign and grid: Settings first, else what WS reports; no call, no start
 saved = dict(st["config"]), st["mycall"], st["mygrid"]
 st["config"].update(mycall="", mygrid=""); st["udp"].update(de_call="", de_grid=""); ns["set_identity"]()

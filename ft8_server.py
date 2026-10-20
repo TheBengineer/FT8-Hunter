@@ -574,6 +574,7 @@ def udp_listener():
                         pass  # short packet: assume the current band and mode
                     if dxcall:
                         add_worked(dxcall, lband, lmode)
+                        record_origin(dxcall, lband, lmode)
                         t = state["target"]
                         if t and same_call(t["call"], dxcall):
                             log(f"logged QSO with {dxcall} — nice!")
@@ -1265,10 +1266,80 @@ def cq_skip(e, now=None):
         return "no decode"
     return ""
 
+# Where each QSO came from (how it started, and the hunter's mode then), and
+# how long the hunter ran in each mode: QSOs per hour by mode, measured
+ORIGIN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qso_origins.json")
+ORIGIN = {"qsos": [], "secs": {}, "last": 0, "saved": 0, "recent": {}}
+def hunt_mode():
+    """The hunter's mode right now: contest, cq_first or hunt (standard automatic)."""
+    return "contest" if manual_on() else "cq_first" if state["config"].get("cq_first") else "hunt"
+
+def note_origin(call, why):
+    """At acquire: how this QSO is starting. 'cq' = they answered our CQ."""
+    now = time.time()
+    if why == "called us":
+        cq_on = now < ENG["cq_until"] or any(m["msg"].startswith("CQ ") and now - m["seen"] < 90
+                                             for m in list(state["mytx"])[:4])
+        how = "cq" if cq_on else "called us"
+    else:
+        how = ("again" if why.endswith("again") else "tail-end" if why == "tail-end"
+               else "manual" if why == "manual" else "hunt")  # CQ / an activation tag: we answered their CQ
+    ORIGIN["recent"][base_call(call)] = {"how": how, "why": why, "mode": hunt_mode(), "t": now}
+
+def record_origin(call, band_, mode_):
+    """A logged QSO: keep where it came from. Not started by the hunter in
+    the last hour: worked by hand in WS."""
+    now = time.time()
+    r = ORIGIN["recent"].pop(base_call(call), None)
+    if not r or now - r["t"] > 3600:
+        r = {"how": "by hand", "why": "", "mode": hunt_mode() if state["running"] else "stopped"}
+    ORIGIN["qsos"].append({"call": call, "t": round(now), "band": band_ or band(), "fmode": mode_ or mode(),
+                           "how": r["how"], "why": r["why"], "mode": r["mode"]})
+    save_origins()
+
+def tick_origins(now):
+    """Time the hunter spends running in each mode, per UTC day."""
+    dt, ORIGIN["last"] = now - ORIGIN["last"], now
+    if state["running"] and 0 < dt < 60:
+        day = time.strftime("%Y-%m-%d", time.gmtime(now))
+        d = ORIGIN["secs"].setdefault(day, {})
+        d[hunt_mode()] = d.get(hunt_mode(), 0) + dt
+    if now - ORIGIN["saved"] > 300:
+        save_origins()
+
+def save_origins():
+    ORIGIN["saved"] = time.time()
+    try:
+        with open(ORIGIN_FILE, "w") as f:
+            json.dump({"qsos": ORIGIN["qsos"], "secs": {k: {m: round(v) for m, v in d.items()}
+                                                       for k, d in ORIGIN["secs"].items()}}, f)
+    except OSError as e:
+        log_err("QSO origins not saved", e)
+
+def load_origins():
+    try:
+        d = json.load(open(ORIGIN_FILE))
+        ORIGIN["qsos"], ORIGIN["secs"] = d.get("qsos", []), d.get("secs", {})
+    except (OSError, ValueError):
+        pass
+
+def origin_stats(day=None):
+    """Today's QSOs by how they started and by hunter mode, with QSOs per hour."""
+    day = day or time.strftime("%Y-%m-%d", time.gmtime())
+    q = [x for x in ORIGIN["qsos"] if time.strftime("%Y-%m-%d", time.gmtime(x["t"])) == day]
+    how, per = {}, {}
+    for x in q:
+        how[x["how"]] = how.get(x["how"], 0) + 1
+        per[x["mode"]] = per.get(x["mode"], 0) + 1
+    secs = ORIGIN["secs"].get(day, {})
+    rate = {m: round(per.get(m, 0) / (secs[m] / 3600), 1) for m in secs if secs[m] >= 600}  # 10 min+ in that mode
+    return {"how": how, "mode": per, "hours": {m: round(v / 3600, 2) for m, v in secs.items()}, "rate": rate}
+
 def engine_tick():
     """Called once per T/R period. Priority: our target > callers-to-me >
     activator CQs > other CQs > tail-end > our own CQ."""
     now = time.time()
+    tick_origins(now)
     # refresh today's worked if a log file changed
     try:
         for p, mt in list(state.get("adi_mtime", {}).items()):
@@ -1547,6 +1618,7 @@ def acquire(call, grid, msg, tries, why, can_wait=False):
     if not send_exact_reply(CTX["tx"], msg):
         return False
     # `left` counts T/R periods; we transmit in every other one
+    note_origin(call, why)
     state["target"] = {"call": call, "grid": grid, "left": tries * 2 + extra, "why": why,
                        "msg": msg, "resp": False, "signoff": signoff_text()}
     push_signoff(state["target"])
@@ -2617,7 +2689,7 @@ class H(BaseHTTPRequestHandler):
                 "suggest": suggestions(now) if manual_on() else [],
                 "manual": manual_on(), "manual_forced": not has_ws_hunter(),
                 "answering": ans[:80], "now": now, "worked": worked, "book": book[:200], "band": band(),
-                "msgs": msgs, "mytx": list(state["mytx"])[:15], "dxfocus": dxf,
+                "msgs": msgs, "mytx": list(state["mytx"])[:15], "origins": origin_stats(), "dxfocus": dxf,
                 "holds": holds, "callers": [c["call"] for c in list(ENG["callers"])],
                 "parity": {"even": par[0], "odd": par[1],
                            "hot": ("even" if par[0] >= par[1] else "odd")},
@@ -2874,6 +2946,7 @@ threading.Thread(target=watcher, daemon=True).start()
 threading.Thread(target=rig_poll, daemon=True).start()
 load_scan()
 load_swr()
+load_origins()
 lb_load()
 threading.Thread(target=lb_worker, daemon=True).start()
 threading.Thread(target=load_freqs, daemon=True).start()
