@@ -1196,6 +1196,32 @@ check("running time is counted for the current mode", 29 <= sum(O["secs"][day].v
 O["secs"][day] = {"hunt": 1800}
 r = ns["origin_stats"]()
 check("QSOs per hour by mode, from the time spent in it", r["rate"].get("hunt") == 4.0 and r["how"]["cq"] == 1)
+check("each QSO is flagged with whether the hunter was on and we were transmitting",
+      O["qsos"][-1]["on"] is False and "tx" in O["qsos"][-1])
+# hunter-on time per band and mode: live intervals, plus a guess from ALL.TXT before tracking began
+O["on"].clear(); st["udp"].update(band="20m", mode="FT8"); st["running"] = True
+t0 = time.time(); O["last"] = t0 - 30; ns["tick_origins"](t0); O["last"] = t0 - 1; ns["tick_origins"](t0 + 29)
+st["running"] = False
+check("running on one band extends one interval", len(O["on"]) == 1 and O["on"][0][2:] == ["20m", "FT8"] and O["on"][0][1] - O["on"][0][0] >= 55)
+wsd = tempfile.mkdtemp(); st["config"]["ws_dir"] = wsd; ws_dirs, ns["WS_DIRS"] = ns["WS_DIRS"], ()  # not the real logs
+def ts(dt_): return dt_.strftime("%y%m%d_%H%M%S")
+base = datetime.datetime(2026, 10, 1, 12, 0, tzinfo=datetime.timezone.utc)
+with open(os.path.join(wsd, "ALL.TXT"), "w") as f:
+    for i in range(0, 60 * 30, 60):  # 30 min of Tx every minute on 40m FT8
+        f.write(f"{ts(base + datetime.timedelta(seconds=i))}     7.074 Tx FT8      0  0.0 1500 CQ KR4MZM EM84\n")
+    f.write(f"{ts(base + datetime.timedelta(hours=1))}    30.000 Tx FT8      0  0.0 1500 CQ KR4MZM EM84\n")  # lost dial
+    f.write(f"{ts(base + datetime.timedelta(minutes=5))}     7.074 Rx FT8    -10  0.1 1200 CQ K1ABC FN42\n")
+with open(os.path.join(wsd, "wsjtx_log.adi"), "w") as f:
+    for m, c in ((10, "K1AAA"), (20, "K1BBB"), (90, "K1CCC")):
+        q = base + datetime.timedelta(minutes=m)
+        f.write(f"<call:5>{c} <qso_date:8>{q:%Y%m%d} <time_on:6>{q:%H%M%S} <band:3>40m <mode:3>FT8 <eor>")
+ns["LOG_LAST"]["mt"] = None
+O["on_since"] = base.timestamp() + 86400; ns["TXH"]["until"] = None
+runs = ns["tx_runs"](O["on_since"])
+check("ALL.TXT Tx: one run on 40m FT8, the off-band Tx left out", len(runs) == 1 and runs[0][2:] == ["40m", "FT8"])
+r = ns["band_rates"]()[("40m", "FT8")]
+check("QSOs during the Tx run count as hunting, the later one by hand", r["on_n"] == 2 and r["off_n"] == 1 and r["on_h"] == 0.5 and r["rate"] == 4.0)
+st["config"]["ws_dir"] = ""; ns["WS_DIRS"] = ws_dirs; ns["LOG_LAST"]["mt"] = None; O["on"].clear()
 # call sign and grid: Settings first, else what WS reports; no call, no start
 saved = dict(st["config"]), st["mycall"], st["mygrid"]
 st["config"].update(mycall="", mygrid=""); st["udp"].update(de_call="", de_grid=""); ns["set_identity"]()

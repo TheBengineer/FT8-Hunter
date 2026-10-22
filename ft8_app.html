@@ -143,12 +143,12 @@ details summary{font-weight:700;padding:4px}
 <div class="card" data-id="scan"><h2>📶 Band scan <span class="small" id="scsum"></span></h2>
 <div class="chips" id="scModes"></div><div class="chips" id="scBands"></div>
 <div class="row" style="margin-top:6px"><button id="bScan" style="padding:10px">📶 Scan bands</button>
-<select id="scSort" class="sel" title="Sort the results"><option value="band">by band</option><option value="act">most activity</option><option value="worked">least recently worked</option></select></div>
+<select id="scSort" class="sel" title="Sort the results"><option value="band">by band</option><option value="act">most activity</option><option value="worked">least recently worked</option><option value="rate">best QSO rate</option></select></div>
 <div class="meter" id="scProg" style="display:none"><span class="small" id="scCur"></span><div class="bar"><i id="scBar" style="background:var(--accent)"></i></div><span class="small mono" id="scEta"></span></div>
 <ul id="scRows"></ul>
 <div class="small" style="margin-top:4px">One clean 3.75 s listen per dial frequency, WS in FT2 meanwhile; the hunter pauses and you go back where you were after.
 Chart: dB over the floor, 200–3000 Hz · <span style="color:var(--good)">▬ FT-like signals</span> · <span style="color:var(--mid)">▮ carriers</span>.
-<b>QRM</b> = a broad lump (wideband interference), not narrow signals · <b>noisy</b> = floor 10+ dB over the other bands, weak signals only. <span id="scSrc"></span></div></div>
+<b>QRM</b> = a broad lump (wideband interference), not narrow signals · <b>noisy</b> = floor 10+ dB over the other bands, weak signals only.<br><b>QSO/h</b> = QSOs logged per hour the hunter was on, on that band and mode; <i>by hand</i> = logged with it off. <span id="scOn"></span> <span id="scSrc"></span></div></div>
 <div class="card" data-id="globe"><h2>🌍 Globe <span class="small" id="gsum"></span></h2>
 <canvas id="globe" style="width:100%;aspect-ratio:1;display:block;touch-action:none;cursor:grab"></canvas>
 <div class="small" style="margin-top:4px">Colour = band, line = mode, weight = who: <span class="lg qso"></span>QSO · <span class="lg target"></span>calling · <span class="lg waiting"></span>also answering · <span class="lg worked"></span>worked · <span class="lg traffic"></span>traffic · <span class="lg mode"></span>FT8 <span class="lg mode FT4"></span>FT4 <span class="lg mode FT2"></span>FT2 · drag to turn, scroll or pinch to zoom; it drifts back to you</div></div>
@@ -581,7 +581,8 @@ function spark(cv,r){const w=cv.clientWidth||300,h=26,dpr=devicePixelRatio||1;cv
  c.fillStyle=LOOK.c('mid');(r.carriers||[]).forEach(([a,b])=>c.fillRect(x(a),0,2,h-3))}
 function order(rows){const k=$('scSort').value,bi=r=>BANDS.indexOf(r.band);
  return rows.slice().sort(k==='act'?(a,b)=>b.signals-a.signals||(b.strength||0)-(a.strength||0)
-  :k==='worked'?(a,b)=>(b.worked_ago??1e12)-(a.worked_ago??1e12)||b.signals-a.signals:(a,b)=>bi(a)-bi(b)||a.hz-b.hz)}
+  :k==='worked'?(a,b)=>(b.worked_ago??1e12)-(a.worked_ago??1e12)||b.signals-a.signals
+  :k==='rate'?(a,b)=>(b.hunted?.rate??-1)-(a.hunted?.rate??-1)||bi(a)-bi(b):(a,b)=>bi(a)-bi(b)||a.hz-b.hz)}
 function render(){
  if(!cfg&&window._cfg){cfg=window._cfg;chips($('scModes'),MODES,cfg.scan_modes||MODES);chips($('scBands'),BANDS,cfg.scan_bands||BANDS)}
  const on=S.on;$('bScan').textContent=on?'⏹ Stop scan':'📶 Scan bands';$('bScan').className=on?'warn':'';$('bScan').style.padding='10px';
@@ -590,6 +591,7 @@ function render(){
   $('scEta').textContent=`${S.i}/${S.n} · ~${ago(S.eta)}`}
  const last=Math.min(...S.rows.map(r=>r.age));
  $('scsum').textContent=!S.ws_hunter?'· needs the ws-hunter build':S.rows.length?`· ${S.rows.length} results · ${ago(last)} ago`:'· not scanned yet';
+ $('scOn').textContent=S.on_since?`Before ${new Date(S.on_since*1000).toLocaleDateString()}, "on" is guessed from WS's Tx in ALL.TXT, so QSOs made by hand then count as hunting.`:'';
  $('scSrc').textContent=`Frequencies: WS list (${S.src}).`+(S.err?' Last scan: '+S.err:'');
  const ul=$('scRows'),top=ul.scrollTop;ul.innerHTML='';
  // one row per dial frequency: 60m's 5357 kHz serves all three modes
@@ -601,8 +603,12 @@ function render(){
   const det=[r.signals?`${r.signals} signal${r.signals>1?'s':''}`+(r.strength!=null?` · +${Math.round(r.strength)} dB`:''):'no signals',
    r.noise>=3?`noise +${Math.round(r.noise)} dB`:'',r.qrm&&lab!=='QRM'?'wideband QRM too':'',r.decodes?`${r.decodes} FT2 decoded`:''].filter(Boolean).join(' · ');
   const n24=g.reduce((a,x)=>a+(x.worked_24h||0),0);
+  // QSOs per hour while the hunter was on here, and QSOs made with it off
+  const hu=g.filter(x=>x.hunted&&(x.hunted.on_h||x.hunted.on_n||x.hunted.off_n)).map(x=>{const h=x.hunted;
+   return (g.length>1?x.mode+' ':'')+(h.rate!=null?`<b>${h.rate} QSO/h</b> hunting (${h.on_n} in ${h.on_h} h)`:`${h.on_n} QSO${h.on_n==1?'':'s'} in ${h.on_h} h hunting`)
+    +(h.off_n?` · ${h.off_n} by hand`:'')}).join(' · ');
   li.innerHTML=`<span>${LOOK.tag(r.band,g.map(x=>x.mode).join('/'))} <span class="small mono">${(hz/1000).toFixed(hz%1000?1:0)}</span></span>
-   <span class="small"><span class="badge ${cls}">${lab}</span> ${det}<br>worked ${wk?ago(wk.worked_ago)+' ago'+(g.length>1?' ('+wk.mode+')':''):'never'}${n24?` (${n24} in 24 h)`:''} · scanned ${ago(r.age)} ago</span>
+   <span class="small"><span class="badge ${cls}">${lab}</span> ${det}<br>worked ${wk?ago(wk.worked_ago)+' ago'+(g.length>1?' ('+wk.mode+')':''):'never'}${n24?` (${n24} in 24 h)`:''} · scanned ${ago(r.age)} ago${hu?'<br>'+hu:''}</span>
    <span style="display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end;max-width:${g.length>1?'64px':'none'}">${g.map(x=>x.here?`<span class="small good">● ${g.length>1?x.mode:'here'}</span>`
      :`<button class="mini" data-mode="${x.mode}" title="Tune WS to ${x.mode} here${on?' (stops the scan)':''}">${g.length>1?x.mode:'Go'}</button>`).join('')}</span><canvas></canvas>`;
   li.querySelectorAll('button').forEach(b=>b.onclick=async()=>{b.disabled=true;const x=await api('/api/scan/go',{hz,mode:b.dataset.mode});if(x.error)alert(x.error);setTimeout(poll,2500)});

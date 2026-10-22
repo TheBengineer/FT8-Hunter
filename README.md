@@ -185,10 +185,20 @@ Each result shows the following:
   is busy (10+ signals), active (3+) or quiet.
 - **Worked** shows how long ago you last logged a QSO on that band and mode
   (from the whole WS log), and how many in the last 24 h.
+- **QSO/h hunting** is the QSOs logged per hour the hunter was on that band and
+  mode, with the hours and QSOs it came from. **By hand** counts QSOs logged
+  there while the hunter was off. The hunter records each stretch it runs (band,
+  mode, start, end) in `qso_origins.json`, and flags each QSO it records with
+  `on` (hunter running) and `tx` (we transmitted in the last 2 minutes). For the
+  time before that tracking began, "on" is guessed from WS's ALL.TXT: any run
+  of our transmissions on one band and mode, each within 5 minutes of the last.
+  Transmissions on a lost dial (off the ham bands) are left out. That guess
+  can't tell the hunter from you working by hand, so older QSOs all count as
+  hunting.
 - A small chart shows dB over the floor from 200 to 3000 Hz, with the signals
   and carriers marked. FT2 stops also count what WS decoded.
 
-Sort the results by band, by activity or by least recently worked. **Go** tunes
+Sort the results by band, by activity, by least recently worked or by best QSO rate. **Go** tunes
 WS to that frequency and mode. Results are kept in `scan_results.json` across
 restarts.
 

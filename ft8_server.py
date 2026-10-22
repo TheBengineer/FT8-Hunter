@@ -1345,7 +1345,8 @@ def cq_skip(e, now=None):
 # Where each QSO came from (how it started, and the hunter's mode then), and
 # how long the hunter ran in each mode: QSOs per hour by mode, measured
 ORIGIN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qso_origins.json")
-ORIGIN = {"qsos": [], "secs": {}, "last": 0, "saved": 0, "recent": {}}
+ORIGIN = {"qsos": [], "secs": {}, "last": 0, "saved": 0, "recent": {},
+          "on": [], "on_since": 0}  # on: [start, end, band, fmode] while the hunter runs; since: live tracking began
 def hunt_mode():
     """The hunter's mode right now: contest, cq_first or hunt (standard automatic)."""
     return "contest" if manual_on() else "cq_first" if state["config"].get("cq_first") else "hunt"
@@ -1369,8 +1370,10 @@ def record_origin(call, band_, mode_):
     r = ORIGIN["recent"].pop(base_call(call), None)
     if not r or now - r["t"] > 3600:
         r = {"how": "by hand", "why": "", "mode": hunt_mode() if state["running"] else "stopped"}
+    tx = any(now - m["seen"] < 120 for m in list(state["mytx"])[:2])
     ORIGIN["qsos"].append({"call": call, "t": round(now), "band": band_ or band(), "fmode": mode_ or mode(),
-                           "how": r["how"], "why": r["why"], "mode": r["mode"]})
+                           "how": r["how"], "why": r["why"], "mode": r["mode"],
+                           "on": bool(state["running"]), "tx": tx})  # hunter on / we transmitted in the last 2 min
     save_origins()
 
 def tick_origins(now):
@@ -1380,6 +1383,12 @@ def tick_origins(now):
         day = time.strftime("%Y-%m-%d", time.gmtime(now))
         d = ORIGIN["secs"].setdefault(day, {})
         d[hunt_mode()] = d.get(hunt_mode(), 0) + dt
+        on, b, m = ORIGIN["on"], band(), mode()
+        if b:
+            if on and on[-1][2:] == [b, m] and now - on[-1][1] < 90:
+                on[-1][1] = round(now)
+            else:
+                on.append([round(now - dt), round(now), b, m])
     if now - ORIGIN["saved"] > 300:
         save_origins()
 
@@ -1388,7 +1397,8 @@ def save_origins():
     try:
         with open(ORIGIN_FILE, "w") as f:
             json.dump({"qsos": ORIGIN["qsos"], "secs": {k: {m: round(v) for m, v in d.items()}
-                                                       for k, d in ORIGIN["secs"].items()}}, f)
+                                                       for k, d in ORIGIN["secs"].items()},
+                       "on": ORIGIN["on"], "on_since": ORIGIN["on_since"]}, f)
     except OSError as e:
         log_err("QSO origins not saved", e)
 
@@ -1396,8 +1406,12 @@ def load_origins():
     try:
         d = json.load(open(ORIGIN_FILE))
         ORIGIN["qsos"], ORIGIN["secs"] = d.get("qsos", []), d.get("secs", {})
+        ORIGIN["on"], ORIGIN["on_since"] = d.get("on", []), d.get("on_since", 0)
     except (OSError, ValueError):
         pass
+    if not ORIGIN["on_since"]:
+        ORIGIN["on_since"] = round(time.time())
+        save_origins()
 
 def origin_stats(day=None):
     """Today's QSOs by how they started and by hunter mode, with QSOs per hour."""
@@ -1410,6 +1424,61 @@ def origin_stats(day=None):
     secs = ORIGIN["secs"].get(day, {})
     rate = {m: round(per.get(m, 0) / (secs[m] / 3600), 1) for m in secs if secs[m] >= 600}  # 10 min+ in that mode
     return {"how": how, "mode": per, "hours": {m: round(v / 3600, 2) for m, v in secs.items()}, "rate": rate}
+
+# QSOs per hour on each band while the hunter was on. Before live tracking
+# (on_since), "on" is guessed from ALL.TXT: runs of our Tx on one band and
+# mode, each Tx within TX_RUN_GAP of the last (the hunter listens in between).
+TX_RUN_GAP = 300
+TXH = {"runs": [], "until": None}
+def tx_runs(until):
+    """Our transmissions in ALL.TXT before `until`, as [start, end, band, fmode] runs."""
+    import calendar
+    txs = []
+    for p in ws_files("ALL.TXT"):
+        if not os.path.exists(p):
+            continue
+        with open(p, errors="ignore") as f:
+            for line in f:
+                if " Tx " not in line:
+                    continue
+                w = line.split()
+                try:
+                    t = calendar.timegm(time.strptime(w[0], "%y%m%d_%H%M%S"))
+                    b = band_of(float(w[1]) * 1e6)
+                except (ValueError, IndexError):
+                    continue
+                if t < until and b and w[3] in MODES:  # off-band (a lost dial) doesn't count
+                    txs.append((t, b, w[3]))
+    runs = []
+    for t, b, m in sorted(set(txs)):
+        end = t + MODES[m][0]
+        if runs and runs[-1][2:] == [b, m] and t - runs[-1][1] <= TX_RUN_GAP:
+            runs[-1][1] = end
+        else:
+            runs.append([t, end, b, m])
+    return runs
+
+def band_rates():
+    """{(band, fmode): {on_h, on_n, off_n, rate}}: hunter-on hours, QSOs logged
+    while on and while off (by hand). The ALL.TXT part is read once."""
+    if TXH["until"] != ORIGIN["on_since"]:
+        TXH.update(runs=tx_runs(ORIGIN["on_since"]), until=ORIGIN["on_since"])
+    by = {}
+    for r in TXH["runs"] + ORIGIN["on"]:
+        by.setdefault((r[2], r[3]), []).append(r)
+    out = {}
+    for k, runs in by.items():
+        o = out.setdefault(k, {"on_s": 0, "on_n": 0, "off_n": 0})
+        o["on_s"] += sum(e - s for s, e, *_ in runs)
+    log_last()
+    for t, b, m in LOG_LAST["qsos"]:
+        o = out.setdefault((b, m), {"on_s": 0, "on_n": 0, "off_n": 0})
+        on = any(s - 60 <= t <= e + 60 for s, e, *_ in by.get((b, m), ()))  # time_on is to the minute
+        o["on_n" if on else "off_n"] += 1
+    for o in out.values():
+        o["on_h"] = round(o.pop("on_s") / 3600, 1)
+        o["rate"] = round(o["on_n"] / o["on_h"], 1) if o["on_h"] >= 0.2 else None
+    return out
 
 def engine_tick():
     """Called once per T/R period. Priority: our target > callers-to-me >
@@ -2230,7 +2299,7 @@ def scan_rate(rows, known):
         r["label"] = ("QRM" if r["qrm"] and r["signals"] < 3 else "noisy" if r["noise"] >= NOISY_DB and weak
                       else "busy" if r["signals"] >= 10 else "active" if r["signals"] >= 3 else "quiet")
 
-LOG_LAST = {"mt": None, "last": {}}
+LOG_LAST = {"mt": None, "last": {}, "qsos": []}
 def log_last():
     """{(band, mode): (last QSO epoch, QSOs in the last 24 h)} over the whole log."""
     import datetime
@@ -2238,7 +2307,7 @@ def log_last():
     mt = tuple(os.path.getmtime(p) for p in paths)
     if mt == LOG_LAST["mt"]:
         return LOG_LAST["last"]
-    last, now = {}, time.time()
+    last, now, qsos = {}, time.time(), []
     for p in paths:
         for rec in open(p, errors="ignore").read().split("<eor"):
             md = re.search(r"<qso_date:\d+>(\d{8})", rec, re.I)
@@ -2250,9 +2319,10 @@ def log_last():
             ts = datetime.datetime.strptime(md.group(1) + mt_.group(1), "%Y%m%d%H%M").replace(
                 tzinfo=datetime.timezone.utc).timestamp()
             k = (mb.group(1).lower(), mm.group(1).upper())
+            qsos.append((ts,) + k)
             t0, n = last.get(k, (0, 0))
             last[k] = (max(t0, ts), n + (now - ts < 86400))
-    LOG_LAST.update(mt=mt, last=last)
+    LOG_LAST.update(mt=mt, last=last, qsos=qsos)
     return last
 
 def ws_set_mode(m, wait=8.0):
@@ -2375,21 +2445,22 @@ def scan_go(hz, md):
     log(f"tuned to {hz / 1e6:.4f} MHz {md} from the band scan")
 
 def scan_state():
-    now, last = time.time(), log_last()
+    now, last, rates = time.time(), log_last(), band_rates()
     rows = []
     for key, r in list(SCAN["rows"].items()):
         md = key.split()[1]
         lt, n24 = last.get((r["band"], md), (0, 0))
         rows.append({k: v for k, v in r.items() if k != "modes" and k[0] != "_"} | {
             "mode": md, "age": round(now - r["t"]), "worked_ago": round(now - lt) if lt else None,
-            "worked_24h": n24, "here": r["hz"] == state["udp"].get("dial") and md == mode_raw()})
+            "worked_24h": n24, "here": r["hz"] == state["udp"].get("dial") and md == mode_raw(),
+            "hunted": rates.get((r["band"], md))})
     rows.sort(key=lambda r: (r["hz"], r["mode"]))
     cur = SCAN["cur"]
     return {"on": SCAN["on"], "i": SCAN["i"], "n": SCAN["n"], "err": SCAN["err"],
             "cur": cur and {"band": cur["band"], "modes": cur["modes"], "hz": cur["hz"]},
             "eta": round((SCAN["n"] - SCAN["i"]) * 2 * MODES["FT2"][0]) if SCAN["on"] else 0,
             "src": SCAN["freqs"]["src"], "freqs": [list(x) for x in SCAN["freqs"]["list"]],
-            "ws_hunter": has_ws_hunter(), "rows": rows}
+            "ws_hunter": has_ws_hunter(), "rows": rows, "on_since": ORIGIN["on_since"]}
 
 def load_scan():
     try:
@@ -3038,6 +3109,7 @@ threading.Thread(target=rig_poll, daemon=True).start()
 load_scan()
 load_swr()
 load_origins()
+threading.Thread(target=band_rates, daemon=True).start()  # reads ALL.TXT once
 lb_load()
 threading.Thread(target=lb_worker, daemon=True).start()
 threading.Thread(target=load_freqs, daemon=True).start()
