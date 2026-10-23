@@ -129,6 +129,16 @@ reports to PSK Reporter, the picker goes by your waterfall alone. Only decoded
 signals are reported, so the data shows where it's busy, not that a spot is
 clear.
 
+Each new contact gets its own pick. Mid-QSO the picker only moves when another
+spot is clearly better (a cost difference of 0.6), so a faint trace isn't worth a hop. Starting a new
+contact nobody is listening for you yet, so the bar drops to 0.2: one station
+near the DX on your offset is reason enough to move. A station calling you is
+the exception, since they found you where you are. The picker normally waits
+until it has heard both periods before moving. A fresh look at the DX's end
+(under 10 minutes old) lets it move straight away. Each "calling …" log line
+then says where you're calling and whether that's clear near them, for example
+`calling W7PIA FN30 (CQ, 3 tries) at 1740 Hz; clear near W7PIA, 81 rx there`.
+
 You can see this in two places while the hunter is calling someone:
 
 - **Waterfall:** a third bar, **DX**, under the even and odd bars, shows the

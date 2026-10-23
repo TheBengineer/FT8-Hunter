@@ -1010,6 +1010,7 @@ def occupied(par, now):
 # strong, from the two newest periods) cost 0.7 per 50 Hz.
 PICK_PERIODS, PICK_DECAY, PICK_ENERGY, PICK_GUARD = 3, 0.35, 0.7, 0.2
 PICK_HYST = 0.6  # keep the current offset unless the best is this much better
+PICK_HYST_NEW = 0.2  # ...or this much, starting a new contact (nobody is listening for us there yet)
 
 def tx_cost(par, now, dx=None):
     """Cost of transmitting at each offset on parity `par`, from the last
@@ -1045,7 +1046,8 @@ def pick_tx_df(par, current=None, dx=None):
     """Least crowded Tx offset on parity `par` (tx_cost), nearest the current
     one among equals. Keeps `current` unless the best is clearly better
     (PICK_HYST): a faint trace or a decode brushing our edge isn't worth a
-    move. Even a crowded band gets the least bad spot; below df_lo (the rig
+    move. Starting a new contact (dx["new"]) the bar is lower, PICK_HYST_NEW,
+    so one signal at the DX's end is reason enough. Even a crowded band gets the least bad spot; below df_lo (the rig
     feeds back) or above df_hi we always move into the range."""
     cfg = state["config"]
     lo, hi = cfg.get("df_lo", 1300), cfg.get("df_hi", 2700)
@@ -1056,7 +1058,8 @@ def pick_tx_df(par, current=None, dx=None):
     c = {f: round(cost(f), 3) for f in cands}
     near = current if current is not None else (lo + hi - bw()) / 2  # nothing heard: mid-range
     best = min(cands, key=lambda f: (c[f], abs(f - near)))
-    if current is not None and lo <= current <= hi - bw() and cost(current) <= c[best] + PICK_HYST:
+    hyst = PICK_HYST_NEW if dx and dx.get("new") else PICK_HYST
+    if current is not None and lo <= current <= hi - bw() and cost(current) <= c[best] + hyst:
         return current
     return best
 
@@ -1161,6 +1164,23 @@ def remote_sigs(par, now, dx):
         out.append((dx["df"], dx["df"] + w, PSK_DX_W))
     return out
 
+def remote_fresh(dx, now):
+    """Is there a recent picture of the DX's end (receivers near them)?"""
+    if not (dx and state["config"].get("psk_remote") and PSK["t"] and now - PSK["t"] < 2 * PSK_EVERY):
+        return False
+    return bool(psk_near(dx, 0, now)[1])
+
+def remote_note(f, par, now, dx):
+    """For the log: is offset f clear at the DX's end on parity `par`?"""
+    if not remote_fresh(dx, now):
+        return ""
+    near, rxs = psk_near(dx, par, now)
+    w = bw()
+    busy = [r["tx"] for r in near if r["df"] < f + w + GUARD and r["df"] + w + GUARD > f]
+    on_dx = dx.get("df") is not None and dx["df"] < f + w + GUARD and dx["df"] + w + GUARD > f
+    what = (f"busy near {dx['call']} ({', '.join(busy[:3])})" if busy else f"clear near {dx['call']}")
+    return f"; {what}, {len(rxs)} rx there" + ("; on their own offset" if on_dx else "")
+
 def remote_view(now):
     """The DX's end for the waterfall and globe: who is near them and what
     they hear on our Tx parity, or None without a target."""
@@ -1187,13 +1207,16 @@ def tune_tx(par, can_wait=False, dx=None):
     now = time.time()
     cur = state["udp"].get("tx_df")
     ENG["dx"] = dx
+    ENG.pop("picked", None)
     f = pick_tx_df(par, cur, dx)
     lock = bool(state["config"].get("df_lock")) and cur is not None
     ENG["suggest"] = {"par": par, "df": f, "locked": lock, "busy": lock and f != cur}
     if not (has_ws_hunter() and state["config"].get("auto_df", True)):
         return True
     move = f and f != cur and not lock  # locked: the operator chose this offset, keep it
-    if move and cur is not None and not heard_cycle(now):
+    # The full-cycle rule guards picks made on stale spectra; a fresh look at
+    # the DX's end is new information enough to move on.
+    if move and cur is not None and not heard_cycle(now) and not remote_fresh(dx, now):
         if can_wait and now - ENG.get("fresh_check", 0) > cyc(6):  # once: the spectra may not come at all
             ENG["fresh_check"] = now
             start_check(now, f"before moving off {cur} Hz")
@@ -1202,9 +1225,10 @@ def tune_tx(par, can_wait=False, dx=None):
             move = False  # nothing heard lately to pick by
     tx, wid = CTX["tx"], state["ws_id"]
     tx.sendto(pack_set_bool(SET_HOLD_TX_FREQ, wid, True), ws_dest())
+    ENG["picked"] = (f if move else cur, par)
     if move:
         tx.sendto(pack_set_u32(SET_TX_DF, wid, f), ws_dest())
-        log(f"Tx offset {cur} -> {f} Hz ({'even' if par == 0 else 'odd'})")
+        log(f"Tx offset {cur} -> {f} Hz ({'even' if par == 0 else 'odd'}{remote_note(f, par, now, dx)})")
     return True
 
 def tod_ms(ts):
@@ -1866,11 +1890,11 @@ def acquire(call, grid, msg, tries, why, can_wait=False):
     """Call them. can_wait: if our offset needs to move and we haven't heard
     a full cycle, listen one first and return False (starting nothing)."""
     p = state["decparams"].get(msg)
-    extra = 0
+    extra, dx = 0, None
     if p:
         tx_par = 1 - parity(p["t_ms"])  # we answer in the other period
         dx = {"call": call, "ll": (grid and GRID_RE.match(grid.upper()) and grid_to_latlon(grid)) or locate(call),
-              "df": p["df"]}
+              "df": p["df"], "new": why != "called us"}  # someone calling us knows where we are
         if not tune_tx(tx_par, can_wait, dx):
             return False
         # Starting in their period, our first call goes out a period later;
@@ -1886,7 +1910,9 @@ def acquire(call, grid, msg, tries, why, can_wait=False):
     push_signoff(state["target"])
     ENG["cq_until"] = 0  # a Reply replaces our CQ in WS
     state["stats"]["calls_made"] += 1
-    log(f"calling {call} {grid} ({why}, {tries} tries)")
+    df, par = ENG.pop("picked", (None, None)) if p else (None, None)
+    note = remote_note(df, par, time.time(), dx) if df is not None else ""
+    log(f"calling {call} {grid} ({why}, {tries} tries)" + (f" at {df} Hz{note}" if note else ""))
     return True
 
 def send_exact_reply(tx, msg):

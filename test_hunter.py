@@ -1246,6 +1246,15 @@ st["config"]["psk_remote"] = True
 c = ns["tx_cost"](1, time.time(), dx)
 check("an offset busy near the DX costs more, and so does the DX's own offset",
       c(1500) > c(1700) and c(900) > c(1100) and c(1700) == 0)
+busy_dx = {"call": "DK5IR", "ll": dx["ll"], "df": None}
+df_range = st["config"]["df_lo"], st["config"]["df_hi"]; st["config"].update(df_lo=1300, df_hi=2700)
+check("one signal at the DX's end doesn't move an offset we're keeping",
+      ns["pick_tx_df"](1, 1500, busy_dx) == 1500)
+check("...but does when starting a new contact", ns["pick_tx_df"](1, 1500, dict(busy_dx, new=True)) != 1500)
+check("a fresh look at the DX's end counts as enough to move on", ns["remote_fresh"](dx, time.time()))
+check("the log says whether our offset is clear there",
+      "busy near DK5IR (PA1AA)" in ns["remote_note"](1500, 1, T0 + 20, dx) and "clear near DK5IR" in ns["remote_note"](2200, 1, T0 + 20, dx))
+st["config"]["df_lo"], st["config"]["df_hi"] = df_range
 st["config"]["psk_remote"] = False
 check("setting off: the DX's end is ignored", ns["tx_cost"](1, time.time(), dx)(1500) == 0)
 st["config"]["psk_remote"] = True; st["running"] = True; P.update(t=0, key=None)
