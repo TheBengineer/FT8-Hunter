@@ -27,6 +27,7 @@ state = {
                "wrl_port": 2238,  # WS packets rebroadcast here for WRL Desktop (restart)
                "ws_dir": "",
                "wrl_warn": True,
+               "psk_remote": True,  # look at the DX's end of the band (PSK Reporter) when picking a Tx offset
                "desync_stop": True,  # stop the hunter (and WS's TX) when the radio and WS are out of step
                "silent_min": 5,  # ...or nothing decoded for this long while hunting (0 = don't check)  # warn when nothing (WRL Desktop) is listening on wrl_port  # WS / WSJT-X data folder (ALL.TXT, wsjtx_log.adi); empty = look in the usual places
                "traffic_secs": 300,  # globe: other stations' traffic lines fade out over this long
@@ -1010,11 +1011,12 @@ def occupied(par, now):
 PICK_PERIODS, PICK_DECAY, PICK_ENERGY, PICK_GUARD = 3, 0.35, 0.7, 0.2
 PICK_HYST = 0.6  # keep the current offset unless the best is this much better
 
-def tx_cost(par, now):
+def tx_cost(par, now, dx=None):
     """Cost of transmitting at each offset on parity `par`, from the last
     PICK_PERIODS periods of it we heard: overlap with decodes (by strength,
     the newest weighted most) and with undecoded signals; a little for
-    sitting inside someone's guard band."""
+    sitting inside someone's guard band. With `dx`, also what's busy at
+    their end (remote_sigs)."""
     cfg, w = state["config"], bw()
     lo, hi = cfg.get("df_lo", 1300) - 100, cfg.get("df_hi", 2700) + 100
     heard = heard_periods(par, now, PICK_PERIODS)
@@ -1027,6 +1029,7 @@ def tx_cost(par, now):
     ex = spec_excess(par, now, periods=set(heard[:2]))
     if ex:
         sigs += [(f, f + ex[3], PICK_ENERGY) for f in weak_hot(par, now, ex) if lo <= f < hi]
+    sigs += remote_sigs(par, now, dx)
     def cost(f):
         c = 0.0
         for a, b, k in sigs:
@@ -1038,7 +1041,7 @@ def tx_cost(par, now):
         return c
     return cost
 
-def pick_tx_df(par, current=None):
+def pick_tx_df(par, current=None, dx=None):
     """Least crowded Tx offset on parity `par` (tx_cost), nearest the current
     one among equals. Keeps `current` unless the best is clearly better
     (PICK_HYST): a faint trace or a decode brushing our edge isn't worth a
@@ -1046,7 +1049,7 @@ def pick_tx_df(par, current=None):
     feeds back) or above df_hi we always move into the range."""
     cfg = state["config"]
     lo, hi = cfg.get("df_lo", 1300), cfg.get("df_hi", 2700)
-    cost = tx_cost(par, time.time())
+    cost = tx_cost(par, time.time(), dx)
     cands = range(lo, hi - bw() + 1, 10)
     if not cands:
         return current
@@ -1066,7 +1069,115 @@ def heard_cycle(now):
     want = {(last - k * tr) % 86400000 for k in range(3)}
     return {h["par"] for h in list(ENG["spec_hist"]) if h["t_ms"] in want} >= {0, 1}
 
-def tune_tx(par, can_wait=False):
+# The DX's end of the band: what receivers near the DX decoded in the period
+# we transmit in, from PSK Reporter. One query per dial and mode every
+# PSK_EVERY s (their limit is one per 5 min), only while the hunter runs.
+# A signal heard near the DX costs PSK_W of one heard here (it's minutes
+# old, and only decoded signals are reported); the DX's own offset costs
+# PSK_DX_W on our parity, where callers who follow the DX pile up.
+PSK = {"key": None, "t": 0, "reports": [], "err": "", "busy": False}
+PSK_URL = "https://retrieve.pskreporter.info/query"
+PSK_EVERY, PSK_KEEP, PSK_NEAR_KM = 300, 900, 1000
+PSK_W, PSK_DX_W = 0.5, 0.5
+
+def psk_parse(text, dial, md):
+    """Reception reports -> [{rx, rll, tx, sll, df, par, t, snr}]. A report's
+    time is its period's start or when it was decoded, at the end; the
+    period is clear either way, and reports timed in between are dropped."""
+    import xml.etree.ElementTree as ET
+    tr, out = MODES[md][0], []
+    for e in ET.fromstring(text).iter("receptionReport"):
+        a = e.attrib
+        try:
+            t, df = int(a["flowStartSeconds"]), int(a["frequency"]) - dial
+        except (KeyError, ValueError):
+            continue
+        k = int(t // tr)
+        r = t - k * tr
+        rll, sll = (next((grid_to_latlon(g) for g in (a.get(k, "")[:6].upper(), a.get(k, "")[:4].upper())
+                          if GRID_RE.match(g)), None) for k in ("receiverLocator", "senderLocator"))
+        if not (100 <= df <= 3100 and rll) or 0.15 * tr + 0.75 < r < 0.7 * tr:
+            continue
+        snr = a.get("sNR", "")
+        out.append({"rx": a.get("receiverCallsign", ""), "rll": rll, "tx": a.get("senderCallsign", ""),
+                    "sll": sll, "df": df, "par": k % 2,
+                    "t": t, "snr": int(snr) if snr.lstrip("-").isdigit() else None})
+    return out
+
+def psk_fetch(key, dial, md):
+    import urllib.request
+    url = f"{PSK_URL}?frange={dial}-{dial + 3000}&mode={md}&flowStartSeconds=-{PSK_KEEP}&rronly=1&noactive=1"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "FT8-Hunter"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            reps = psk_parse(r.read().decode("utf-8", "ignore"), dial, md)
+        if PSK["key"] == key:
+            PSK.update(reports=reps, err="")
+    except Exception as e:
+        PSK["err"] = str(e)[:120]
+    finally:
+        PSK["busy"] = False
+
+def psk_tick(now):
+    """Fetch PSK Reporter's view of this dial and mode when it's due."""
+    if not (state["config"].get("psk_remote") and state["running"]) or SCAN["on"] or PSK["busy"]:
+        return
+    dial, md = state["udp"].get("dial"), mode()
+    if not dial or not band_of(dial) or md not in MODES:
+        return
+    key = (int(dial), md)
+    if now - PSK["t"] < (PSK_EVERY if key == PSK["key"] else 60):  # a new band: soon, never hammering
+        return
+    if key != PSK["key"]:
+        PSK["reports"] = []
+    PSK.update(key=key, t=now, busy=True)
+    threading.Thread(target=psk_fetch, args=(key, int(dial), md), daemon=True).start()
+
+def psk_near(dx, par, now):
+    """Receivers within PSK_NEAR_KM of the DX, and the newest report of each
+    other station they decoded on parity `par` (not us, not the DX)."""
+    sigs, rxs = {}, {}
+    ll = (dx or {}).get("ll")
+    if not ll or (PSK["key"] and PSK["key"][1] != mode()):
+        return [], {}
+    for r in list(PSK["reports"]):
+        if now - r["t"] > PSK_KEEP or (km(ll, r["rll"]) or 1e9) > PSK_NEAR_KM:
+            continue
+        rxs[r["rx"]] = r["rll"]
+        if r["par"] != par or is_me(r["tx"]) or same_call(r["tx"], dx["call"]):
+            continue
+        if r["tx"] not in sigs or r["t"] > sigs[r["tx"]]["t"]:
+            sigs[r["tx"]] = r
+    return list(sigs.values()), rxs
+
+def remote_sigs(par, now, dx):
+    """(lo Hz, hi Hz, weight) for the offset picker from the DX's end."""
+    if not (dx and state["config"].get("psk_remote")):
+        return []
+    w = bw()
+    near, _ = psk_near(dx, par, now)
+    out = [(r["df"], r["df"] + w, PSK_W * (1 if now - r["t"] < PSK_EVERY else 0.5)) for r in near]
+    if dx.get("df") is not None:
+        out.append((dx["df"], dx["df"] + w, PSK_DX_W))
+    return out
+
+def remote_view(now):
+    """The DX's end for the waterfall and globe: who is near them and what
+    they hear on our Tx parity, or None without a target."""
+    dx, t = ENG.get("dx"), state["target"]
+    if not (dx and t and same_call(dx["call"], t["call"]) and state["config"].get("psk_remote")):
+        return None
+    par = ENG.get("suggest", {}).get("par")
+    near, rxs = psk_near(dx, par, now) if par is not None else ([], {})
+    w = bw()
+    return {"call": dx["call"], "ll": dx.get("ll"), "df": dx.get("df"), "par": par, "km": PSK_NEAR_KM,
+            "rx": list(rxs.values())[:200], "n_rx": len(rxs),
+            "sigs": [{"call": r["tx"], "ll": r["sll"], "df": r["df"], "snr": r["snr"], "age": round(now - r["t"])}
+                     for r in sorted(near, key=lambda r: r["df"])],
+            "occupied": merged([(r["df"] - GUARD, r["df"] + w + GUARD) for r in near]),
+            "age": round(now - PSK["t"]) if PSK["t"] else None, "err": PSK["err"]}
+
+def tune_tx(par, can_wait=False, dx=None):
     """Before transmitting on parity `par`: hold Tx freq (so a Reply can't drag
     us onto the DX) and move to a clear offset. Needs the ws-hunter build;
     on stock WS the pick is only shown in the UI. A move is only made after
@@ -1075,7 +1186,8 @@ def tune_tx(par, can_wait=False):
     stay where we are this time."""
     now = time.time()
     cur = state["udp"].get("tx_df")
-    f = pick_tx_df(par, cur)
+    ENG["dx"] = dx
+    f = pick_tx_df(par, cur, dx)
     lock = bool(state["config"].get("df_lock")) and cur is not None
     ENG["suggest"] = {"par": par, "df": f, "locked": lock, "busy": lock and f != cur}
     if not (has_ws_hunter() and state["config"].get("auto_df", True)):
@@ -1243,7 +1355,7 @@ def waterfall(rows=40):
             "tx_df": state["udp"].get("tx_df"), "tx_par": sug.get("par"), "suggest": sug.get("df"),
             "df_lo": cfg.get("df_lo", 1300), "df_hi": cfg.get("df_hi", 2700),
             "learned": len(by_t) >= 8, "ws_hunter": has_ws_hunter(),
-            "df_lock": bool(state["config"].get("df_lock"))}
+            "df_lock": bool(state["config"].get("df_lock")), "remote": remote_view(now)}
 
 def check_qrm(now=None):
     """Busy-frequency check for spectra whose decodes are in by now (decoding
@@ -1487,6 +1599,7 @@ def engine_tick():
     tick_origins(now)
     wrl_check(now)
     desync_check(now)
+    psk_tick(now)
     # refresh today's worked if a log file changed
     try:
         for p, mt in list(state.get("adi_mtime", {}).items()):
@@ -1756,7 +1869,9 @@ def acquire(call, grid, msg, tries, why, can_wait=False):
     extra = 0
     if p:
         tx_par = 1 - parity(p["t_ms"])  # we answer in the other period
-        if not tune_tx(tx_par, can_wait):
+        dx = {"call": call, "ll": (grid and GRID_RE.match(grid.upper()) and grid_to_latlon(grid)) or locate(call),
+              "df": p["df"]}
+        if not tune_tx(tx_par, can_wait, dx):
             return False
         # Starting in their period, our first call goes out a period later;
         # allow for it so their answer to our last call is decoded before we
@@ -2130,7 +2245,8 @@ def globe():
             traffic.append({"from": p["a"], "to": p["b"], "a": a, "b": b, "age": round(age),
                             "tome": is_me(p["b"])})
     return {"me": me, "mycall": state["mycall"], "worked": worked[:300], "target": tgt, "callers": callers,
-            "traffic": traffic, "fade": state["config"]["traffic_secs"], "band": here[0], "mode": here[1]}
+            "traffic": traffic, "fade": state["config"]["traffic_secs"], "band": here[0], "mode": here[1],
+            "remote": remote_view(now)}
 
 # --- Band scan: visit the published FT8/FT4/FT2 dial frequencies and take
 # one clean ws-hunter spectrum on each, to see which bands are busy. WS runs
@@ -3048,6 +3164,7 @@ class H(BaseHTTPRequestHandler):
             c["flrig_url"] = str(c["flrig_url"]).strip() or "http://127.0.0.1:12345"
             c["ws_dir"] = str(c["ws_dir"]).strip()
             c["desync_stop"] = bool(c["desync_stop"])
+            c["psk_remote"] = bool(c["psk_remote"])
             c["silent_min"] = max(0, min(int(c["silent_min"]), 60))
             c["wrl_warn"] = bool(c["wrl_warn"]); WRL["t"] = 0  # re-check at the next tick
             c["traffic_secs"] = max(30, min(int(c["traffic_secs"]), 3600))

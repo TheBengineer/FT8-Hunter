@@ -16,6 +16,8 @@ ns["SCAN_FILE"], ns["FREQ_FILE"] = os.path.join(_tmp, "scan.json"), os.path.join
 ns["SWR_FILE"] = os.path.join(_tmp, "swr.json")
 ns["ORIGIN_FILE"] = os.path.join(_tmp, "origins.json")
 ns["LB_FILE"], ns["LB_QUEUE_FILE"] = os.path.join(_tmp, "lb.json"), os.path.join(_tmp, "lbq.json")
+fetches = []  # PSK Reporter is never asked from the tests
+ns["psk_fetch"] = lambda key, dial, md: (fetches.append(key), ns["PSK"].update(busy=False))
 
 
 class FakeSock:
@@ -1222,6 +1224,34 @@ check("ALL.TXT Tx: one run on 40m FT8, the off-band Tx left out", len(runs) == 1
 r = ns["band_rates"]()[("40m", "FT8")]
 check("QSOs during the Tx run count as hunting, the later one by hand", r["on_n"] == 2 and r["off_n"] == 1 and r["on_h"] == 0.5 and r["rate"] == 4.0)
 st["config"]["ws_dir"] = ""; ns["WS_DIRS"] = ws_dirs; ns["LOG_LAST"]["mt"] = None; O["on"].clear()
+# the DX's end of the band from PSK Reporter (no network here: the fetch is stubbed)
+fresh(); st["udp"].update(mode="FT8", dial=14074000, band="20m"); P = ns["PSK"]
+T0 = int(time.time()) // 30 * 30  # an even period's start
+xml = ('<receptionReports>'
+       f'<receptionReport receiverCallsign="DL1RX" receiverLocator="JO31le" senderCallsign="PA1AA" senderLocator="JO22" frequency="14075500" flowStartSeconds="{T0 + 15}" sNR="-5"/>'
+       f'<receptionReport receiverCallsign="DL2RX" receiverLocator="jo40" senderCallsign="F1BB" senderLocator="JN18" frequency="14075800" flowStartSeconds="{T0 + 12}" sNR="3"/>'
+       f'<receptionReport receiverCallsign="DL1RX" receiverLocator="JO31le" senderCallsign="KR4MZM" senderLocator="EM84" frequency="14076000" flowStartSeconds="{T0 + 15}" sNR="-12"/>'
+       f'<receptionReport receiverCallsign="DL1RX" receiverLocator="JO31le" senderCallsign="G1CC" senderLocator="IO91" frequency="14075000" flowStartSeconds="{T0 + 21}" sNR="0"/>'
+       f'<receptionReport receiverCallsign="W1RX" receiverLocator="FN42" senderCallsign="K1DD" senderLocator="FN31" frequency="14075200" flowStartSeconds="{T0 + 15}" sNR="0"/>'
+       '</receptionReports>')
+reps = ns["psk_parse"](xml, 14074000, "FT8")
+check("PSK reports: offset from the dial, period from the time; ones timed mid-period dropped",
+      [(r["tx"], r["df"], r["par"]) for r in reps] == [("PA1AA", 1500, 1), ("F1BB", 1800, 0), ("KR4MZM", 2000, 1), ("K1DD", 1200, 1)])
+P.update(reports=reps, key=(14074000, "FT8"), t=time.time())
+dx = {"call": "DK5IR", "ll": ns["grid_to_latlon"]("JO31"), "df": 900}
+near, rxs = ns["psk_near"](dx, 1, T0 + 20)
+check("near the DX: their receivers only, our own signal left out",
+      [r["tx"] for r in near] == ["PA1AA"] and set(rxs) == {"DL1RX", "DL2RX"})
+st["config"]["psk_remote"] = True
+c = ns["tx_cost"](1, time.time(), dx)
+check("an offset busy near the DX costs more, and so does the DX's own offset",
+      c(1500) > c(1700) and c(900) > c(1100) and c(1700) == 0)
+st["config"]["psk_remote"] = False
+check("setting off: the DX's end is ignored", ns["tx_cost"](1, time.time(), dx)(1500) == 0)
+st["config"]["psk_remote"] = True; st["running"] = True; P.update(t=0, key=None)
+fetches.clear(); ns["psk_tick"](time.time()); ns["psk_tick"](time.time())
+check("fetched when due, not again straight after", fetches == [(14074000, "FT8")])
+st["running"] = False; P.update(reports=[], key=None, t=0); st["config"]["psk_remote"] = False
 # call sign and grid: Settings first, else what WS reports; no call, no start
 saved = dict(st["config"]), st["mycall"], st["mygrid"]
 st["config"].update(mycall="", mygrid=""); st["udp"].update(de_call="", de_grid=""); ns["set_identity"]()

@@ -135,6 +135,7 @@ details summary{font-weight:700;padding:4px}
 <div class="row" style="margin-top:8px"><button id="bWake" class="mini tog" style="flex:1;padding:8px;--lit:var(--go)">📱 Keep screen awake: off</button></div></div>
 <div class="card" data-id="wf"><h2>🌊 Waterfall <span class="small" id="wfsum"></span></h2>
 <canvas id="wf" style="width:100%;display:block;cursor:crosshair;touch-action:pan-y"></canvas>
+<div class="small" id="wfdx" style="margin-top:4px;display:none"></div>
 <div class="small" id="wfinfo" style="margin-top:4px;min-height:2.4em">Tap a spot (it snaps to the nearest 100 Hz, as your signal's lower edge) to see who is there and move your Tx offset to it; drag to fine-tune.</div>
 <div class="row" id="wfact" style="display:none;margin-top:4px"><button class="mini" id="wfGo" style="flex:1;padding:8px"></button></div>
 <div class="row" id="wflk" style="display:none;margin-top:4px"><button class="mini tog" id="wfLock" style="flex:1;padding:8px;--lit:var(--lock)" title="Locked: the auto picker never moves your Tx offset, even when someone else is on it. Moving it from the waterfall locks it."></button></div>
@@ -151,7 +152,7 @@ Chart: dB over the floor, 200–3000 Hz · <span style="color:var(--good)">▬ F
 <b>QRM</b> = a broad lump (wideband interference), not narrow signals · <b>noisy</b> = floor 10+ dB over the other bands, weak signals only.<br><b>QSO/h</b> = QSOs logged per hour the hunter was on, on that band and mode; <i>by hand</i> = logged with it off. <span id="scOn"></span> <span id="scSrc"></span></div></div>
 <div class="card" data-id="globe"><h2>🌍 Globe <span class="small" id="gsum"></span></h2>
 <canvas id="globe" style="width:100%;aspect-ratio:1;display:block;touch-action:none;cursor:grab"></canvas>
-<div class="small" style="margin-top:4px">Colour = band, line = mode, weight = who: <span class="lg qso"></span>QSO · <span class="lg target"></span>calling · <span class="lg waiting"></span>also answering · <span class="lg worked"></span>worked · <span class="lg traffic"></span>traffic · <span class="lg mode"></span>FT8 <span class="lg mode FT4"></span>FT4 <span class="lg mode FT2"></span>FT2 · drag to turn, scroll or pinch to zoom; it drifts back to you</div></div>
+<div class="small" style="margin-top:4px">Colour = band, line = mode, weight = who: <span class="lg qso"></span>QSO · <span class="lg target"></span>calling · <span class="lg waiting"></span>also answering · <span class="lg worked"></span>worked · <span class="lg traffic"></span>traffic · <span class="lg mode"></span>FT8 <span class="lg mode FT4"></span>FT4 <span class="lg mode FT2"></span>FT2 <span id="gdx" style="display:none">· near the DX (PSK Reporter): <span style="color:var(--amber)">┄</span> 1000 km · <span style="color:var(--accent)">•</span> receivers · <span style="color:var(--taken)">•─</span> who they hear in our Tx period</span> · drag to turn, scroll or pinch to zoom; it drifts back to you</div></div>
 <div class="card" data-id="flow"><h2>🧭 Decision flow <span class="small" id="stepage"></span></h2><div class="flow" id="flow"></div>
 <div class="small" style="margin-top:6px">Checked top to bottom each period; the first “yes” wins.</div></div>
 <div class="card" data-id="dx"><h2>🎯 DX focus <span class="small" id="dxn"></span></h2><ul id="dxf"></ul>
@@ -207,6 +208,7 @@ Chart: dB over the floor, 200–3000 Hz · <span style="color:var(--good)">▬ F
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Folder holding WS / WSJT-X's ALL.TXT and wsjtx_log.adi. Empty: the usual places (~/.local/share/WS, ~/Library/Application Support/WS, and the WSJT-X ones).">WS data folder</span><input id="sWsDir" type="text" spellcheck="false" placeholder="auto" style="max-width:170px;margin-top:0"></div>
 </details>
 <details style="margin-top:6px"><summary class="small">Advanced</summary>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="When calling a DX station, also avoid offsets that receivers near them (within 1000 km) report busy in the period we transmit in, and the DX's own offset, where callers pile up. Asks PSK Reporter once every 5 minutes while the hunter runs.">Look at the DX's end of the band (PSK Reporter)</span><input id="sPsk" type="checkbox" style="width:auto;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="When the radio and WS are out of step (FLRig stops answering, WS's dial goes off the ham bands or away from the radio's frequency), stop the hunter and turn WS's TX off, with a warning in the status card">Stop when the radio is out of sync</span><input id="sDesync" type="checkbox" style="width:auto;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="While hunting, nothing decoded for this long counts as out of sync too (no audio from the radio). 0 = don't check. A dead band can trip it.">…or nothing decoded for (min)</span><input id="sSilent" type="number" min="0" max="60" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Globe: how long other stations' traffic lines take to fade out">Globe traffic fade (s)</span><input id="sFade" type="number" min="30" max="3600" step="30" style="max-width:90px;margin-top:0"></div>
@@ -419,14 +421,14 @@ $('sAutoDf').checked=c.auto_df!==false;$('sDfLo').value=c.df_lo;$('sQrm').checke
 $('sTune').checked=c.tune_new_band!==false;$('sTuneKhz').value=c.tune_away_khz;$('sLic').value=c.license||'';
 $('sCall').value=c.mycall||'';$('sGrid').value=c.mygrid||'';
 $('sUdp').value=c.udp_port;$('sHttp').value=c.http_port;$('sFlrig').value=c.flrig_url;$('sWrl').value=c.wrl_port;$('sWrlWarn').checked=c.wrl_warn!==false;$('sWsDir').value=c.ws_dir||'';
-$('sDesync').checked=c.desync_stop!==false;$('sSilent').value=c.silent_min??5;$('sFade').value=c.traffic_secs;$('sTuneWait').value=c.tune_wait;$('sNewBand').value=c.new_band_cycles;$('sSwrHi').value=c.swr_high;$('sSwrBad').value=c.swr_bad}
+$('sDesync').checked=c.desync_stop!==false;$('sPsk').checked=c.psk_remote!==false;$('sSilent').value=c.silent_min??5;$('sFade').value=c.traffic_secs;$('sTuneWait').value=c.tune_wait;$('sNewBand').value=c.new_band_cycles;$('sSwrHi').value=c.swr_high;$('sSwrBad').value=c.swr_bad}
 function signoffNote(){const me=(window._me||'').split('/').sort((a,b)=>(/\d/.test(b)-/\d/.test(a))||b.length-a.length)[0]||'',
 ls=$('sSignoff').value.split('\n').map(x=>x.trim().toUpperCase().replace(/\s+/g,' ').replace(/([A-Z])(R?R?73)\b/,'$1 $2')).filter(Boolean),long=ls.filter(x=>me.length+1+x.length>13);
 $('sSignoffNote').textContent=`${ls.length} lines, sent as ${me} + the line. FT8 free text is 13 characters in all, so 6 are left for the line`+(long.length?`; too long: ${long.join(', ')}`:'')+'.'}
 $('sSignoff').oninput=signoffNote;
 $('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,qso_tries:+$('sQso').value,watts_call:+$('sWCall').value,watts_qso:+$('sWQso').value,hold_min:+$('sHold').value,signoff:$('sSignoff').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value,special_first:$('sSpec').checked,call_cq:$('sCallCq').checked,cq_secs:+$('sCqSecs').value,auto_df:$('sAutoDf').checked,df_lo:+$('sDfLo').value,qrm_detect:$('sQrm').checked,compat:$('sCompat').checked,check_every:+$('sCheck').value,tune_new_band:$('sTune').checked,tune_away_khz:+$('sTuneKhz').value,license:$('sLic').value,min_snr:+$('sMinSnr').value,
 mycall:$('sCall').value.trim(),mygrid:$('sGrid').value.trim(),udp_port:+$('sUdp').value,http_port:+$('sHttp').value,flrig_url:$('sFlrig').value.trim(),wrl_port:+$('sWrl').value,wrl_warn:$('sWrlWarn').checked,ws_dir:$('sWsDir').value.trim(),
-desync_stop:$('sDesync').checked,silent_min:+$('sSilent').value,traffic_secs:+$('sFade').value,tune_wait:+$('sTuneWait').value,new_band_cycles:+$('sNewBand').value,swr_high:+$('sSwrHi').value,swr_bad:+$('sSwrBad').value},'POST');sLoaded=false;tick()};
+desync_stop:$('sDesync').checked,psk_remote:$('sPsk').checked,silent_min:+$('sSilent').value,traffic_secs:+$('sFade').value,tune_wait:+$('sTuneWait').value,new_band_cycles:+$('sNewBand').value,swr_high:+$('sSwrHi').value,swr_bad:+$('sSwrBad').value},'POST');sLoaded=false;tick()};
 setInterval(tick,2000);tick();
 // T/R cycle bar (15 s FT8, 7.5 s FT4, 3.75 s FT2) + TX badge, updated locally every 200ms
 setInterval(()=>{const per=window._per||15,t=Date.now()/1000,pos=t%per,pct=pos/per*100;
@@ -503,7 +505,7 @@ function col(e){if(e<=STOPS[0][0])return STOPS[0][1];for(let i=1;i<STOPS.length;
  if(e<=b){const k=(e-a)/(b-a);return ca.map((v,j)=>Math.round(v+(cb[j]-v)*k))}}return STOPS[STOPS.length-1][1]}
 const parName=p=>p?'odd':'even';
 function geom(){const w=cv.clientWidth||300,n=(W.rows||[]).length||40;return{w,n,x:f=>G+(f-F0)/(F1-F0)*(w-G),f:x=>F0+(x-G)/(w-G)*(F1-F0),
- y0:TOP,yS:TOP+n*RH+5,h:TOP+n*RH+5+2*SH+4+4}}
+ y0:TOP,yS:TOP+n*RH+5,h:TOP+n*RH+5+(W.remote?3:2)*(SH+4)+4}}
 function draw(){const g=geom(),dpr=devicePixelRatio||1;
  if(cv.width!==Math.round(g.w*dpr)||cv.height!==Math.round(g.h*dpr)){cv.width=g.w*dpr;cv.height=g.h*dpr;cv.style.height=g.h+'px'}
  ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle=LOOK.c('bg');ctx.fillRect(0,0,g.w,g.h);
@@ -529,16 +531,30 @@ function draw(){const g=geom(),dpr=devicePixelRatio||1;
   ctx.fillStyle=LOOK.c('taken');((W.occupied||{})[p]||[]).forEach(([a,b])=>{a=Math.max(a,F0);b=Math.min(b,F1);if(b>a)ctx.fillRect(g.x(a),y,g.x(b)-g.x(a),SH)});
   if(W.tx_df!=null&&W.tx_par===p){ctx.strokeStyle='#fff';ctx.strokeRect(g.x(W.tx_df)+.5,y+.5,g.x(W.tx_df+bw)-g.x(W.tx_df)-1,SH-1)}
   if(W.suggest!=null&&W.tx_par===p){const x=g.x(W.suggest+bw/2);ctx.fillStyle=LOOK.c('good');ctx.beginPath();ctx.moveTo(x,y+SH+3);ctx.lineTo(x-5,y+SH+9);ctx.lineTo(x+5,y+SH+9);ctx.fill()}});
+ const R=W.remote;if(R){  // the DX's end, our Tx period: what receivers near them decoded (PSK Reporter)
+  const y=g.yS+2*(SH+4);ctx.fillStyle=LOOK.c('muted');ctx.textAlign='left';ctx.fillText('DX',1,y+SH-2);
+  ctx.fillStyle=LOOK.c('line');ctx.fillRect(G,y,g.w-G,SH);
+  if(R.n_rx){ctx.fillStyle=LOOK.c('clear');ctx.fillRect(lo,y,hi-lo,SH);ctx.fillStyle=LOOK.c('taken');
+   (R.occupied||[]).forEach(([a,b])=>{a=Math.max(a,F0);b=Math.min(b,F1);if(b>a)ctx.fillRect(g.x(a),y,g.x(b)-g.x(a),SH)})}
+  if(R.df!=null){ctx.strokeStyle=LOOK.c('amber');ctx.setLineDash([2,2]);ctx.strokeRect(g.x(R.df)+.5,y+.5,g.x(R.df+bw)-g.x(R.df)-1,SH-1);ctx.setLineDash([])}
+  if(W.tx_df!=null){ctx.strokeStyle='#fff';ctx.strokeRect(g.x(W.tx_df)+.5,y+.5,g.x(W.tx_df+bw)-g.x(W.tx_df)-1,SH-1)}}
  if(sel!=null){ctx.strokeStyle=LOOK.c('mid');  // the picked spot: solid at its lower edge (where Tx goes), faint at the top
   [[sel,1],[sel+bw,.4]].forEach(([f,a])=>{const x=Math.round(g.x(f))+.5;ctx.globalAlpha=a;ctx.beginPath();ctx.moveTo(x,g.y0);ctx.lineTo(x,g.yS+2*SH+4);ctx.stroke()});ctx.globalAlpha=1}}
 const sender=m=>{const w=(m||'').split(' ');return(w[0]==='CQ'?w[w.length>3?2:1]:w[1]||'').replace(/[<>]/g,'')};
-function taken(p,a,b){return((W.occupied||{})[p]||[]).some(([x,y])=>a<y&&b>x)}
+function taken(p,a,b){return((p==='dx'?(W.remote||{}).occupied:(W.occupied||{})[p])||[]).some(([x,y])=>a<y&&b>x)}
 function info(){if(sel==null)return;const bw=W.bw||50,a=sel,b=sel+bw;
  const who=[...new Set((W.decodes||[]).filter(d=>d.df<b+20&&d.df+bw>a-20).map(d=>sender(d.msg)).filter(Boolean))];
- const pars=[0,1].map(p=>`${parName(p)}: <b class="${taken(p,a,b)?'bad':'good'}">${taken(p,a,b)?'taken':'clear'}</b>`).join(' · ');
+ const pars=[0,1].map(p=>`${parName(p)}: <b class="${taken(p,a,b)?'bad':'good'}">${taken(p,a,b)?'taken':'clear'}</b>`).join(' · ')
+  +(W.remote&&W.remote.n_rx?` · near ${callH(W.remote.call)}: <b class="${taken('dx',a,b)?'bad':'good'}">${taken('dx',a,b)?'taken':'clear'}</b>`:'');
  const low=sel<(W.df_lo||0)?' · below your lowest offset (the rig may feed back down here)':'';
  $('wfinfo').innerHTML=`<b>${sel} Hz</b> · ${pars}${who.length?' · heard here: '+who.slice(0,6).map(callH).join(', '):''}${low}`;
  const go=$('wfact');go.style.display=W.ws_hunter?'flex':'none';$('wfGo').textContent=`Move Tx to ${sel} Hz and lock it`}
+// the DX strip's caption: whose end it is and how much PSK Reporter says about it
+function dxLine(){const R=W.remote,el=$('wfdx');el.style.display=R?'block':'none';if(!R)return;
+ const age=R.age==null?'not fetched yet':R.age<90?R.age+' s ago':Math.round(R.age/60)+' min ago';
+ el.innerHTML=`<b>DX</b> bar: near ${callH(R.call)} (within ${R.km} km), ${parName(R.par)} period · `+(R.n_rx
+  ?`${R.n_rx} PSK Reporter receiver${R.n_rx>1?'s':''} there hear ${R.sigs.length} other station${R.sigs.length==1?'':'s'}`
+  :'no PSK Reporter receivers there: the picker goes by your waterfall')+` · <span style="color:var(--amber)">┆┆ their offset</span> (callers pile on it) · fetched ${age}`+(R.err?` · <span class="bad">${String(R.err).replace(/[<>&]/g,"")}</span>`:'')}
 function lockBtn(){const b=$('wfLock');$('wflk').style.display=W.ws_hunter?'flex':'none';
  b.textContent=W.df_lock?`🔒 Tx offset locked${W.tx_df!=null?' at '+W.tx_df+' Hz':''} · tap for auto`:'🔓 Auto Tx offset · tap to lock where it is';
  b.classList.toggle('lit',!!W.df_lock)}
@@ -558,7 +574,7 @@ async function poll(){if(document.visibilityState!=='visible')return;
  try{W=await (await fetch('/api/waterfall')).json();
   const n=(W.rows||[]).filter(r=>r.ex).length;
   $('wfsum').textContent=!W.ws_hunter?'· needs the ws-hunter build':!n?'· waiting for spectra':(W.learned?'':'· learning the noise')+` · Tx ${W.tx_df??'?'} Hz`+(W.df_lock?' 🔒':'')+(W.tx_par!=null?' '+parName(W.tx_par):'');
-  draw();info();lockBtn()}catch(e){}}
+  dxLine();draw();info();lockBtn()}catch(e){}}
 poll();setInterval(poll,4000);addEventListener('resize',draw);document.addEventListener('visibilitychange',poll);
 })();
 </script>
@@ -769,6 +785,13 @@ function dot(ll,R,cx,cy,r,col){const v=vec(...ll);if(!shown(v))return;const [x,y
 function comet(pts,f,R,cx,cy,col,r=2.2){if(!pts.length)return;const v=pts[Math.floor(f*(pts.length-1))];if(!shown(v))return;
  const [x,y]=view(v);ctx.fillStyle=col;ctx.beginPath();ctx.arc(cx+R*x,cy-R*y,r,0,7);ctx.fill()}
 let cache={};const arcs=(k,a,b)=>cache[k]||(cache[k]=arcPts(a,b));
+function ringPts([la,lo],km){  // a circle on the ground, km from a point
+ const t=km/6371,p=[],s1=Math.sin(la*D),c1=Math.cos(la*D);
+ for(let b=0;b<=360;b+=5){const B=b*D,s2=s1*Math.cos(t)+c1*Math.sin(t)*Math.cos(B),la2=Math.asin(s2);
+  p.push(vec(la2/D,lo+Math.atan2(Math.sin(B)*Math.sin(t)*c1,Math.cos(t)-s1*s2)/D))}return p}
+const flat=(a,b)=>{const A=vec(...a),B=vec(...b),w=Math.acos(Math.max(-1,Math.min(1,A[0]*B[0]+A[1]*B[1]+A[2]*B[2])));
+ if(w<1e-4)return[];const n=Math.max(8,Math.ceil(w/D/2)),p=[];   // great circle on the ground: the path a signal takes to the DX
+ for(let i=0;i<=n;i++){const t=i/n,k1=Math.sin((1-t)*w)/Math.sin(w),k2=Math.sin(t*w)/Math.sin(w);p.push(A.map((a,j)=>a*k1+B[j]*k2))}return p};
 function draw(ts){requestAnimationFrame(draw);
  if(document.hidden||ts-last<33||!cv.offsetWidth)return;   // ~30 fps, idle when not visible
  const dt=Math.min(100,ts-last);last=ts;const fc=spin&&!drag?focus():null;
@@ -790,6 +813,13 @@ function draw(ts){requestAnimationFrame(draw);
    const al=1-(t.age+(ts-pollT)/1000)/(G.fade||300);if(al<=0.03)continue;
    LOOK.stroke(ctx,{...on,role:'traffic',alpha:al});line(arcs('t'+t.a+t.b,t.a,t.b),R,cx,cy)}
  LOOK.reset(ctx);
+ const X=G.remote;if(X&&X.ll){  // the DX's end (PSK Reporter): who they hear in our Tx period, the receivers that told us, their radius
+  ctx.globalAlpha=.8;ctx.strokeStyle=LOOK.c('amber');ctx.lineWidth=dpr;ctx.setLineDash([4*dpr,3*dpr]);
+  line(cache['r'+X.ll+X.km]||(cache['r'+X.ll+X.km]=ringPts(X.ll,X.km)),R,cx,cy);ctx.setLineDash([]);
+  ctx.strokeStyle=LOOK.c('taken');ctx.globalAlpha=.35;
+  for(const g of X.sigs)if(g.ll)line(cache['f'+g.ll+X.ll]||(cache['f'+g.ll+X.ll]=flat(g.ll,X.ll)),R,cx,cy);
+  ctx.globalAlpha=1;for(const r of X.rx)dot(r,R,cx,cy,1.3*dpr,LOOK.c('accent'));
+  for(const g of X.sigs)if(g.ll)dot(g.ll,R,cx,cy,2*dpr,LOOK.c('taken'))}
  if(me){for(const w of G.worked){  // today's contacts on every band and mode; this band and mode's brighter
    const p=arcs('w'+w.ll,me,w.ll),col=LOOK.stroke(ctx,{band:w.band,mode:w.mode,role:'worked',scale:dpr,alpha:w.here?1:.55});
    line(p,R,cx,cy);LOOK.reset(ctx);comet(p,f,R,cx,cy,col,1.6*dpr);dot(w.ll,R,cx,cy,2*dpr,col)}
@@ -807,7 +837,9 @@ let pollT=0;
 async function poll(){try{const r=await fetch('/api/globe');G=await r.json();pollT=performance.now();
  if(Object.keys(cache).length>800)cache={};
  if(G.me){if(!home){lon0=G.me[1];lat0=Math.max(-50,Math.min(50,G.me[0]))}home=G.me}
- document.getElementById('gsum').textContent=`· ${G.worked.length} worked · ${G.traffic.length} live`+(G.target?` · ${G.target.resp?'QSO with':'→'} ${G.target.call}`:'')+((G.callers||[]).length?` · ${G.callers.length} waiting`:'')}catch(e){}}
+ document.getElementById('gsum').textContent=`· ${G.worked.length} worked · ${G.traffic.length} live`+(G.target?` · ${G.target.resp?'QSO with':'→'} ${G.target.call}`:'')+((G.callers||[]).length?` · ${G.callers.length} waiting`:'')
+  +(G.remote&&G.remote.n_rx?` · near the DX: ${G.remote.n_rx} rx hear ${G.remote.sigs.length}`:'');
+ document.getElementById('gdx').style.display=G.remote?'inline':'none'}catch(e){}}
 poll();setInterval(poll,5000);
 // Drag to turn; wheel or pinch to zoom (0.5x-12x); double-click / double-tap resets the zoom.
 const pts=new Map();let pinch=null;

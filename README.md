@@ -110,6 +110,38 @@ traffic faintly; during a QSO it zooms in on that QSO's arc. Scroll or pinch to
 zoom it yourself. The worked / ignored list shows today's
 contacts and the stations that never answered, with time, band and mode.
 
+### The DX's end of the band (PSK Reporter)
+
+Your waterfall shows what's busy at your end, but the DX hears a different band:
+stations near them that you can't hear, and other callers transmitting in the
+same period as you. While the hunter runs, it asks PSK Reporter once every 5
+minutes (their limit) for every report on your dial frequency and mode in the
+last 15 minutes. A report's time gives the period the signal was sent in, and
+its frequency minus the dial gives the audio offset.
+
+When the hunter calls a DX station, it takes the reports from receivers within
+1000 km of them, in the period you transmit in, and counts those offsets as
+taken over there. Each signal there costs the offset picker half as much as one
+heard here (the data is minutes old), and half that again once it's over 5
+minutes old. The DX's own offset costs half as well: many callers reply on it
+and pile up there. Your waterfall stays the main input. Where nobody near the DX
+reports to PSK Reporter, the picker goes by your waterfall alone. Only decoded
+signals are reported, so the data shows where it's busy, not that a spot is
+clear.
+
+You can see this in two places while the hunter is calling someone:
+
+- **Waterfall:** a third bar, **DX**, under the even and odd bars, shows the
+  offsets taken near the DX in your Tx period. The DX's own offset is dashed in
+  amber, and your Tx offset is boxed in white. A caption says how many receivers
+  are near them and how old the data is.
+- **Globe:** a dashed amber ring 1000 km around the DX, the receivers inside it
+  as small dots, and the stations they hear in your Tx period as red dots, each
+  with a line to the DX.
+
+Settings → Advanced → **Look at the DX's end of the band** turns it off. With it
+off, PSK Reporter isn't asked at all.
+
 Stations look the same on every card (lists, waterfall, time bar, globe):
 **colour = band** (by wavelength, like light: 160m red through 20m green to
 10m violet, 6m magenta), **line style = mode** (FT8 solid, FT4 dashed, FT2
