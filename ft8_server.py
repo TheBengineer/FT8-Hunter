@@ -6,10 +6,31 @@ API: GET /api/state -> {running, target, cq[], answering[], worked[], log[], con
      POST /api/start|stop|call|work|skip|config   Webapp: GET /
      GET|POST /api/logbooks (+ /test, /retry): online logbook uploads
 """
-import argparse, json, socket, struct, threading, time, re, os, math, random
+import argparse, json, socket, struct, sys, threading, time, re, os, math, random
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import deque
 from urllib.parse import urlparse
+
+# The page ships beside this script (or inside a packaged build); the hunter's
+# own files (settings, logs) live beside the script too, or for a packaged
+# build in the user's app-data folder, so they outlast each run.
+FROZEN = bool(getattr(sys, "frozen", False))
+RES_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+def _data_dir():
+    if not FROZEN:
+        return os.path.dirname(os.path.abspath(__file__))
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    d = os.path.join(base, "FT8-Hunter")
+    os.makedirs(d, exist_ok=True)
+    return d
+DATA_DIR = _data_dir()
+if sys.stdout is None or sys.stderr is None:  # a windowed build has no console: log to a file
+    sys.stdout = sys.stderr = open(os.path.join(DATA_DIR, "hunter.log"), "a", buffering=1, encoding="utf-8")
 
 SIGNOFF_CATALOG = [  # each fits after our call: 6 characters at most
     "GL 73", "TU 73", "HH 73", "FB 73", "VY 73", "OM 73", "CU 73", "TY 73", "SK 73",
@@ -316,10 +337,16 @@ CTY_PATHS = ("~/ws-hunter-app/share/ws/cty.dat", "~/ws/usr/share/ws/cty.dat",
              # macOS: inside the app bundle
              "~/ws-hunter-app/ws.app/Contents/Resources/ws/cty.dat",
              "/Applications/ws.app/Contents/Resources/ws/cty.dat",
-             "/Applications/wsjtx.app/Contents/Resources/wsjtx/cty.dat")
-# Where WS / WSJT-X keep ALL.TXT and wsjtx_log.adi, WS first: Linux, then macOS
+             "/Applications/wsjtx.app/Contents/Resources/wsjtx/cty.dat",
+             # Windows: the ws-hunter zip unpacked beside us, or the usual installs
+             os.path.join(RES_DIR, "..", "ws-hunter", "share", "ws", "cty.dat"),
+             "C:/WSJT/ws/share/ws/cty.dat", "C:/WSJT/wsjtx/share/wsjtx/cty.dat",
+             # last: the copy a packaged hunter carries
+             os.path.join(RES_DIR, "cty.dat"))
+# Where WS / WSJT-X keep ALL.TXT and wsjtx_log.adi, WS first: Linux, macOS, Windows
 WS_DIRS = ("~/.local/share/WS", "~/.local/share/WSJT-X",
-           "~/Library/Application Support/WS", "~/Library/Application Support/WSJT-X")
+           "~/Library/Application Support/WS", "~/Library/Application Support/WSJT-X",
+           "~/AppData/Local/WS", "~/AppData/Local/WSJT-X")
 def ws_files(name, extra=()):
     """That file in each WS / WSJT-X data folder, expanded (existing or not)."""
     own = (state["config"]["ws_dir"],) if state["config"]["ws_dir"] else ()
@@ -810,7 +837,7 @@ def read_qstr(data, p):
         raise ValueError("string past end")
     return data[p:p+ln].decode("utf-8", "replace"), p + ln
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hunter_config.json")
+CONFIG_FILE = os.path.join(DATA_DIR, "hunter_config.json")
 def save_config():
     """Settings changed in the UI survive a restart."""
     try:
@@ -1480,7 +1507,7 @@ def cq_skip(e, now=None):
 
 # Where each QSO came from (how it started, and the hunter's mode then), and
 # how long the hunter ran in each mode: QSOs per hour by mode, measured
-ORIGIN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qso_origins.json")
+ORIGIN_FILE = os.path.join(DATA_DIR, "qso_origins.json")
 ORIGIN = {"qsos": [], "secs": {}, "last": 0, "saved": 0, "recent": {},
           "on": [], "on_since": 0}  # on: [start, end, band, fmode] while the hunter runs; since: live tracking began
 def hunt_mode():
@@ -2116,7 +2143,7 @@ def hold_power(fl, now):
 # band and power.
 SWR_LEARN = 3     # transmissions on a band and power before "usual" means anything
 SWR_TOP = 100     # top of FLRig's scale
-SWR_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "swr_log.json")
+SWR_FILE = os.path.join(DATA_DIR, "swr_log.json")
 SWR = {"on": None, "cur": [], "log": deque(maxlen=500)}
 
 def swr_poll(ptt, swr, now):
@@ -2300,8 +2327,8 @@ def globe():
 # FT2 meanwhile (3.75 s periods, so a spectrum every 3.75 s); the period in
 # which the rig retuned mixes two bands and is thrown away.
 SET_DIAL = 20
-SCAN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scan_results.json")
-FREQ_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scan_freqs.json")
+SCAN_FILE = os.path.join(DATA_DIR, "scan_results.json")
+FREQ_FILE = os.path.join(DATA_DIR, "scan_freqs.json")
 # WS's default frequency list (models/FrequencyList.cpp), downloaded so new or
 # moved FT2 frequencies arrive without a hunter update; the fork is the fallback
 FREQ_URLS = ["https://raw.githubusercontent.com/wa1hco/ws-suite-inhibit/HEAD/models/FrequencyList.cpp",
@@ -2766,8 +2793,8 @@ def atu_tune():
 # for every service turned on and sent from a background thread, retried while
 # the service can't be reached. Keys and passwords live in logbooks.json (owner
 # only) and never go to the web page; the queue survives a restart.
-LB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logbooks.json")
-LB_QUEUE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logbooks_queue.json")
+LB_FILE = os.path.join(DATA_DIR, "logbooks.json")
+LB_QUEUE_FILE = os.path.join(DATA_DIR, "logbooks_queue.json")
 LB = {"cfg": {}, "queue": [], "status": {}, "lock": threading.Lock(), "wake": threading.Event()}
 
 def lb_post(url, data, timeout=20):
@@ -2940,14 +2967,14 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
             try:
-                b = open(os.path.join(os.path.dirname(__file__), "ft8_app.html"), "rb").read()
+                b = open(os.path.join(RES_DIR, "ft8_app.html"), "rb").read()
                 self.send_response(200); self.send_header("Content-Type", "text/html")
                 self.send_header("Content-Length", str(len(b))); self.end_headers()
                 self.wfile.write(b); return
             except FileNotFoundError:
                 self.send_error(404); return
         if self.path == "/nosleep.js":  # NoSleep.js (MIT), vendored: phones on the LAN may be offline
-            b = open(os.path.join(os.path.dirname(__file__), "nosleep.min.js"), "rb").read()
+            b = open(os.path.join(RES_DIR, "nosleep.min.js"), "rb").read()
             self.send_response(200); self.send_header("Content-Type", "text/javascript")
             self.send_header("Content-Length", str(len(b))); self.end_headers()
             self.wfile.write(b); return
@@ -3253,6 +3280,9 @@ ap.add_argument("--mycall"); ap.add_argument("--mygrid")
 ap.add_argument("--port", type=int, help="WS UDP server port (default 2237)")
 ap.add_argument("--http", type=int, help="web UI port (default 8080)")
 ap.add_argument("--flrig", help="FLRig XML-RPC URL (default http://127.0.0.1:12345)")
+ap.add_argument("--window", action="store_true",
+                help="run in a small window (link, QR code for phones, Quit) instead of as a service")
+ap.add_argument("--no-window", action="store_true", help="packaged builds: run as a service, no window")
 a = ap.parse_args()
 load_config()
 flags = {k: v for k, v in (("mycall", a.mycall and a.mycall.upper()), ("mygrid", a.mygrid), ("udp_port", a.port),
@@ -3261,6 +3291,80 @@ if flags:
     state["config"].update(flags); save_config()
 udp_port = state["config"]["udp_port"]
 set_identity()
+def qr_matrix(text):
+    """QR code modules for `text` (rows of booleans, quiet zone included), or
+    None without the qrcode package (packaged builds carry it)."""
+    try:
+        import qrcode
+    except ImportError:
+        return None
+    q = qrcode.QRCode(border=2, error_correction=qrcode.constants.ERROR_CORRECT_M)
+    q.add_data(text)
+    q.make(fit=True)
+    return q.get_matrix()
+
+def run_window(httpd):
+    """The hunter as a desktop app: the web server in the background and a
+    small window with the link (opens the default browser), a QR code of
+    the LAN address for phones, the hunter's state, and Quit. False if
+    there's no Tk here (python3-tk on Linux), so the caller serves headless."""
+    try:
+        import tkinter as tk
+    except ImportError:
+        print("no tkinter here (Linux: apt install python3-tk): running without a window", flush=True)
+        return False
+    import webbrowser
+    port = state["config"]["http_port"]
+    local = f"http://localhost:{port}/"
+    try:
+        root = tk.Tk()
+    except tk.TclError as e:  # no display
+        print(f"no window ({e}): running without one", flush=True)
+        return False
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    root.title("FT8 Hunter")
+    root.resizable(False, False)
+    pad = {"padx": 14, "pady": 4}
+    tk.Label(root, text="📡 FT8 Hunter", font=("TkDefaultFont", 16, "bold")).pack(pady=(12, 2))
+    status = tk.Label(root, text="", fg="#555")
+    status.pack(**pad)
+    link = tk.Label(root, text=local, fg="#1a62c9", cursor="hand2", font=("TkDefaultFont", 12, "underline"))
+    link.pack(**pad)
+    link.bind("<Button-1>", lambda e: webbrowser.open(local))
+    tk.Button(root, text="Open in browser", command=lambda: webbrowser.open(local)).pack(**pad)
+    lan = (lan_urls()["urls"] or [None])[0]
+    m = qr_matrix(lan) if lan else None
+    if m:
+        cell = max(3, 200 // len(m))
+        cv = tk.Canvas(root, width=len(m) * cell, height=len(m) * cell, bg="white", highlightthickness=0)
+        for y, row in enumerate(m):
+            for x, on in enumerate(row):
+                if on:
+                    cv.create_rectangle(x * cell, y * cell, (x + 1) * cell, (y + 1) * cell, fill="black", width=0)
+        cv.pack(pady=(10, 2))
+    tk.Label(root, text=(f"On your phone (same Wi-Fi): scan, or open\n{lan}" if m else
+                         f"On your phone (same Wi-Fi), open\n{lan}" if lan else "No network address found"),
+             justify="center", fg="#555").pack(**pad)
+
+    def quit_():
+        root.destroy()
+        shutdown(None, None)  # halts WS if it was ours to run
+
+    tk.Button(root, text="Quit", command=quit_, width=12).pack(pady=(8, 14))
+    root.protocol("WM_DELETE_WINDOW", quit_)
+
+    def tick():
+        t = state["target"]
+        status.config(text=(f"{state['mycall'] or 'no call sign yet'} · " +
+                            (f"hunting · calling {t['call']}" if state["running"] and t else
+                             "hunting" if state["running"] else "stopped (press Start in the page)")))
+        root.after(2000, tick)
+    tick()
+    if FROZEN:
+        root.after(800, lambda: webbrowser.open(local))  # a packaged app opens the page once at start
+    root.mainloop()
+    return True
+
 def shutdown(signum, frame):
     """Service stop/restart: halt WS so it isn't left transmitting unattended."""
     if CTX["tx"] is not None and state.get("ws_addr"):
@@ -3282,4 +3386,10 @@ threading.Thread(target=load_freqs, daemon=True).start()
 log(f"hunter ready as {state['mycall']} {state['mygrid']}" if state["mycall"] else
     "hunter ready: no call sign yet (Settings, or WS's own); it won't start until it has one")
 print(f"open http://0.0.0.0:{state['config']['http_port']}/")
-ThreadingHTTPServer(("0.0.0.0", state["config"]["http_port"]), H).serve_forever()
+try:
+    httpd = ThreadingHTTPServer(("0.0.0.0", state["config"]["http_port"]), H)
+except OSError as e:
+    print(f"can't serve on port {state['config']['http_port']}: {e} (is the hunter already running?)", flush=True)
+    sys.exit(1)
+if not ((a.window or (FROZEN and not a.no_window)) and run_window(httpd)):
+    httpd.serve_forever()

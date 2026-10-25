@@ -1,0 +1,105 @@
+# Packaged FT8 Hunter for Windows, macOS and Linux (PyInstaller): one file
+# that opens the hunter's window (link, QR code, Quit). A tag v* also makes a
+# GitHub release with the three downloads attached.
+name: build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset: FT8-Hunter-windows-x64.zip
+          - os: macos-latest
+            asset: FT8-Hunter-macos-arm64.zip
+          - os: ubuntu-22.04
+            asset: FT8-Hunter-linux-x64.tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tools
+        run: python -m pip install pyinstaller==6.11.1 qrcode==8.0
+      - name: Country file (from WS, with its copyright notice)
+        shell: bash
+        run: |
+          for f in cty.dat cty.dat_copyright.txt; do
+            curl -fsSL -o "$f" "https://raw.githubusercontent.com/TheBengineer/ws-hunter/hunter/$f"
+          done
+      - name: Package
+        shell: bash
+        run: |
+          kind=--onefile
+          [ "$RUNNER_OS" = macOS ] && kind=--onedir   # a .app bundle
+          win=--windowed
+          [ "$RUNNER_OS" = Linux ] && win=
+          pyinstaller --noconfirm $kind $win --name FT8-Hunter --hidden-import qrcode \
+            --add-data "ft8_app.html:." --add-data "nosleep.min.js:." \
+            --add-data "cty.dat:." --add-data "cty.dat_copyright.txt:." ft8_server.py
+      - name: Smoke test (serves the page)
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows) exe=dist/FT8-Hunter.exe ;;
+            macOS) exe=dist/FT8-Hunter.app/Contents/MacOS/FT8-Hunter ;;
+            *) exe=dist/FT8-Hunter ;;
+          esac
+          "$exe" --no-window --http 8181 > smoke.log 2>&1 &
+          for i in $(seq 1 30); do curl -fs http://localhost:8181/ -o page.html && break; sleep 1; done
+          grep -q "FT8 Hunter" page.html
+          curl -fs http://localhost:8181/api/lan
+          cat smoke.log
+      - name: Window under a virtual display (Linux), screenshot kept
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y -qq xvfb imagemagick > /dev/null
+          xvfb-run -s "-screen 0 800x700x24" bash -c '
+            dist/FT8-Hunter --window --http 8282 > window.log 2>&1 &
+            sleep 8; import -window root window.png; cat window.log'
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: window-screenshot
+          path: window.png
+      - name: Archive
+        shell: bash
+        run: |
+          cp README.md dist/
+          cd dist
+          case "$RUNNER_OS" in
+            Windows) 7z a "../${{ matrix.asset }}" FT8-Hunter.exe README.md > /dev/null ;;
+            macOS) ditto -c -k --keepParent FT8-Hunter.app "../${{ matrix.asset }}" ;;
+            *) tar czf "../${{ matrix.asset }}" FT8-Hunter README.md ;;
+          esac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          pattern: FT8-Hunter-*
+          merge-multiple: true
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" assets/* -R "$GITHUB_REPOSITORY" \
+            --title "FT8 Hunter $GITHUB_REF_NAME" --generate-notes

@@ -246,10 +246,39 @@ restarts.
 
 ## Run
 
+### Downloads (Windows, macOS, Linux)
+
+Each [release](../../releases) has a ready-made FT8 Hunter for Windows (x64), macOS
+(Apple silicon) and Linux (x64), with no Python needed. Unpack it and run
+**FT8-Hunter**. It opens a small window with:
+
+- the hunter's link, which opens in your default browser (it also opens once at start)
+- a QR code of its address on your network, for a phone on the same Wi-Fi
+- what the hunter is doing, and **Quit**, which turns WS's TX off before it exits
+
+The builds aren't signed. On Windows, SmartScreen asks first: **More info → Run
+anyway**. On macOS, right-click the app → **Open** the first time. A packaged
+hunter keeps its settings and logs in `%APPDATA%\FT8-Hunter` (Windows),
+`~/Library/Application Support/FT8-Hunter` (macOS) or `~/.local/share/FT8-Hunter`
+(Linux), with its output in `hunter.log` there. Run it with `--no-window` to
+run it as a service instead. The builds are made by GitHub Actions
+(`.github/workflows/build.yml`) for every `v*` tag.
+
+The ws-hunter build of WS for Windows is a separate download from the
+[ws-hunter releases](https://github.com/TheBengineer/ws-hunter/releases).
+
+### From source
+
 ```bash
-python3 ft8_server.py   # stdlib only
+python3 ft8_server.py            # stdlib only, runs as a service
+python3 ft8_server.py --window   # the same window as the downloads
 # open http://localhost:8080/ (mobile-friendly UI)
 ```
+
+`--window` needs Tk (on Debian/Ubuntu: `sudo apt install python3-tk`). For the
+QR code in the window, `pip install qrcode`; without it the window shows the
+address as text. The web page has its own QR card either way. Run from source,
+the hunter keeps its files beside `ft8_server.py`.
 
 Everything is set in the UI's **Settings** and saved in `hunter_config.json`:
 your **call sign** and **grid** (no defaults: left empty, the hunter uses the
