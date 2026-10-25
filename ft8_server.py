@@ -2235,6 +2235,27 @@ def manual_target(now):
     resp = bool(p) and same_call(p["a"], dx) and now - p["t"] < 120
     return {"call": dx, "ll": locate(dx), "resp": resp}
 
+def lan_urls():
+    """This page's address on the local network: one per LAN interface, the
+    one with the default route first (a UDP connect sends nothing)."""
+    ips = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))  # TEST-NET: never reached
+            ips.append(s.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        ips += [a[4][0] for a in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)]
+    except OSError:
+        pass
+    port = state["config"]["http_port"]
+    seen = []
+    for ip in ips:
+        if ip not in seen and not ip.startswith(("127.", "169.254.")):
+            seen.append(ip)
+    return {"urls": [f"http://{ip}:{port}/" for ip in seen], "host": socket.gethostname()}
+
 def globe():
     """Positions for the globe: me, today's contacts, the target, and recent
     traffic between other stations (both ends located)."""
@@ -2932,6 +2953,8 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(b); return
         if self.path == "/api/globe":
             return self._json(globe())
+        if self.path == "/api/lan":
+            return self._json(lan_urls())
         if self.path == "/api/timeline":
             # contacts of the last 24 h, oldest first, for the time bar: the
             # log's (minute) times, or the moment WS logged one this session

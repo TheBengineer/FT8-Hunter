@@ -219,6 +219,10 @@ Chart: dB over the floor, 200–3000 Hz · <span style="color:var(--good)">▬ F
 </details>
 <button id="bSave" style="margin-top:8px">Save</button>
 <button id="bLayout" class="mini quiet" style="margin-top:8px">Reset card order</button></details></div>
+<div class="card" data-id="qr"><h2>📱 Open on your phone <span class="small" id="qrsum"></span></h2>
+<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><div id="qrImg" style="background:#fff;padding:8px;border-radius:6px;line-height:0;display:none"></div>
+<div style="flex:1;min-width:160px"><div class="small">Scan with the phone's camera to open the hunter. The phone must be on the same network (Wi-Fi) as this computer.</div>
+<div id="qrUrls" class="mono" style="margin-top:6px;word-break:break-all"></div></div></div></div>
 <div class="card" data-id="logbooks"><details id="lbBox"><summary>📒 Online logbooks <span id="lbSum" class="small" style="opacity:.75"></span></summary>
 <div class="small" style="opacity:.75;margin-top:6px">Each contact WS logs is sent to every logbook turned on here, and retried until it goes through. Keys and passwords stay on this computer and are never shown again.</div>
 <div id="lbList"></div></details></div>
@@ -696,8 +700,8 @@ load();setInterval(load,15000);
 const box=document.querySelector('.cards'),KEY='cardCols';
 const all=[...box.querySelectorAll(':scope>.card')],by=Object.fromEntries(all.map(c=>[c.dataset.id,c]));
 const DEF={1:[all.map(c=>c.dataset.id)],
- 2:[['tl','status','wf','scan','globe','flow','dx','manual'],['cq','seq','ans','msgs','log','worked','settings','logbooks']],
- 3:[['tl','status','wf','scan','globe','flow','dx'],['cq','seq','ans','msgs'],['manual','log','worked','settings','logbooks']]};
+ 2:[['tl','status','wf','scan','globe','flow','dx','manual'],['cq','seq','ans','msgs','log','worked','settings','logbooks','qr']],
+ 3:[['tl','status','wf','scan','globe','flow','dx'],['cq','seq','ans','msgs'],['manual','log','worked','settings','logbooks','qr']]};
 let saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||'{}')||{}}catch(e){}
 const ncols=()=>innerWidth>=1350?3:innerWidth>=900?2:1;
 let n=0;
@@ -859,6 +863,25 @@ const up=e=>{pts.delete(e.pointerId);if(pts.size<2)pinch=null;if(pts.size)return
 cv.addEventListener('pointerup',up);cv.addEventListener('pointercancel',up);
 cv.addEventListener('wheel',e=>{e.preventDefault();setZ(uz*Math.exp(-e.deltaY*(e.deltaMode?0.05:0.0015)))},{passive:false});
 cv.addEventListener('dblclick',()=>{uz=1});
+})();
+</script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+<script>
+// QR code for this page's address on the local network (several networks:
+// tap an address to show its code). Without the internet (no QR library),
+// just the addresses.
+(()=>{
+let urls=[],cur=0;
+function show(){const u=urls[cur],img=$('qrImg');
+ $('qrUrls').innerHTML=urls.length?urls.map((x,i)=>`<div><a href="${x}" data-i="${i}" style="${i===cur?'font-weight:bold':'opacity:.7'}">${x}</a></div>`).join(''):'No network address found: is this computer on Wi-Fi or Ethernet?';
+ $('qrUrls').querySelectorAll('a').forEach(a=>a.onclick=e=>{if(urls.length>1){e.preventDefault();cur=+a.dataset.i;show()}});
+ if(!u||typeof qrcode!=='function'){img.style.display='none';return}
+ const q=qrcode(0,'M');q.addData(u);q.make();img.innerHTML=q.createSvgTag({cellSize:4,margin:0,scalable:true});
+ const svg=img.querySelector('svg');svg.style.width=svg.style.height='160px';img.style.display='block'}
+async function load(){try{const r=await (await fetch('/api/lan')).json();
+ if(JSON.stringify(r.urls)!==JSON.stringify(urls)){urls=r.urls;cur=0;show()}
+ $('qrsum').textContent=r.host?'· '+r.host:''}catch(e){}}
+load();setInterval(load,60000);
 })();
 </script>
 <script src="/nosleep.js"></script>
