@@ -64,7 +64,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y -qq xvfb imagemagick > /dev/null
-          xvfb-run -s "-screen 0 800x700x24" bash -c '
+          BROWSER=true xvfb-run -s "-screen 0 800x700x24" bash -c '
             dist/FT8-Hunter --window --http 8282 > window.log 2>&1 &
             sleep 8; import -window root window.png; cat window.log'
       - uses: actions/upload-artifact@v4
