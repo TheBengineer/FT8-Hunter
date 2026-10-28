@@ -120,6 +120,7 @@ details summary{font-weight:700;padding:4px}
 <div style="background:var(--bg);border-radius:8px;height:14px;margin-top:8px;overflow:hidden">
 <div id="cbar" style="height:100%;width:0%;background:var(--accent)"></div></div>
 <div class="small" id="ctxt" style="text-align:center;margin-top:2px">cycle</div>
+<div id="setupW" class="small" style="display:none;margin:6px 0;padding:8px;border-radius:8px;background:var(--amber);color:#fff"></div>
 <div class="row"><button id="bS">Start</button><button id="bX" class="warn">Skip</button></div>
 <div id="pickBox" style="display:none;margin-top:6px">
 <button id="bGo" class="on" style="display:none;width:100%;font-size:1.15rem;animation:go 1.2s ease-in-out infinite"></button>
@@ -344,7 +345,7 @@ async function tick(){const s=await api('/api/state');
 const T=s.target;WHO={target:T?baseCall(T.call):'',qso:!!T&&(!!T.resp||T.why==='called us'),
  waiting:new Set((s.callers||[]).map(baseCall)),worked:new Set((s.worked||[]).map(baseCall))};
 document.documentElement.style.setProperty('--band',LOOK.band(s.band));
-window._cfg=s.config;window._me=s.mycall;fillSettings(s.config,s.udp||{});updView(s.update);cqFirstView(!!s.config.cq_first);manualView(!!s.manual,!!s.manual_forced);pickView(s);if(s.rig)rigView(s.rig,s.rx);swrView(s.swr);HELD=s.holds||{};flow(s.step,{...s.config,manual:!!s.manual});
+window._cfg=s.config;window._me=s.mycall;fillSettings(s.config,s.udp||{});updView(s.update);setupView(s);cqFirstView(!!s.config.cq_first);manualView(!!s.manual,!!s.manual_forced);pickView(s);if(s.rig)rigView(s.rig,s.rx);swrView(s.swr);HELD=s.holds||{};flow(s.step,{...s.config,manual:!!s.manual});
 $('dot').className='dot'+(s.running?' run':'');lightView(s.light,s.caps);
 $('st').innerHTML=(s.running?'RUNNING':'STOPPED')+' · '+s.mycall+' '+s.mygrid+(s.band?' · '+LOOK.tag(s.band,s.mode):'');
 $('target').innerHTML=T?('🎯 '+callH(T.call)+' '+(T.grid||'')+' · '+(T.why||'')+' · '+(T.resp?'in QSO':Math.ceil(T.left/2)+' tries left')):(s.cq_calling?('📣 calling CQ · '+s.cq_calling+'s'):'no target');
@@ -396,6 +397,15 @@ function lightView(l,caps){const el=$('txl'),st=l?l.state:'';
  if(alert&&st!==lastLight)beep();lastLight=st;
  document.title=(alert?'🟡 Enable TX · ':'')+'FT8 Hunter'}
 async function call(c,g){await api('/api/call',{call:c,grid:g||''})}
+// Not set up yet (no call sign, no grid, from Settings or WS): say what's missing, by Start, with a way to Settings
+function setupView(s){const miss=[];
+if(!s.mycall)miss.push('<b>no call sign</b>: the hunter won’t start without one');
+if(!s.mygrid)miss.push('<b>no grid</b>: distances, the globe and CQ DX need it');
+$('setupW').style.display=miss.length?'block':'none';if(!miss.length)return;
+const h=`⚠️ Set up the hunter first: ${miss.join('; ')}. Use the ⚙️ Settings section to enter them (or WS’s Settings → General, which the hunter reads). <a href="#" id="setupGo" style="color:#fff;font-weight:700">Open Settings ↓</a>`;
+if($('setupW').dataset.h!==h){$('setupW').innerHTML=h;$('setupW').dataset.h=h;$('setupGo').onclick=e=>{e.preventDefault();openSettings(s.mycall?'sGrid':'sCall')}}}
+function openSettings(focus){const card=document.querySelector('[data-id=settings]');card.querySelector('details').open=true;
+card.scrollIntoView({block:'start'});if(focus)$(focus).focus({preventScroll:true})}  // not smooth: the 2 s refresh cuts a smooth scroll short
 $('bS').onclick=async()=>{const s=await api('/api/state');const r=await api(s.running?'/api/stop':'/api/start',{},'POST');if(r.error)alert(r.error);tick()};
 $('bX').onclick=()=>api('/api/skip',{},'POST').then(tick);
 $('bCQ').onclick=()=>api('/api/cq',{},'POST').then(tick);
