@@ -300,6 +300,8 @@ Hunter.command** (the first time: right-click → **Open**). It puts FT8 Hunter
 and WS (as `ws-hunter.app`, beside any stock WS) in Applications, so macOS
 doesn't block either app, and gives WS the shared memory it needs (WS's own
 `com.wsjtx.sysctl` setting; it asks for your password). Then it starts FT8 Hunter.
+When macOS asks whether FT8 Hunter may find devices on local networks, choose
+**Allow**: that's how a phone on the same Wi-Fi reaches its page.
 Run it again to update both.
 
 ### From source

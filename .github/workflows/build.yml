@@ -91,11 +91,16 @@ jobs:
       - name: Window as the Mac app opens it, screenshot kept
         if: runner.os == 'macOS'
         run: |
-          BROWSER=true PYTHONUNBUFFERED=1 dist/FT8-Hunter.app/Contents/MacOS/FT8-Hunter --http 8282 > window.log 2>&1 &
+          pkill -f FT8-Hunter || true  # the smoke test's
+          open -n dist/FT8-Hunter.app --args --http 8282   # as Finder starts it
           sleep 20; screencapture -x window.png
-          cat window.log ~/Library/"Application Support"/FT8-Hunter/hunter.log 2>/dev/null | tee all.log
-          if grep -q "without a window\|without one" all.log; then echo "the Mac app opened no window"; exit 1; fi
-          kill %1
+          pid=$(pgrep -f "FT8-Hunter.app/Contents/MacOS/FT8-Hunter" | tail -1); echo "pid $pid"
+          # the page is served only once the window exists
+          curl -fs -m 5 http://localhost:8282/api/state > /dev/null && echo "serving: the window is up" || {
+            echo "not serving: stuck before the window. Main thread:"
+            sample "$pid" 2 -file sample.txt > /dev/null 2>&1; grep -A40 "Thread_.*main\|DispatchQueue_1" sample.txt | head -60
+            exit 1; }
+          pkill -f FT8-Hunter || true
       - uses: actions/upload-artifact@v4
         if: runner.os != 'Windows'
         with:
@@ -105,7 +110,7 @@ jobs:
         shell: bash
         run: |
           curl -fsSL --retry 3 -o "${{ matrix.ws }}" "https://github.com/TheBengineer/ws-hunter/releases/download/$WS_TAG/${{ matrix.ws }}"
-          sum=sha256sum; command -v $sum > /dev/null || sum="shasum -a 256"  # macOS has only shasum
+          sum="shasum -a 256"; command -v shasum > /dev/null || sum=sha256sum  # Windows' Git Bash has no shasum
           echo "${{ matrix.ws_sha256 }}  ${{ matrix.ws }}" | $sum -c
           case "$RUNNER_OS" in
             Windows) 7z x -odist "${{ matrix.ws }}" > /dev/null; ls dist/ws-hunter/bin/ws.exe ;;  # dist/ws-hunter
