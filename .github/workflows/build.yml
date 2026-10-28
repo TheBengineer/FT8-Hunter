@@ -186,6 +186,25 @@ jobs:
           foreach ($i in 1..30) { try { $s = Invoke-RestMethod http://localhost:8383/api/state; $ok = $true; break } catch { Start-Sleep 1 } }
           if (-not $ok) { throw "the installed hunter didn't serve its page" }
           "installed hunter: version $($s.update.version), can install updates: $($s.update.can_install)"
+          # An update as the hunter runs it, while it is running: the installer
+          # inherits the one-file hunter's PyInstaller variables (up to 1.1.3
+          # without PYINSTALLER_RESET_ENVIRONMENT), closes the hunter, and must
+          # start the new one without "Failed to load Python DLL".
+          $old = (Get-Process FT8-Hunter).Id
+          $env:_PYI_ARCHIVE_FILE = "$dir\FT8-Hunter.exe"
+          $env:_PYI_APPLICATION_HOME_DIR = "$env:TEMP\_MEI999999"
+          $env:_PYI_PARENT_PROCESS_LEVEL = "1"
+          $p = Start-Process .\FT8-Hunter-windows-x64-setup.exe -ArgumentList "/SILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER","/DIR=$dir","/UPDATE=1" -Wait -PassThru
+          Remove-Item Env:_PYI_ARCHIVE_FILE, Env:_PYI_APPLICATION_HOME_DIR, Env:_PYI_PARENT_PROCESS_LEVEL
+          if ($p.ExitCode) { throw "update setup exit code $($p.ExitCode)" }
+          if (Get-Process -Id $old -ErrorAction SilentlyContinue) { throw "the update left the old hunter running" }
+          $ok = $false
+          foreach ($i in 1..45) { try { $s = Invoke-RestMethod http://localhost:8383/api/state; $ok = $true; break } catch { Start-Sleep 1 } }
+          if (-not $ok) {
+            Get-Process FT8-Hunter -ErrorAction SilentlyContinue | Format-Table Id, StartTime, MainWindowTitle
+            throw "the hunter the update started didn't serve its page (a window titled Error is the Python DLL message)"
+          }
+          "updated hunter started by the installer: version $($s.update.version)"
           # the one-file exe runs as two processes (a loader and the hunter): stop them all
           Get-Process FT8-Hunter -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep 2

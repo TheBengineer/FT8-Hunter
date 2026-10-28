@@ -87,7 +87,13 @@ function InitializeSetup: Boolean;
 begin
   // A hunter that started this update passed on its PyInstaller variables (up
   // to 1.1.3 it didn't clear them): the hunter started below would look for
-  // Python in the old one's unpacked folder ("Failed to load Python DLL").
+  // Python in the old one's unpacked folder ("Failed to load Python DLL"):
+  // it runs the same exe path, so it takes them for its own. Ask for a reset,
+  // and empty them too (an empty _PYI_ARCHIVE_FILE alone forces one).
   SetEnvironmentVariable('PYINSTALLER_RESET_ENVIRONMENT', '1');
+  SetEnvironmentVariable('_PYI_ARCHIVE_FILE', '');
+  SetEnvironmentVariable('_PYI_APPLICATION_HOME_DIR', '');
+  SetEnvironmentVariable('_PYI_PARENT_PROCESS_LEVEL', '');
+  SetEnvironmentVariable('_PYI_SPLASH_IPC', '');
   Result := True;
 end;
