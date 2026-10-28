@@ -174,6 +174,7 @@ jobs:
           Get-Item FT8-Hunter-windows-x64-setup.exe | Select-Object Name, Length
       - name: "Installer test: silent install, serves the page, uninstall"
         if: runner.os == 'Windows'
+        timeout-minutes: 15
         shell: pwsh
         run: |
           $dir = "$env:RUNNER_TEMP\ft8-hunter-test"
@@ -194,7 +195,9 @@ jobs:
           $env:_PYI_ARCHIVE_FILE = "$dir\FT8-Hunter.exe"
           $env:_PYI_APPLICATION_HOME_DIR = "$env:TEMP\_MEI999999"
           $env:_PYI_PARENT_PROCESS_LEVEL = "1"
-          $p = Start-Process .\FT8-Hunter-windows-x64-setup.exe -ArgumentList "/SILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER","/DIR=$dir","/UPDATE=1" -Wait -PassThru
+          # not -Wait: in PowerShell 7 it also waits for the hunter the installer starts
+          $p = Start-Process .\FT8-Hunter-windows-x64-setup.exe -ArgumentList "/SILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER","/DIR=$dir","/UPDATE=1" -PassThru
+          if (-not $p.WaitForExit(180000)) { throw "the update setup didn't finish in 3 minutes" }
           Remove-Item Env:_PYI_ARCHIVE_FILE, Env:_PYI_APPLICATION_HOME_DIR, Env:_PYI_PARENT_PROCESS_LEVEL
           if ($p.ExitCode) { throw "update setup exit code $($p.ExitCode)" }
           if (Get-Process -Id $old -ErrorAction SilentlyContinue) { throw "the update left the old hunter running" }
