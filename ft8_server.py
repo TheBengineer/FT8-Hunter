@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import deque
 from urllib.parse import urlparse
 
-VERSION = "1.1.5"  # a release's tag is v + this (the build refuses a tag that doesn't match)
+VERSION = "1.1.6"  # a release's tag is v + this (the build refuses a tag that doesn't match)
 
 # The page ships beside this script (or inside a packaged build); the hunter's
 # own files (settings, logs) live beside the script too, or for a packaged
@@ -225,6 +225,7 @@ def select_cq():
     messages but leaves the last DX call (and its Tx1) in place."""
     if has_ws_hunter("261013"):
         CTX["tx"].sendto(pack_id_only(CLEAR_DX, state["ws_id"]), ws_dest())
+        expect("CQ (clearing DX Call)", lambda: not state["udp"].get("dxcall"))
     else:
         CTX["tx"].sendto(pack_configure(state["ws_id"]), ws_dest())
 
@@ -233,6 +234,7 @@ def enable_tx():
     has no such command: the TX light (tx_light) asks the operator."""
     if has_ws_hunter():
         CTX["tx"].sendto(pack_set_bool(SET_TX_ENABLED, state["ws_id"], True), ws_dest())
+        expect("Enable Tx", lambda: state["udp"].get("tx_enabled"))
         return "Enable Tx via UDP"
     return "TX light on: click Enable Tx in WSJT-X"
 
@@ -380,7 +382,50 @@ def ws_acted(ok, what=""):
     u = state["udp"]
     if not ok and not u.get("ignored"):
         log(f"⚠️ WS ignored the hunter's {what}" + (f": {UDP_OFF}" if not ws_accepts_udp() else ""))
-    u["ignored"] = "" if ok else what
+    if ok and not u.get("link_ok"):
+        log("WS acts on the hunter's commands")
+    u["ignored"], u["link_ok"] = ("", True) if ok else (what, False)
+
+EXPECT = {}  # what -> (deadline, check, then): commands whose result WS's Status should show
+def expect(what, check, secs=8, then=None, idle=False):
+    """After sending a command: its result should show in WS's Status
+    within secs (expect_check), then `then` runs. Already so: nothing to
+    learn either way. idle: WS refuses it while transmitting (the Tx
+    offset), so a miss then says nothing."""
+    if not check():
+        EXPECT[what] = {"end": time.time() + secs, "check": check, "then": then, "idle": idle}
+
+def expect_check(now=None):
+    """Each packet from WS: commands it acted on, or ignored past their deadline."""
+    now = now or time.time()
+    for what, e in list(EXPECT.items()):
+        if e["idle"] and state["udp"].get("transmitting"):
+            e["spoilt"] = True
+        ok = e["check"]()
+        if ok or now > e["end"]:
+            EXPECT.pop(what, None)
+            if ok or not e.get("spoilt"):
+                ws_acted(ok, what)
+            if ok and e["then"]:
+                e["then"]()
+    link_probe(now)
+
+# Until WS has acted on a command, test the link: with WS idle, move the Tx
+# offset 1 Hz (shown in WS's Status) and back. Once per WS start, and again a
+# minute after a miss.
+LINK_PROBE_EVERY = 60
+def link_probe(now):
+    u = state["udp"]
+    if (u.get("link_ok") or now - u.get("probe_t", 0) < LINK_PROBE_EVERY or not has_ws_hunter()
+            or u.get("tx_df") is None or u.get("transmitting") or state["target"] or SCAN["on"]
+            or ENG.get("tuning") or EXPECT or CTX.get("tx") is None):  # a Tx offset change ends WS's Tune
+        return
+    u["probe_t"], cur = now, u["tx_df"]
+    f = cur - 1 if cur > 200 else cur + 1
+    put = lambda hz: CTX["tx"].sendto(pack_set_u32(SET_TX_DF, state["ws_id"], hz), ws_dest())
+    put(f)
+    expect("1 Hz Tx offset test", lambda: u.get("tx_df") == f,
+           then=lambda: u.get("tx_df") == f and put(cur), idle=True)
 
 def ws_link_problem():
     """Why WS isn't taking the hunter's commands, or ''."""
@@ -689,6 +734,7 @@ def udp_listener():
                         vs.append(data[p:p+max(ln, 0)].decode("utf-8", "errors")); p += max(ln, 0)
                     if vs[1] != state["udp"].get("revision"):
                         state["udp"]["version"], state["udp"]["revision"] = vs
+                        state["udp"]["link_ok"] = False  # a new WS: test the link again (link_probe)
                         log(f"WS {vs[0]} {vs[1]}" + (" (ws-hunter controls)" if has_ws_hunter() else ""))
                 except Exception as e:
                     log_err("Heartbeat", e)
@@ -696,8 +742,8 @@ def udp_listener():
                 if udp_off != state["udp"].get("udp_off"):
                     state["udp"]["udp_off"] = udp_off
                     log("⚠️ " + UDP_OFF if udp_off else "WS accepts the hunter's commands (Accept UDP requests is on)")
-                    if not udp_off:
-                        state["udp"]["ignored"] = ""  # just turned on: the old miss no longer says anything
+                    # turned on: the old miss no longer says anything, and the next probe can go now
+                    state["udp"].update(ignored="", probe_t=0) if not udp_off else state["udp"].update(link_ok=False)
             if "WS" in wid.upper() or "JT" in wid.upper():
                 state["ws_id"] = wid
             state["udp"]["last_rx"] = time.time()
@@ -784,6 +830,7 @@ def udp_listener():
                                 pass
                 except Exception as e:
                     log_err("Status", e)
+            expect_check()
             if mtype == SPECTRUM:
                 try:
                     if SCAN["on"]:
@@ -1304,6 +1351,7 @@ def tune_tx(par, can_wait=False, dx=None):
     ENG["picked"] = (f if move else cur, par)
     if move:
         tx.sendto(pack_set_u32(SET_TX_DF, wid, f), ws_dest())
+        expect("Tx offset change", lambda: state["udp"].get("tx_df") == f, idle=True)
         log(f"Tx offset {cur} -> {f} Hz ({'even' if par == 0 else 'odd'}{remote_note(f, par, now, dx)})")
     return True
 
@@ -2000,6 +2048,12 @@ def send_exact_reply(tx, msg):
     tx.sendto(pack_reply(state["ws_id"], p["t_ms"], p["snr"], p["dt"], p["df"], msg,
                        p.get("mode", "~")),
               ws_dest())
+    to, frm, rest = addressing(msg)
+    if not frm:  # CQ [modifier] CALL [GRID]
+        frm = next((w for w in rest[1:] if re.search(r"\d", w) and not re.fullmatch(r"[A-R]{2}\d{2}", w)), "")
+    frm = base_call(frm) if frm and "." not in frm else ""
+    if re.fullmatch(r"[A-Z0-9/]*\d[A-Z0-9/]*", frm):  # WS takes the caller as its DX Call (not a hashed <...>)
+        expect(f"reply to {frm}", lambda: base_call(state["udp"].get("dxcall") or "") == frm)
     return True
 
 def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):

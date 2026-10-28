@@ -1098,6 +1098,51 @@ check("a mode change WS never makes is noticed",
       and "Accept UDP requests" in ns["ws_link_problem"]())
 threading.Timer(0.2, lambda: st["udp"].update(mode="FT2")).start()  # WS's Status a moment later
 check("and cleared once WS acts on one", ns["ws_set_mode"]("FT2", wait=2) and not ns["ws_link_problem"]())
+EXPECT = ns["EXPECT"]; EXPECT.clear()
+st["udp"].update(dxcall="", tx_enabled=False)
+st["decparams"]["CQ K9XYZ EN52"] = {"t_ms": 0, "snr": -5, "dt": 0.1, "df": 1200, "mode": "~"}
+ns["send_exact_reply"](ns["CTX"]["tx"], "CQ K9XYZ EN52")
+ns["expect_check"]()
+check("a Reply waits for WS's DX Call", "reply to K9XYZ" in EXPECT and not st["udp"]["ignored"])
+ns["expect_check"](time.time() + 9)
+check("a Reply WS never acts on is noticed", st["udp"]["ignored"] == "reply to K9XYZ" and not EXPECT)
+ns["enable_tx"]() if ns["has_ws_hunter"]() else ns["expect"]("Enable Tx", lambda: st["udp"].get("tx_enabled"))
+st["udp"].update(tx_enabled=True); ns["expect_check"]()
+check("Enable Tx that shows in WS's Status clears it", not st["udp"]["ignored"] and not EXPECT)
+ns["send_exact_reply"](ns["CTX"]["tx"], "CQ K9XYZ EN52")
+st["udp"]["dxcall"] = "K9XYZ"; ns["expect_check"]()
+check("a Reply WS acts on is fine", not st["udp"]["ignored"] and not EXPECT)
+st["decparams"]["CQ <...> EN52"] = st["decparams"]["CQ K9XYZ EN52"]
+ns["send_exact_reply"](ns["CTX"]["tx"], "CQ <...> EN52")
+check("a hashed call isn't checked against DX Call", not EXPECT)
+st["udp"]["dxcall"] = ""
+
+# the link test: move the Tx offset 1 Hz, see it in WS's Status, put it back
+class Sent:
+    def __init__(self): self.pkts = []
+    def sendto(self, data, addr): self.pkts.append(data)
+sent, rev = Sent(), st["udp"].get("revision")
+ns["CTX"]["tx"] = sent
+st["udp"].update(revision="261013-hunter", tx_df=1500, transmitting=False, link_ok=False, probe_t=0)
+dfs = lambda: [struct.unpack(">I", p[-4:])[0] for p in sent.pkts if struct.unpack(">I", p[8:12])[0] == ns["SET_TX_DF"]]
+ns["expect_check"]()
+check("link test: WS idle, the Tx offset goes 1 Hz down", dfs() == [1499] and EXPECT)
+st["udp"]["tx_df"] = 1499; ns["expect_check"]()
+check("link test: seen in WS's Status, so the offset goes back and the link is good",
+      dfs() == [1499, 1500] and st["udp"]["link_ok"] and not st["udp"]["ignored"])
+st["udp"].update(tx_df=1500, link_ok=False, probe_t=0); sent.pkts.clear()
+ns["expect_check"](); ns["expect_check"](time.time() + 9)
+check("link test: WS never moves, so the page warns and the offset is left alone",
+      dfs() == [1499] and st["udp"]["ignored"] == "1 Hz Tx offset test" and ns["ws_link_problem"]())
+ns["expect_check"](time.time() + 20)
+check("and no new test for a minute", dfs() == [1499])
+st["udp"].update(ignored="", link_ok=False, probe_t=0); sent.pkts.clear()
+ns["expect_check"](); st["udp"]["transmitting"] = True; ns["expect_check"](time.time() + 9)
+check("link test: WS transmitting refuses an offset change, so a miss then says nothing",
+      dfs() == [1499] and not st["udp"]["ignored"] and not EXPECT)
+st["udp"]["transmitting"] = False
+st["udp"].update(revision=rev, link_ok=True, ignored="")
+ns["CTX"]["tx"] = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 st["udp"]["udp_off"] = True
 check("settings saying it's off show on the page",
       "Accept UDP requests" in json.load(urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}/api/state"))["udp_off"])
