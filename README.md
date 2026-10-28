@@ -271,7 +271,7 @@ The ws-hunter build of WS for Windows is a separate download from the
 
 ```bash
 python3 ft8_server.py            # stdlib only, runs as a service
-python3 ft8_server.py --window   # the same window as the downloads
+python3 ft8_server.py --window   # the same window as the downloads (on Windows it opens anyway; --no-window for a service)
 # open http://localhost:8080/ (mobile-friendly UI)
 ```
 

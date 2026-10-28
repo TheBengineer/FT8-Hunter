@@ -519,6 +519,8 @@ def wrl_relay(fwd):
             rb = state["udp"].setdefault("wrl_by_type", {})
             mtype = struct.unpack(">I", data[8:12])[0]
             rb[mtype] = rb.get(mtype, 0) + 1
+        except ConnectionResetError:
+            continue  # Windows: an earlier forward found nothing on the WRL port (WRL closed)
         except Exception as e:
             log_err("WRL relay", e)
             time.sleep(1)
@@ -602,11 +604,12 @@ def udp_listener():
     fwd.bind(("127.0.0.1", 0))  # fixed source port, so WRL's answers come back here
     threading.Thread(target=wrl_relay, args=(fwd,), daemon=True).start()
     rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-    except OSError:
-        pass
+    rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # on Windows this alone shares the port
+    if hasattr(socket, "SO_REUSEPORT"):  # Linux, macOS; Windows has none
+        try:
+            rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except OSError:
+            pass
     try:
         rx.bind(("0.0.0.0", udp_port))
     except OSError as e:
@@ -3282,7 +3285,8 @@ ap.add_argument("--http", type=int, help="web UI port (default 8080)")
 ap.add_argument("--flrig", help="FLRig XML-RPC URL (default http://127.0.0.1:12345)")
 ap.add_argument("--window", action="store_true",
                 help="run in a small window (link, QR code for phones, Quit) instead of as a service")
-ap.add_argument("--no-window", action="store_true", help="packaged builds: run as a service, no window")
+ap.add_argument("--no-window", action="store_true",
+                help="Windows and packaged builds: run as a service, no window")
 a = ap.parse_args()
 load_config()
 flags = {k: v for k, v in (("mycall", a.mycall and a.mycall.upper()), ("mygrid", a.mygrid), ("udp_port", a.port),
@@ -3391,5 +3395,6 @@ try:
 except OSError as e:
     print(f"can't serve on port {state['config']['http_port']}: {e} (is the hunter already running?)", flush=True)
     sys.exit(1)
-if not ((a.window or (FROZEN and not a.no_window)) and run_window(httpd)):
+# a desktop app on Windows (from source too) and in packaged builds; a service elsewhere
+if not ((a.window or ((FROZEN or sys.platform == "win32") and not a.no_window)) and run_window(httpd)):
     httpd.serve_forever()
