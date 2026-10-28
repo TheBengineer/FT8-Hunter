@@ -1,0 +1,2 @@
+# run on macOS: LF whatever the checkout
+*.command text eol=lf

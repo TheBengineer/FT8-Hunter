@@ -262,7 +262,7 @@ desktop icon, an optional start at sign-in, and an uninstaller. An installed
 hunter can update itself (below).
 
 The builds aren't signed. On Windows, SmartScreen asks first: **More info → Run
-anyway**. On macOS, right-click the app → **Open** the first time. A packaged
+anyway**. On macOS, install with **Install FT8 Hunter.command** (see below). A packaged
 hunter keeps its settings and logs in `%APPDATA%\FT8-Hunter` (Windows),
 `~/Library/Application Support/FT8-Hunter` (macOS) or `~/.local/share/FT8-Hunter`
 (Linux), with its output in `hunter.log` there. Run it with `--no-window` to
@@ -287,8 +287,20 @@ from source) **Get it** opens the release page.
 The hunter looks at this repo's latest [release](../../releases). The check
 sends GitHub nothing but the hunter's version in its User-Agent.
 
-The ws-hunter build of WS for Windows is a separate download from the
-[ws-hunter releases](https://github.com/TheBengineer/ws-hunter/releases).
+Every download comes with the [ws-hunter](https://github.com/TheBengineer/ws-hunter/releases)
+build of WS. On Windows the installer adds a **WS (ws-hunter)** Start menu entry
+(the zip has a `ws-hunter` folder: run `bin\ws.exe`). On Linux the tarball
+has `ws-hunter.AppImage`; running it may need `libfuse2`. That WS is a fixed
+build: an update of the hunter leaves an installed WS alone unless the WS build
+changes. It shares settings, logs and ALL.TXT with any other WS, so run only one
+at a time.
+
+On macOS (Apple silicon), unzip the download and double-click **Install FT8
+Hunter.command** (the first time: right-click → **Open**). It puts FT8 Hunter
+and WS (as `ws-hunter.app`, beside any stock WS) in Applications, so macOS
+doesn't block either app, and gives WS the shared memory it needs (WS's own
+`com.wsjtx.sysctl` setting; it asks for your password). Then it starts FT8 Hunter.
+Run it again to update both.
 
 ### From source
 

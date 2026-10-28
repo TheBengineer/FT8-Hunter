@@ -7,6 +7,11 @@
 ; The hunter updates itself by running a newer copy of this installer with
 ; /SILENT /UPDATE=1 once you say yes: it closes the running hunter and
 ; starts the new one when it's done.
+;
+; WS (the ws-hunter build) comes along in {app}\<WsDir>, a folder named after
+; its build (/DWsDir=ws-hunter-<tag>). Its files are copied only when they
+; aren't there yet, so an update with the same WS never touches (or closes) a
+; running WS; a new WS build installs into a new folder.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0-dev"
@@ -16,6 +21,9 @@
 #endif
 #ifndef OutDir
   #define OutDir "."
+#endif
+#ifndef WsDir
+  #define WsDir "ws-hunter"
 #endif
 
 [Setup]
@@ -51,9 +59,11 @@ Name: "startup"; Description: "Start FT8 Hunter when I sign in to Windows"; Grou
 [Files]
 Source: "{#SrcDir}\FT8-Hunter.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SrcDir}\ws-hunter\*"; DestDir: "{app}\{#WsDir}"; Flags: onlyifdoesntexist recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\FT8 Hunter"; Filename: "{app}\FT8-Hunter.exe"; WorkingDir: "{app}"
+Name: "{group}\WS (ws-hunter)"; Filename: "{app}\{#WsDir}\bin\ws.exe"; WorkingDir: "{app}\{#WsDir}\bin"
 Name: "{group}\README"; Filename: "{app}\README.md"
 Name: "{group}\{cm:UninstallProgram,FT8 Hunter}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\FT8 Hunter"; Filename: "{app}\FT8-Hunter.exe"; WorkingDir: "{app}"; Tasks: desktopicon

@@ -3,6 +3,10 @@
 # installer (FT8-Hunter.iss). A tag v* (v + VERSION in ft8_server.py) also
 # makes a GitHub release with the downloads attached, which is where
 # installed hunters look for updates.
+# Each download carries WS too: a fixed ws-hunter build from that repo's
+# release WS_TAG (Windows: the ws-hunter folder; macOS: ws.app; Linux: an
+# AppImage), checked against the SHA-256s below. A new WS build: new tag
+# and SHA-256s here.
 name: build
 
 on:
@@ -13,6 +17,9 @@ on:
 permissions:
   contents: write
 
+env:
+  WS_TAG: v3.2.0-hunter.1
+
 jobs:
   build:
     strategy:
@@ -21,10 +28,16 @@ jobs:
         include:
           - os: windows-latest
             asset: FT8-Hunter-windows-x64.zip
+            ws: ws-hunter-windows-x64.zip
+            ws_sha256: 80ba7412d4821bd55dac86a9b4bb7c93744e387765dd4006fe73ddd6f6b1b213
           - os: macos-latest
             asset: FT8-Hunter-macos-arm64.zip
+            ws: ws-hunter-macos-arm64.zip
+            ws_sha256: f34127eb6e9ac3b568802235eafc9034a66216a8d1415e4d4fc185cd2afb09e2
           - os: ubuntu-22.04
             asset: FT8-Hunter-linux-x64.tar.gz
+            ws: ws-hunter-linux-x64.AppImage
+            ws_sha256: 8a7820ffa4aa14995316b097221b1155e789f434bfc310135247085bd876693e
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -75,21 +88,58 @@ jobs:
           BROWSER=true xvfb-run -s "-screen 0 800x700x24" bash -c '
             dist/FT8-Hunter --window --http 8282 > window.log 2>&1 &
             sleep 8; import -window root window.png; cat window.log'
+      - name: Window as the Mac app opens it, screenshot kept
+        if: runner.os == 'macOS'
+        run: |
+          BROWSER=true dist/FT8-Hunter.app/Contents/MacOS/FT8-Hunter --http 8282 > window.log 2>&1 &
+          sleep 10; screencapture -x window.png; cat window.log
+          if grep -q "without a window\|without one" window.log; then echo "the Mac app opened no window"; exit 1; fi
+          kill %1
       - uses: actions/upload-artifact@v4
-        if: runner.os == 'Linux'
+        if: runner.os != 'Windows'
         with:
-          name: window-screenshot
+          name: window-screenshot-${{ runner.os }}
           path: window.png
+      - name: WS (the fixed ws-hunter build), checked
+        shell: bash
+        run: |
+          curl -fsSL --retry 3 -o "${{ matrix.ws }}" "https://github.com/TheBengineer/ws-hunter/releases/download/$WS_TAG/${{ matrix.ws }}"
+          echo "${{ matrix.ws_sha256 }}  ${{ matrix.ws }}" | shasum -a 256 -c
+          case "$RUNNER_OS" in
+            Windows) 7z x -odist "${{ matrix.ws }}" > /dev/null; ls dist/ws-hunter/bin/ws.exe ;;  # dist/ws-hunter
+            macOS) ditto -x -k "${{ matrix.ws }}" dist; ls dist/ws.app/Contents/MacOS/ws ;;
+            *) mv "${{ matrix.ws }}" dist/ws-hunter.AppImage; chmod +x dist/ws-hunter.AppImage ;;
+          esac
       - name: Archive
         shell: bash
         run: |
           cp README.md dist/
           cd dist
           case "$RUNNER_OS" in
-            Windows) 7z a "../${{ matrix.asset }}" FT8-Hunter.exe README.md > /dev/null ;;
-            macOS) ditto -c -k --keepParent FT8-Hunter.app "../${{ matrix.asset }}" ;;
-            *) tar czf "../${{ matrix.asset }}" FT8-Hunter README.md ;;
+            Windows) 7z a "../${{ matrix.asset }}" FT8-Hunter.exe README.md ws-hunter > /dev/null ;;
+            macOS) mkdir "FT8 Hunter"; mv FT8-Hunter.app ws.app README.md "FT8 Hunter/"
+                   cp "../macos/Install FT8 Hunter.command" "FT8 Hunter/"; chmod +x "FT8 Hunter/Install FT8 Hunter.command"
+                   ditto -c -k --keepParent "FT8 Hunter" "../${{ matrix.asset }}" ;;
+            *) tar czf "../${{ matrix.asset }}" FT8-Hunter ws-hunter.AppImage README.md ;;
           esac
+          ls -l "../${{ matrix.asset }}"
+      - name: "Mac install script, run from the unzipped download"
+        if: runner.os == 'macOS'
+        run: |
+          d=$(mktemp -d); ditto -x -k "${{ matrix.asset }}" "$d"
+          "$d/FT8 Hunter/Install FT8 Hunter.command"
+          ls "/Applications/FT8 Hunter.app/Contents/MacOS/FT8-Hunter" /Applications/ws-hunter.app/Contents/MacOS/ws
+          [ "$(sysctl -n kern.sysv.shmmax)" = 52428800 ] || { echo "shmmax not set"; exit 1; }
+          sleep 5; pkill -f FT8-Hunter || true
+          # the installed WS, screenshot kept (a shared memory error would show as a dialog)
+          open /Applications/ws-hunter.app; sleep 20; screencapture -x ws.png
+          pgrep -x ws || { echo "WS isn't running"; exit 1; }
+          pkill -x ws || true
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'macOS'
+        with:
+          name: ws-screenshot-macOS
+          path: ws.png
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
@@ -103,7 +153,7 @@ jobs:
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; if ($LASTEXITCODE) { exit 1 } }
           $ver = (Select-String -Path ft8_server.py -Pattern '^VERSION = "([^"]+)"').Matches[0].Groups[1].Value
           if ($env:GITHUB_REF_TYPE -ne "tag") { $ver += "-$($env:GITHUB_SHA.Substring(0,7))" }
-          & $iscc /Qp "/DAppVersion=$ver" "/DSrcDir=$PWD\dist" "/DOutDir=$PWD" FT8-Hunter.iss
+          & $iscc /Qp "/DAppVersion=$ver" "/DSrcDir=$PWD\dist" "/DOutDir=$PWD" "/DWsDir=ws-hunter-$env:WS_TAG" FT8-Hunter.iss
           if ($LASTEXITCODE) { exit 1 }
           Get-Item FT8-Hunter-windows-x64-setup.exe | Select-Object Name, Length
       - name: "Installer test: silent install, serves the page, uninstall"
@@ -113,8 +163,8 @@ jobs:
           $dir = "$env:RUNNER_TEMP\ft8-hunter-test"
           $p = Start-Process .\FT8-Hunter-windows-x64-setup.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER","/DIR=$dir" -Wait -PassThru
           if ($p.ExitCode) { throw "setup exit code $($p.ExitCode)" }
-          foreach ($f in "FT8-Hunter.exe","README.md","unins000.exe") { if (-not (Test-Path "$dir\$f")) { throw "missing after install: $f" } }
-          if (-not (Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter "FT8 Hunter.lnk")) { throw "no Start menu shortcut" }
+          foreach ($f in "FT8-Hunter.exe","README.md","unins000.exe","ws-hunter-$env:WS_TAG\bin\ws.exe","ws-hunter-$env:WS_TAG\bin\jt9.exe") { if (-not (Test-Path "$dir\$f")) { throw "missing after install: $f" } }
+          foreach ($l in "FT8 Hunter.lnk","WS (ws-hunter).lnk") { if (-not (Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter $l)) { throw "no Start menu shortcut $l" } }
           $h = Start-Process "$dir\FT8-Hunter.exe" -ArgumentList "--no-window","--http","8383" -PassThru
           $ok = $false
           foreach ($i in 1..30) { try { $s = Invoke-RestMethod http://localhost:8383/api/state; $ok = $true; break } catch { Start-Sleep 1 } }
@@ -126,6 +176,7 @@ jobs:
           $p = Start-Process "$dir\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
           if ($p.ExitCode) { throw "uninstall exit code $($p.ExitCode)" }
           Start-Sleep 3  # the uninstaller finishes from a temporary copy
+          if (Test-Path "$dir\ws-hunter-$env:WS_TAG\bin\ws.exe") { throw "WS still there after uninstall" }
           if (Test-Path "$dir\FT8-Hunter.exe") { Get-ChildItem $dir; Get-Process FT8-Hunter -ErrorAction SilentlyContinue | Format-Table Id, Path; throw "FT8-Hunter.exe still there after uninstall" }
           "install and uninstall OK"
       - uses: actions/upload-artifact@v4
