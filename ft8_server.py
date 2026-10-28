@@ -11,6 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import deque
 from urllib.parse import urlparse
 
+VERSION = "1.0.0"  # a release's tag is v + this (the build refuses a tag that doesn't match)
+
 # The page ships beside this script (or inside a packaged build); the hunter's
 # own files (settings, logs) live beside the script too, or for a packaged
 # build in the user's app-data folder, so they outlast each run.
@@ -71,7 +73,9 @@ state = {
                "tune_new_band": True, "tune_away_khz": 50,  # ATU tune at least this far from FT8 (below if allowed)
                "license": "",  # US class: where a tune carrier may go (see PRIV); unset = General's limits
                "scan_modes": ["FT8", "FT4", "FT2"],  # band scan: what to visit
-               "scan_bands": ["160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m"]},  # TX power held on the radio: calling / once they answer
+               "scan_bands": ["160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m"],  # TX power held on the radio: calling / once they answer
+               "update_check": True,  # look for a new release twice a day (installs only when asked)
+               "update_skip": ""},  # a version the operator said no to: not offered again
     "stats": {"cq_heard": 0, "calls_made": 0},
 }
 # "CQ [TAG] CALL [GRID]"; TAG is DX, TEST, an activity (POTA...) or a
@@ -2961,6 +2965,123 @@ def lb_retry(svc):
         lb_save()
     LB["wake"].set()
 
+# Updates. This repo is private, so CI also publishes each release to a
+# public one, which the hunter asks twice a day (and on Check now). It only
+# tells the page and the window: nothing is installed until the operator
+# says so. Only an installed Windows hunter installs itself (the new
+# installer, its SHA-256 checked, run silently, the hunter restarted by it);
+# anywhere else the page links the release.
+UPDATE_REPO = "TheBengineer/FT8-Hunter-releases"
+UPDATE_ASSET = "FT8-Hunter-windows-x64-setup.exe"
+UPDATE_EVERY = 12 * 3600
+UPD = {"latest": "", "notes": "", "url": "", "asset": None, "t": 0, "err": "", "busy": "", "pct": 0,
+       "told": "", "wake": threading.Event()}
+
+def ver_key(v):
+    """'v1.10.2' -> (1, 10, 2), for comparing; anything else sorts lowest."""
+    m = re.match(r"v?(\d+)\.(\d+)(?:\.(\d+))?$", str(v).strip())
+    return tuple(int(x or 0) for x in m.groups()) if m else (-1,)
+
+def upd_get(url, timeout=30):
+    import urllib.request
+    return urllib.request.urlopen(urllib.request.Request(url, headers={
+        "User-Agent": f"FT8-Hunter/{VERSION}", "Accept": "application/vnd.github+json"}), timeout=timeout)
+
+def update_check():
+    """The newest release: its version, notes, page and Windows installer."""
+    try:
+        with upd_get(f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest") as r:
+            rel = json.load(r)
+        a = next((x for x in rel.get("assets", []) if x.get("name") == UPDATE_ASSET), None)
+        UPD.update(latest=str(rel.get("tag_name", "")).lstrip("v"), notes=(rel.get("body") or "")[:4000],
+                   url=rel.get("html_url", ""), err="",
+                   asset=a and {"url": a["browser_download_url"], "size": a["size"],
+                                "sha256": (a.get("digest") or "").partition("sha256:")[2].lower()})
+    except Exception as e:
+        UPD["err"] = f"can't check for updates: {e}"[:160]
+    UPD["t"] = time.time()
+    if update_newer() and UPD["told"] != UPD["latest"]:
+        UPD["told"] = UPD["latest"]
+        log(f"FT8 Hunter {UPD['latest']} is out (this is {VERSION})")
+
+def update_newer():
+    return ver_key(UPD["latest"]) > ver_key(VERSION)
+
+def update_installable():
+    """Installed by our installer on Windows, and the release has one with its SHA-256."""
+    a = UPD["asset"]
+    return bool(FROZEN and sys.platform == "win32" and a and len(a["sha256"]) == 64
+                and os.path.exists(os.path.join(os.path.dirname(sys.executable), "unins000.exe")))
+
+def update_view():
+    c = state["config"]
+    return {"version": VERSION, "latest": UPD["latest"], "newer": update_newer(),
+            "skipped": bool(UPD["latest"]) and c["update_skip"] == UPD["latest"],
+            "notes": UPD["notes"], "url": UPD["url"], "can_install": update_installable(),
+            "busy": UPD["busy"], "pct": UPD["pct"], "err": UPD["err"], "checked": UPD["t"], "on": c["update_check"]}
+
+def update_worker():
+    UPD["wake"].wait(30)  # not in the rush of starting up
+    while True:
+        UPD["wake"].clear()
+        if state["config"]["update_check"] and time.time() - UPD["t"] >= UPDATE_EVERY:
+            update_check()
+        UPD["wake"].wait(600)
+
+def update_launch(path):
+    """Run the new installer on its own and quit, so it can replace us; it
+    starts the hunter again when it's done (/UPDATE=1)."""
+    import subprocess
+    local = os.path.normcase(os.environ.get("LOCALAPPDATA", "~")) + os.sep
+    who = "/CURRENTUSER" if os.path.normcase(sys.executable).startswith(local) else "/ALLUSERS"  # as installed (all users: a UAC prompt)
+    subprocess.Popen([path, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", who, "/UPDATE=1"], close_fds=True,
+                     creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    time.sleep(1)
+    shutdown(None, None)
+
+def update_install():
+    """Download the new installer, check it against the release, run it."""
+    import hashlib
+    a, ver = UPD["asset"], UPD["latest"]
+    path = os.path.join(DATA_DIR, "updates", f"FT8-Hunter-{ver}-setup.exe")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        h, n = hashlib.sha256(), 0
+        with upd_get(a["url"], 120) as r, open(path + ".part", "wb") as f:
+            while True:
+                chunk = r.read(1 << 16)
+                if not chunk:
+                    break
+                f.write(chunk); h.update(chunk); n += len(chunk)
+                UPD["pct"] = min(100, round(100 * n / max(a["size"], 1)))
+        if n != a["size"] or h.hexdigest() != a["sha256"]:
+            os.remove(path + ".part")
+            raise ValueError("the download doesn't match the release (size or SHA-256)")
+        os.replace(path + ".part", path)
+        UPD["busy"] = "installing"
+        log(f"installing FT8 Hunter {ver}: the hunter closes and starts again when it's done")
+        update_launch(path)
+    except Exception as e:
+        UPD.update(busy="", err=f"update failed: {e}"[:160])
+        log(UPD["err"])
+
+def update_start():
+    """The operator said yes: stop hunting, halt WS's TX, then download and
+    install in the background. Why not, if it can't now."""
+    why = ("this hunter can't install updates itself (only an installed Windows one can): use the release page"
+           if not update_installable() else "no newer version" if not update_newer()
+           else "already updating" if UPD["busy"]
+           else "a QSO is in progress: finish or skip it first" if state["target"] else "")
+    if why:
+        return why
+    if state["running"]:
+        state["running"] = False; ENG["cq_until"] = 0; at("stopped")
+    halt_ws()
+    log(f"updating to {UPD['latest']}: hunter stopped, TX halted")
+    UPD.update(busy="downloading", pct=0, err="")
+    threading.Thread(target=update_install, daemon=True).start()
+    return ""
+
 class H(BaseHTTPRequestHandler):
     def _json(self, obj, code=200):
         b = json.dumps(obj).encode()
@@ -3053,6 +3174,7 @@ class H(BaseHTTPRequestHandler):
                 "wrl": {"on": WRL["on"], "port": state["config"]["wrl_port"], "warn": state["config"].get("wrl_warn", True)},
                 "txdf": {"current": u.get("tx_df"), **ENG.get("suggest", {})},
                 "log": list(state["log"]), "config": state["config"], "stats": state["stats"],
+                "update": update_view(),
                 "udp": {"holder": u["holder"], "ws_id": state["ws_id"],
                         "revision": u.get("revision", ""), "ws_hunter": has_ws_hunter(),
                         "dxcall": u["dxcall"], "rx_count": u["rx_count"],
@@ -3076,6 +3198,16 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/start":
             state["running"] = True; DESYNC.update(stopped=False, started=time.time())
             log("hunter started"); at("idle", "starting at next period")
+        elif p == "/api/update/check":
+            update_check()
+            return self._json(update_view())
+        elif p == "/api/update/skip":
+            state["config"]["update_skip"] = UPD["latest"]; save_config()
+            log(f"FT8 Hunter {UPD['latest']}: skipped, not offered again")
+        elif p == "/api/update/install":
+            why = update_start()
+            if why:
+                return self._json({"error": why}, 409)
         elif p == "/api/stop":
             state["running"] = False; state["target"] = None; ENG["cq_until"] = 0
             ENG["callers"].clear(); halt_ws(); log("stopped, TX halted"); at("stopped")
@@ -3251,6 +3383,9 @@ class H(BaseHTTPRequestHandler):
             c["new_band_cycles"] = max(0, min(int(c["new_band_cycles"]), 10))
             c["swr_high"] = max(1.05, min(float(c["swr_high"]), 5.0))
             c["swr_bad"] = max(c["swr_high"], min(float(c["swr_bad"]), 10.0))
+            c["update_check"] = bool(c["update_check"]); c["update_skip"] = str(c["update_skip"])
+            if "update_check" in body:
+                UPD["wake"].set()  # turned on: look now if it's due
             set_identity()
             if isinstance(c["signoff"], str):
                 c["signoff"] = [x for x in re.split(r"[,\n]", c["signoff"]) if x.strip()]
@@ -3354,6 +3489,29 @@ def run_window(httpd):
         root.destroy()
         shutdown(None, None)  # halts WS if it was ours to run
 
+    from tkinter import messagebox
+    upd_box = tk.Frame(root)  # holds the update button while there's a new version
+    upd_box.pack()
+    upd_btn = tk.Button(upd_box, fg="#1f7a3d")
+
+    def update_ask():
+        u = update_view()
+        if not u["can_install"]:
+            webbrowser.open(u["url"])
+            return
+        ans = messagebox.askyesnocancel("Update FT8 Hunter",
+            f"FT8 Hunter {u['latest']} is out (this is {VERSION}).\n\n"
+            "Install it now? The hunter stops, WS's TX is turned off, and it starts again once installed.\n\n"
+            "Yes: install now · No: skip this version · Cancel: not now", parent=root)
+        if ans:
+            why = update_start()
+            if why:
+                messagebox.showinfo("Update FT8 Hunter", f"Not now: {why}.", parent=root)
+        elif ans is False:
+            state["config"]["update_skip"] = u["latest"]; save_config()
+            log(f"FT8 Hunter {u['latest']}: skipped, not offered again")
+    upd_btn.config(command=update_ask)
+
     tk.Button(root, text="Quit", command=quit_, width=12).pack(pady=(8, 14))
     root.protocol("WM_DELETE_WINDOW", quit_)
 
@@ -3362,6 +3520,14 @@ def run_window(httpd):
         status.config(text=(f"{state['mycall'] or 'no call sign yet'} · " +
                             (f"hunting · calling {t['call']}" if state["running"] and t else
                              "hunting" if state["running"] else "stopped (press Start in the page)")))
+        u = update_view()
+        if u["newer"] and not u["skipped"]:
+            upd_btn.config(state="disabled" if u["busy"] else "normal",
+                           text=(f"Updating to {u['latest']}: {u['busy']} {u['pct']}%" if u["busy"] else
+                                 f"⬆ Update to {u['latest']}…" if u["can_install"] else f"⬆ {u['latest']} is out: get it…"))
+            upd_btn.pack(pady=(6, 0))
+        else:
+            upd_btn.pack_forget()
         root.after(2000, tick)
     tick()
     if FROZEN:
@@ -3387,6 +3553,8 @@ threading.Thread(target=band_rates, daemon=True).start()  # reads ALL.TXT once
 lb_load()
 threading.Thread(target=lb_worker, daemon=True).start()
 threading.Thread(target=load_freqs, daemon=True).start()
+threading.Thread(target=update_worker, daemon=True).start()
+log(f"FT8 Hunter {VERSION}")
 log(f"hunter ready as {state['mycall']} {state['mygrid']}" if state["mycall"] else
     "hunter ready: no call sign yet (Settings, or WS's own); it won't start until it has one")
 print(f"open http://0.0.0.0:{state['config']['http_port']}/")

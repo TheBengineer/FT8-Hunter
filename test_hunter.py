@@ -1278,6 +1278,59 @@ check("a bad call or grid isn't saved (falls back to WS's)", st["config"]["mycal
 post("/api/config", {"udp_port": 80, "swr_high": 2.0, "swr_bad": 1.1})
 check("ports and SWR levels kept sane", st["config"]["udp_port"] == 1024 and st["config"]["swr_bad"] >= 2.0)
 st["config"].clear(); st["config"].update(saved[0]); st["mycall"], st["mygrid"] = saved[1], saved[2]; st["running"] = False
+# updates: GitHub and the installer are stand-ins; nothing installs until asked
+import hashlib, io
+U, vk = ns["UPD"], ns["ver_key"]
+check("versions compare as numbers", vk("v1.10.0") > vk("1.9.3") and vk("v1.0") == vk("1.0.0") > vk("junk"))
+setup = b"pretend installer"
+def fake_release(tag, digest="sha256:" + hashlib.sha256(setup).hexdigest()):
+    rel = {"tag_name": tag, "body": "Faster offset picker", "html_url": "https://github.com/x/releases/" + tag,
+           "assets": [{"name": "FT8-Hunter-windows-x64-setup.exe", "size": len(setup),
+                       "browser_download_url": "https://example.invalid/setup.exe", "digest": digest}]}
+    ns["upd_get"] = lambda url, timeout=30: io.BytesIO(setup if url.endswith("setup.exe") else json.dumps(rel).encode())
+ns["DATA_DIR"] = _tmp
+launched = []
+ns["update_launch"] = lambda path: launched.append(open(path, "rb").read())
+fake_release("v" + ns["VERSION"])
+ns["update_check"]()
+check("same version: nothing offered", not ns["update_view"]()["newer"] and not U["err"])
+fake_release("v99.0.0")
+v = post("/api/update/check", {})
+check("a newer release is offered, with its notes and page",
+      v["newer"] and v["latest"] == "99.0.0" and "offset" in v["notes"] and v["url"].endswith("v99.0.0"))
+check("...and logged once", sum("99.0.0 is out" in l["msg"] for l in st["log"]) == 1)
+ns["update_check"]()
+check("...not twice", sum("99.0.0 is out" in l["msg"] for l in st["log"]) == 1)
+def post_code(path, body):
+    try:
+        post(path, body); return 200
+    except urllib.error.HTTPError as e:
+        return e.code
+check("from source (not the Windows installer's): no install, the page links the release",
+      not v["can_install"] and post_code("/api/update/install", {}) == 409 and not launched)
+ns["update_installable"] = lambda: True
+st["target"] = {"call": "K1ABC", "left": 4}
+check("not in the middle of a QSO", post_code("/api/update/install", {}) == 409 and not launched)
+st["target"] = None; st["running"] = True
+def until_done():
+    for _ in range(100):
+        if not U["busy"] or launched:
+            return
+        time.sleep(0.02)
+check("yes: the hunter stops, the installer is downloaded, checked and run",
+      post_code("/api/update/install", {}) == 200 and not st["running"] and (until_done() or launched == [setup]))
+launched.clear(); U["busy"] = ""
+fake_release("v99.0.1", digest="sha256:" + "0" * 64)
+ns["update_check"](); post("/api/update/install", {}); until_done()
+check("a download that doesn't match the release is never run",
+      not launched and "doesn't match" in U["err"] and not os.path.exists(os.path.join(_tmp, "updates", "FT8-Hunter-99.0.1-setup.exe.part")))
+post("/api/update/skip", {})
+check("skip: that version isn't offered again", ns["update_view"]()["skipped"] and st["config"]["update_skip"] == "99.0.1")
+fake_release("v99.0.2"); ns["update_check"]()
+check("...but the next one is", not ns["update_view"]()["skipped"])
+def offline(url, timeout=30): raise OSError("network down")
+ns["upd_get"] = offline; ns["update_check"]()
+check("offline: an error to show, the last release still known", "network down" in U["err"] and U["latest"] == "99.0.2")
 fl.shutdown(); srv.shutdown()
 
 print("ALL PASS" if ok else "SOME FAILED")

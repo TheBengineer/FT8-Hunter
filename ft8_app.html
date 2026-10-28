@@ -105,6 +105,10 @@ details summary{font-weight:700;padding:4px}
 <span style="margin-left:auto" id="tlSpan"></span><button class="z" id="tlOut" title="Zoom out">−</button><button class="z" id="tlIn" title="Zoom in">+</button></div>
 <canvas id="tlc"></canvas></div>
 <div class="card" data-id="status"><div class="row"><span id="dot" class="dot"></span><b id="st">…</b></div>
+<div id="updB" class="small" style="display:none;margin-top:6px;padding:8px;border-radius:8px;background:var(--accent);color:#fff">
+<b id="updT"></b><details style="margin-top:4px"><summary>What's new</summary><div id="updNotes" style="white-space:pre-wrap;margin-top:4px;max-height:12em;overflow:auto"></div></details>
+<div class="row" style="margin-top:6px;flex-wrap:wrap"><button id="updGo" class="mini on" style="flex:1 0 auto;white-space:nowrap" title="Downloads the new installer, checks it against the release, and runs it. The hunter stops, WS's TX is turned off, and it starts again once installed.">Install and restart</button><button id="updGet" class="mini on" style="flex:1 0 auto;white-space:nowrap">Get it</button>
+<button id="updSkip" class="mini quiet" style="flex:0 0 auto;white-space:nowrap">Skip this version</button><button id="updLater" class="mini quiet" style="flex:0 0 auto;white-space:nowrap">Later</button></div></div>
 <div class="row" style="margin-top:6px"><span id="udpdot" class="dot"></span><span class="small" id="udp">UDP …</span></div>
 <div id="txl" title="This WS/WSJT-X can't be told to Enable Tx over UDP: the hunter picks who to call and stops TX, you click Enable Tx when this flashes"></div>
 <div id="target">no target</div>
@@ -216,6 +220,8 @@ Chart: dB over the floor, 200–3000 Hz · <span style="color:var(--good)">▬ F
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Full cycles (an even and an odd period each) heard on a new band before transmitting">Listen on a new band (cycles)</span><input id="sNewBand" type="number" min="0" max="10" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="An SWR reading this many times the usual one for that band and power shows as higher than usual">SWR higher than usual (×)</span><input id="sSwrHi" type="number" min="1.05" max="5" step="0.05" style="max-width:90px;margin-top:0"></div>
 <div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="...and this many times as much higher: check the antenna">SWR much higher (×)</span><input id="sSwrBad" type="number" min="1.05" max="10" step="0.05" style="max-width:90px;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" title="Asks GitHub twice a day whether there's a newer FT8 Hunter, and shows it in the status card. Nothing is installed until you say so.">Check for updates</span><input id="sUpd" type="checkbox" style="width:auto;margin-top:0"></div>
+<div class="row" style="margin-top:6px"><span class="small" style="flex:1" id="sVer"></span><button id="bUpdCheck" class="mini quiet" style="flex:0 0 auto">Check now</button></div>
 </details>
 <button id="bSave" style="margin-top:8px">Save</button>
 <button id="bLayout" class="mini quiet" style="margin-top:8px">Reset card order</button></details></div>
@@ -338,7 +344,7 @@ async function tick(){const s=await api('/api/state');
 const T=s.target;WHO={target:T?baseCall(T.call):'',qso:!!T&&(!!T.resp||T.why==='called us'),
  waiting:new Set((s.callers||[]).map(baseCall)),worked:new Set((s.worked||[]).map(baseCall))};
 document.documentElement.style.setProperty('--band',LOOK.band(s.band));
-window._cfg=s.config;window._me=s.mycall;fillSettings(s.config,s.udp||{});cqFirstView(!!s.config.cq_first);manualView(!!s.manual,!!s.manual_forced);pickView(s);if(s.rig)rigView(s.rig,s.rx);swrView(s.swr);HELD=s.holds||{};flow(s.step,{...s.config,manual:!!s.manual});
+window._cfg=s.config;window._me=s.mycall;fillSettings(s.config,s.udp||{});updView(s.update);cqFirstView(!!s.config.cq_first);manualView(!!s.manual,!!s.manual_forced);pickView(s);if(s.rig)rigView(s.rig,s.rx);swrView(s.swr);HELD=s.holds||{};flow(s.step,{...s.config,manual:!!s.manual});
 $('dot').className='dot'+(s.running?' run':'');lightView(s.light,s.caps);
 $('st').innerHTML=(s.running?'RUNNING':'STOPPED')+' · '+s.mycall+' '+s.mygrid+(s.band?' · '+LOOK.tag(s.band,s.mode):'');
 $('target').innerHTML=T?('🎯 '+callH(T.call)+' '+(T.grid||'')+' · '+(T.why||'')+' · '+(T.resp?'in QSO':Math.ceil(T.left/2)+' tries left')):(s.cq_calling?('📣 calling CQ · '+s.cq_calling+'s'):'no target');
@@ -425,14 +431,30 @@ $('sAutoDf').checked=c.auto_df!==false;$('sDfLo').value=c.df_lo;$('sQrm').checke
 $('sTune').checked=c.tune_new_band!==false;$('sTuneKhz').value=c.tune_away_khz;$('sLic').value=c.license||'';
 $('sCall').value=c.mycall||'';$('sGrid').value=c.mygrid||'';
 $('sUdp').value=c.udp_port;$('sHttp').value=c.http_port;$('sFlrig').value=c.flrig_url;$('sWrl').value=c.wrl_port;$('sWrlWarn').checked=c.wrl_warn!==false;$('sWsDir').value=c.ws_dir||'';
-$('sDesync').checked=c.desync_stop!==false;$('sPsk').checked=c.psk_remote!==false;$('sSilent').value=c.silent_min??5;$('sFade').value=c.traffic_secs;$('sTuneWait').value=c.tune_wait;$('sNewBand').value=c.new_band_cycles;$('sSwrHi').value=c.swr_high;$('sSwrBad').value=c.swr_bad}
+$('sDesync').checked=c.desync_stop!==false;$('sPsk').checked=c.psk_remote!==false;$('sSilent').value=c.silent_min??5;$('sFade').value=c.traffic_secs;$('sTuneWait').value=c.tune_wait;$('sNewBand').value=c.new_band_cycles;$('sSwrHi').value=c.swr_high;$('sSwrBad').value=c.swr_bad;$('sUpd').checked=c.update_check!==false}
+// Updates: the hunter says when there's a newer release; nothing installs until you press Install
+let updLater='',U=null;
+function updView(u){if(!u)return;U=u;
+$('sVer').textContent=`Version ${u.version}`+(u.latest?(u.newer?` · ${u.latest} is out`:' · up to date'):'')+(u.checked?` · checked ${new Date(u.checked*1000).toLocaleString()}`:'')+(u.err?` · ${u.err}`:'');
+const show=!!u.busy||(u.newer&&!u.skipped&&updLater!==u.latest);$('updB').style.display=show?'block':'none';if(!show)return;
+$('updT').textContent=u.busy?`⬆ Updating to ${u.latest}: `+(u.busy==='downloading'?`downloading ${u.pct}%`:'installing; the hunter starts again in a moment, then reload this page')
+ :`⬆ FT8 Hunter ${u.latest} is out (this is ${u.version})`+(u.err?` · ${u.err}`:'')+(u.can_install?'':' · download it from the release page');
+$('updNotes').textContent=u.notes||'(no notes)';
+$('updGo').style.display=u.can_install&&!u.busy?'':'none';$('updGet').style.display=!u.can_install&&!u.busy?'':'none';
+$('updSkip').style.display=$('updLater').style.display=u.busy?'none':''}
+$('updGo').onclick=async()=>{if(!U||!confirm(`Install FT8 Hunter ${U.latest} now?\n\nThe hunter stops, WS's TX is turned off, and it starts again once installed.`))return;
+ const r=await api('/api/update/install',{});if(r.error)alert('Not now: '+r.error);tick()};
+$('updGet').onclick=()=>U&&U.url&&window.open(U.url,'_blank','noopener');
+$('updSkip').onclick=async()=>{await api('/api/update/skip',{});tick()};
+$('updLater').onclick=()=>{updLater=U?U.latest:'';$('updB').style.display='none'};
+$('bUpdCheck').onclick=async()=>{$('sVer').textContent='Checking…';updView(await api('/api/update/check',{}))};
 function signoffNote(){const me=(window._me||'').split('/').sort((a,b)=>(/\d/.test(b)-/\d/.test(a))||b.length-a.length)[0]||'',
 ls=$('sSignoff').value.split('\n').map(x=>x.trim().toUpperCase().replace(/\s+/g,' ').replace(/([A-Z])(R?R?73)\b/,'$1 $2')).filter(Boolean),long=ls.filter(x=>me.length+1+x.length>13);
 $('sSignoffNote').textContent=`${ls.length} lines, sent as ${me} + the line. FT8 free text is 13 characters in all, so 6 are left for the line`+(long.length?`; too long: ${long.join(', ')}`:'')+'.'}
 $('sSignoff').oninput=signoffNote;
 $('bSave').onclick=async()=>{await api('/api/config',{cq_tries:+$('sCq').value,tail_tries:+$('sTail').value,qso_tries:+$('sQso').value,watts_call:+$('sWCall').value,watts_qso:+$('sWQso').value,hold_min:+$('sHold').value,signoff:$('sSignoff').value,idle_every:+$('sIdleN').value,idle_secs:+$('sIdleS').value,special_first:$('sSpec').checked,call_cq:$('sCallCq').checked,cq_secs:+$('sCqSecs').value,auto_df:$('sAutoDf').checked,df_lo:+$('sDfLo').value,qrm_detect:$('sQrm').checked,compat:$('sCompat').checked,check_every:+$('sCheck').value,tune_new_band:$('sTune').checked,tune_away_khz:+$('sTuneKhz').value,license:$('sLic').value,min_snr:+$('sMinSnr').value,
 mycall:$('sCall').value.trim(),mygrid:$('sGrid').value.trim(),udp_port:+$('sUdp').value,http_port:+$('sHttp').value,flrig_url:$('sFlrig').value.trim(),wrl_port:+$('sWrl').value,wrl_warn:$('sWrlWarn').checked,ws_dir:$('sWsDir').value.trim(),
-desync_stop:$('sDesync').checked,psk_remote:$('sPsk').checked,silent_min:+$('sSilent').value,traffic_secs:+$('sFade').value,tune_wait:+$('sTuneWait').value,new_band_cycles:+$('sNewBand').value,swr_high:+$('sSwrHi').value,swr_bad:+$('sSwrBad').value},'POST');sLoaded=false;tick()};
+desync_stop:$('sDesync').checked,psk_remote:$('sPsk').checked,silent_min:+$('sSilent').value,traffic_secs:+$('sFade').value,tune_wait:+$('sTuneWait').value,new_band_cycles:+$('sNewBand').value,swr_high:+$('sSwrHi').value,swr_bad:+$('sSwrBad').value,update_check:$('sUpd').checked},'POST');sLoaded=false;tick()};
 setInterval(tick,2000);tick();
 // T/R cycle bar (15 s FT8, 7.5 s FT4, 3.75 s FT2) + TX badge, updated locally every 200ms
 setInterval(()=>{const per=window._per||15,t=Date.now()/1000,pos=t%per,pct=pos/per*100;

@@ -264,6 +264,26 @@ hunter keeps its settings and logs in `%APPDATA%\FT8-Hunter` (Windows),
 run it as a service instead. The builds are made by GitHub Actions
 (`.github/workflows/build.yml`) for every `v*` tag.
 
+### Updates
+
+Twice a day the hunter asks GitHub whether there's a newer release (Settings →
+Advanced → **Check for updates**; **Check now** is there too). Nothing is
+installed until you say so. A new version shows in the status card with its
+notes and three choices: **Install and restart**, **Skip this version** (not
+offered again; the next one is) or **Later** (until you reload the page). The
+desktop window shows an **Update** button that asks the same.
+
+Install works for a hunter installed with the Windows installer. It stops
+hunting, turns WS's TX off, downloads the new installer, checks its size and
+SHA-256 against the release, runs it silently and starts the new hunter. It
+won't start in the middle of a QSO. Anywhere else (the zip, macOS, Linux,
+from source) **Get it** opens the release page.
+
+Releases are published to the public
+[FT8-Hunter-releases](https://github.com/TheBengineer/FT8-Hunter-releases)
+repo, which is where the hunter looks. The check sends GitHub nothing but the
+hunter's version in its User-Agent.
+
 The ws-hunter build of WS for Windows is a separate download from the
 [ws-hunter releases](https://github.com/TheBengineer/ws-hunter/releases).
 
