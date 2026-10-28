@@ -256,6 +256,11 @@ Each [release](../../releases) has a ready-made FT8 Hunter for Windows (x64), ma
 - a QR code of its address on your network, for a phone on the same Wi-Fi
 - what the hunter is doing, and **Quit**, which turns WS's TX off before it exits
 
+On Windows, **FT8-Hunter-windows-x64-setup.exe** installs it instead: for your
+user (no admin prompt) or for all users, with a Start menu entry, an optional
+desktop icon, an optional start at sign-in, and an uninstaller. An installed
+hunter can update itself (below).
+
 The builds aren't signed. On Windows, SmartScreen asks first: **More info → Run
 anyway**. On macOS, right-click the app → **Open** the first time. A packaged
 hunter keeps its settings and logs in `%APPDATA%\FT8-Hunter` (Windows),

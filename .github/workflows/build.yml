@@ -1,6 +1,10 @@
 # Packaged FT8 Hunter for Windows, macOS and Linux (PyInstaller): one file
-# that opens the hunter's window (link, QR code, Quit). A tag v* also makes a
-# GitHub release with the three downloads attached.
+# that opens the hunter's window (link, QR code, Quit), and a Windows
+# installer (FT8-Hunter.iss). A tag v* (v + VERSION in ft8_server.py) also
+# makes a GitHub release with the downloads attached, here and in the public
+# FT8-Hunter-releases repo that installed hunters check for updates (this
+# one is private). That needs a RELEASES_TOKEN secret: a fine-grained token
+# with Contents read and write on FT8-Hunter-releases.
 name: build
 
 on:
@@ -26,6 +30,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: The tag matches VERSION (installed hunters compare it)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          v=$(sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' ft8_server.py)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME but ft8_server.py says VERSION = $v"; exit 1; }
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -87,6 +97,43 @@ jobs:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
 
+      - name: Installer (Inno Setup)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; if ($LASTEXITCODE) { exit 1 } }
+          $ver = (Select-String -Path ft8_server.py -Pattern '^VERSION = "([^"]+)"').Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -ne "tag") { $ver += "-$($env:GITHUB_SHA.Substring(0,7))" }
+          & $iscc /Qp "/DAppVersion=$ver" "/DSrcDir=$PWD\dist" "/DOutDir=$PWD" FT8-Hunter.iss
+          if ($LASTEXITCODE) { exit 1 }
+          Get-Item FT8-Hunter-windows-x64-setup.exe | Select-Object Name, Length
+      - name: "Installer test: silent install, serves the page, uninstall"
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = "$env:RUNNER_TEMP\ft8-hunter-test"
+          $p = Start-Process .\FT8-Hunter-windows-x64-setup.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER","/DIR=$dir" -Wait -PassThru
+          if ($p.ExitCode) { throw "setup exit code $($p.ExitCode)" }
+          foreach ($f in "FT8-Hunter.exe","README.md","unins000.exe") { if (-not (Test-Path "$dir\$f")) { throw "missing after install: $f" } }
+          if (-not (Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter "FT8 Hunter.lnk")) { throw "no Start menu shortcut" }
+          $h = Start-Process "$dir\FT8-Hunter.exe" -ArgumentList "--no-window","--http","8383" -PassThru
+          $ok = $false
+          foreach ($i in 1..30) { try { $s = Invoke-RestMethod http://localhost:8383/api/state; $ok = $true; break } catch { Start-Sleep 1 } }
+          if (-not $ok) { throw "the installed hunter didn't serve its page" }
+          "installed hunter: version $($s.update.version), can install updates: $($s.update.can_install)"
+          Stop-Process $h -Force; Start-Sleep 2
+          $p = Start-Process "$dir\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
+          if ($p.ExitCode) { throw "uninstall exit code $($p.ExitCode)" }
+          Start-Sleep 3  # the uninstaller finishes from a temporary copy
+          if (Test-Path "$dir\FT8-Hunter.exe") { throw "FT8-Hunter.exe still there after uninstall" }
+          "install and uninstall OK"
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: FT8-Hunter-windows-x64-setup.exe
+          path: FT8-Hunter-windows-x64-setup.exe
+
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
@@ -103,3 +150,11 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" assets/* -R "$GITHUB_REPOSITORY" \
             --title "FT8 Hunter $GITHUB_REF_NAME" --generate-notes
+          gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --json body -q .body > notes.md
+      - name: The same release in the public repo (where hunters look for updates)
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "::warning::no RELEASES_TOKEN secret: not published to FT8-Hunter-releases"; exit 0; fi
+          gh release create "$GITHUB_REF_NAME" assets/* -R "${{ github.repository_owner }}/FT8-Hunter-releases" \
+            --title "FT8 Hunter $GITHUB_REF_NAME" --notes-file notes.md
