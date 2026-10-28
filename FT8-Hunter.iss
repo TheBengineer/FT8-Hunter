@@ -97,3 +97,38 @@ begin
   SetEnvironmentVariable('_PYI_SPLASH_IPC', '');
   Result := True;
 end;
+
+function HunterRunning: Boolean;
+var
+  Code: Integer;
+begin
+  Result := Exec(ExpandConstant('{cmd}'), '/C tasklist /NH /FI "IMAGENAME eq FT8-Hunter.exe" | find /I "FT8-Hunter.exe"',
+                 '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  I: Integer;
+  Code: Integer;
+begin
+  // An update the hunter started: it quits a moment after starting us. Wait
+  // for it, or Restart Manager finds it still running, can't close it (no
+  // window), and a silent setup aborts. Still there after 15 s: stop it (it
+  // has already turned WS's TX off).
+  if IsUpdate then
+  begin
+    I := 0;
+    while HunterRunning and (I < 30) do
+    begin
+      Sleep(500);
+      I := I + 1;
+    end;
+    if HunterRunning then
+    begin
+      Log('The hunter is still running: stopping it');
+      Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM FT8-Hunter.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
+      Sleep(1000);
+    end;
+  end;
+  Result := '';
+end;
