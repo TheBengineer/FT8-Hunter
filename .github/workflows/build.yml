@@ -93,9 +93,10 @@ jobs:
         run: |
           pkill -f FT8-Hunter || true  # the smoke test's
           open -n dist/FT8-Hunter.app --args --http 8282   # as Finder starts it
-          sleep 20; screencapture -x window.png
-          pid=$(pgrep -f "FT8-Hunter.app/Contents/MacOS/FT8-Hunter" | tail -1); echo "pid $pid"
-          # the page is served only once the window exists
+          # the page is served only once the window exists; a first start can be slow (macOS checks the app)
+          for i in $(seq 1 90); do curl -fs -m 2 http://localhost:8282/api/state > /dev/null && break; sleep 1; done
+          sleep 5; screencapture -x window.png
+          pid=$(pgrep -f "FT8-Hunter.app/Contents/MacOS/FT8-Hunter" | tail -1); echo "pid $pid, after ${i} s"
           curl -fs -m 5 http://localhost:8282/api/state > /dev/null && echo "serving: the window is up" || {
             echo "not serving: stuck before the window. Main thread:"
             sample "$pid" 2 2>&1 | grep -v "^\s*$" | head -150
