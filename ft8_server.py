@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import deque
 from urllib.parse import urlparse
 
-VERSION = "1.1.4"  # a release's tag is v + this (the build refuses a tag that doesn't match)
+VERSION = "1.1.5"  # a release's tag is v + this (the build refuses a tag that doesn't match)
 
 # The page ships beside this script (or inside a packaged build); the hunter's
 # own files (settings, logs) live beside the script too, or for a packaged
@@ -356,6 +356,42 @@ def ws_files(name, extra=()):
     own = (state["config"]["ws_dir"],) if state["config"]["ws_dir"] else ()
     return [os.path.expanduser(os.path.join(d, name)) for d in own + WS_DIRS + tuple(extra)]
 
+def ws_ini(wid=None):
+    """WS's settings (WS.ini; WSJT-X.ini, or "WS - rig.ini" with --rig-name: the
+    name it gives in UDP), or ''."""
+    wid = wid or state["ws_id"] or "WS"
+    for d in ("~/.config", "~/Library/Preferences", os.path.join("~/AppData/Local", wid)):
+        try:
+            return open(os.path.expanduser(os.path.join(d, wid + ".ini")), errors="ignore").read()
+        except OSError:
+            pass
+    return ""
+
+# WS ignores every command (Halt, Reply, Configure, the dial...) unless asked to accept them
+UDP_OFF = "WS ignores the hunter: in WS, open File > Settings > Reporting and tick Accept UDP requests"
+def ws_accepts_udp(wid=None):
+    """False only when WS's settings say Accept UDP requests is off."""
+    return not re.search(r"^AcceptUDPRequests=false", ws_ini(wid), re.M)
+
+def ws_acted(ok, what=""):
+    """A command whose result shows in WS's Status (mode, dial): did WS act on
+    it? The settings file can't tell everything (another WS on the port, a
+    different --rig-name), so this is the check that WS hears us."""
+    u = state["udp"]
+    if not ok and not u.get("ignored"):
+        log(f"⚠️ WS ignored the hunter's {what}" + (f": {UDP_OFF}" if not ws_accepts_udp() else ""))
+    u["ignored"] = "" if ok else what
+
+def ws_link_problem():
+    """Why WS isn't taking the hunter's commands, or ''."""
+    u = state["udp"]
+    if u.get("udp_off"):
+        return UDP_OFF
+    if u.get("ignored") and time.time() - u.get("last_rx", 0) < 30:
+        return (f"WS hears from the hunter but ignored its {u['ignored']}: check Accept UDP requests"
+                " in WS's File > Settings > Reporting, and that only one WS is running")
+    return ""
+
 def load_cty():
     """Parse the country file WS ships (AD1C cty.dat format)."""
     for p in map(os.path.expanduser, CTY_PATHS):
@@ -656,6 +692,12 @@ def udp_listener():
                         log(f"WS {vs[0]} {vs[1]}" + (" (ws-hunter controls)" if has_ws_hunter() else ""))
                 except Exception as e:
                     log_err("Heartbeat", e)
+                udp_off = not ws_accepts_udp(wid)
+                if udp_off != state["udp"].get("udp_off"):
+                    state["udp"]["udp_off"] = udp_off
+                    log("⚠️ " + UDP_OFF if udp_off else "WS accepts the hunter's commands (Accept UDP requests is on)")
+                    if not udp_off:
+                        state["udp"]["ignored"] = ""  # just turned on: the old miss no longer says anything
             if "WS" in wid.upper() or "JT" in wid.upper():
                 state["ws_id"] = wid
             state["udp"]["last_rx"] = time.time()
@@ -2353,11 +2395,8 @@ SCAN = {"on": False, "stop": False, "goto": None, "i": 0, "n": 0, "cur": None, "
 
 def ws_region():
     """IARU region set in WS (R1, R2, R3), default R2."""
-    try:
-        m = re.search(r"^Region=.*?(R[123])", open(os.path.expanduser("~/.config/WS.ini"), errors="ignore").read(), re.M)
-        return m.group(1) if m else "R2"
-    except OSError:
-        return "R2"
+    m = re.search(r"^Region=.*?(R[123])", ws_ini(), re.M)
+    return m.group(1) if m else "R2"
 
 def parse_freq_list(src, region):
     """FT8/FT4/FT2 dial frequencies in WS's FrequencyList.cpp, one per band
@@ -2530,9 +2569,11 @@ def ws_set_mode(m, wait=8.0):
     end = time.time() + wait
     while time.time() < end:
         if mode_raw() == m:
+            ws_acted(True)
             time.sleep(0.5)  # WS may jump to that mode's frequency first: let it, then set ours
             return True
         time.sleep(0.1)
+    ws_acted(False, f"switch to {m}")
     return False
 
 def ws_set_dial(hz):
@@ -2562,6 +2603,8 @@ def scan_measure(pt, per_ms):
         try:
             t_ms, tr_ms, start, bin_hz, db = SCAN["q"].get(timeout=0.5)
         except queue.Empty:
+            if time.time() - t_tune > 6 and abs((state["udp"].get("dial") or 0) - pt["hz"]) > 100:
+                ws_acted(False, f"dial change to {pt['hz'] / 1e6:.4f} MHz")
             if time.time() - t_tune > 2 and abs((state["udp"].get("dial") or 0) - pt["hz"]) > 100:
                 ws_set_dial(pt["hz"])  # the dial command was lost
                 t_tune, ready = time.time(), tod_ms(time.time() + SCAN_SETTLE)
@@ -2570,6 +2613,7 @@ def scan_measure(pt, per_ms):
             continue  # started before the retune had settled
         if abs((state["udp"].get("dial") or 0) - pt["hz"]) > 100:
             continue  # WS isn't there (yet)
+        ws_acted(True)
         return t_ms, start, bin_hz, db
     return None
 
@@ -2587,7 +2631,7 @@ def scan_run(points):
     done = []
     try:
         if not ws_set_mode("FT2"):
-            raise RuntimeError("WS did not switch to FT2")
+            raise RuntimeError(UDP_OFF if not ws_accepts_udp() else "WS did not switch to FT2")
         per = int(MODES["FT2"][0] * 1000)
         for pt in points:
             if SCAN["stop"]:
@@ -3183,6 +3227,7 @@ class H(BaseHTTPRequestHandler):
                 "step": ENG.get("step") or {"step": "stopped" if not state["running"] else "idle"},
                 "qrm": {"secs": max(0, round(ENG["qrm_until"] - time.time())), "why": ENG["qrm_why"]},
                 "desync": {"why": DESYNC["why"], "t": DESYNC["t"], "stopped": DESYNC["stopped"]},
+                "udp_off": ws_link_problem(),
                 "wrl": {"on": WRL["on"], "port": state["config"]["wrl_port"], "warn": state["config"].get("wrl_warn", True)},
                 "txdf": {"current": u.get("tx_df"), **ENG.get("suggest", {})},
                 "log": list(state["log"]), "config": state["config"], "stats": state["stats"],

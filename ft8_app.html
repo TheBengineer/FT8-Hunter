@@ -364,7 +364,8 @@ $('stats').textContent=`CQ heard ${s.stats.cq_heard} · calls ${s.stats.calls_ma
 window._band=s.band;window._tx=s.udp.transmitting;window._per=s.period||15;window._mode=s.mode||'FT8';window._dx=s.udp.dxcall||'';
 $('dx').textContent=window._dx?('DX '+window._dx):'';
 const td=s.txdf||{},lk=!!(s.config||{}).df_lock;$('txdf').textContent=(td.current!=null?('Tx '+td.current+' Hz'+(lk?' 🔒':'')):'')+(td.df&&td.df!==td.current?((lk?' · busy? clear: ':' · clear: ')+td.df+' Hz ('+(td.par?'odd':'even')+')'):'');
-{const d=s.desync||{};$('desyncW').style.display=d.why?'block':'none';
+{const d=s.desync||{};$('desyncW').style.display=d.why||s.udp_off?'block':'none';
+if(s.udp_off&&!d.why)$('desyncW').textContent=`⚠️ ${s.udp_off}. Until then the hunter can't stop, start or tune WS, and the band scan can't run.`;
 if(d.why)$('desyncW').textContent=`⚠️ Radio out of sync with WS: ${d.why}.`+(d.stopped?' The hunter stopped and WS’s TX is off.':' WS’s TX is off.')+' Check FLRig and the radio (and WS’s dial), then Start again.'}
 {const w=s.wrl||{},off=w.warn&&w.on===false;$('wrlW').style.display=off?'block':'none';
 if(off)$('wrlW').textContent=`⚠️ WRL Desktop isn't running: QSOs logged now won't reach it (nothing listening on port ${w.port}). Open WRL Desktop, or turn this warning off in Settings → Connections.`}

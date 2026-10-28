@@ -1083,6 +1083,28 @@ check("no band change from the scan in the middle of a QSO", refused)
 st["target"] = None
 st["udp"]["revision"] = ""
 
+# WS with Accept UDP requests off ignores every command: the hunter says so
+ini = os.path.expanduser("~/.config/WS.ini")
+os.makedirs(os.path.dirname(ini), exist_ok=True)
+with open(ini, "w") as f:
+    f.write("[Configuration]\nRegion=R1\nAcceptUDPRequests=false\n")
+check("WS's settings read: region, Accept UDP requests off",
+      ns["ws_region"]() == "R1" and not ns["ws_accepts_udp"]("WS") and ns["ws_accepts_udp"]("WS - nowhere"))
+ctx_tx = ns["CTX"]["tx"]
+ns["CTX"]["tx"] = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+st["udp"].update(mode="FT8", ignored="", udp_off=False, last_rx=time.time())
+check("a mode change WS never makes is noticed",
+      not ns["ws_set_mode"]("FT2", wait=0.3) and st["udp"]["ignored"] == "switch to FT2"
+      and "Accept UDP requests" in ns["ws_link_problem"]())
+threading.Timer(0.2, lambda: st["udp"].update(mode="FT2")).start()  # WS's Status a moment later
+check("and cleared once WS acts on one", ns["ws_set_mode"]("FT2", wait=2) and not ns["ws_link_problem"]())
+st["udp"]["udp_off"] = True
+check("settings saying it's off show on the page",
+      "Accept UDP requests" in json.load(urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}/api/state"))["udp_off"])
+st["udp"].update(udp_off=False, mode="FT8")
+ns["CTX"]["tx"] = ctx_tx
+os.remove(ini)
+
 # --- antenna tune on a new band: under FT8, then back; never where it can't confirm
 class FakeRig:
     def __init__(self, follow=True): self.vfo, self.tuned_at, self.follow = 0, [], follow
