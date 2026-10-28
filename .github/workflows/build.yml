@@ -91,9 +91,10 @@ jobs:
       - name: Window as the Mac app opens it, screenshot kept
         if: runner.os == 'macOS'
         run: |
-          BROWSER=true dist/FT8-Hunter.app/Contents/MacOS/FT8-Hunter --http 8282 > window.log 2>&1 &
-          sleep 10; screencapture -x window.png; cat window.log
-          if grep -q "without a window\|without one" window.log; then echo "the Mac app opened no window"; exit 1; fi
+          BROWSER=true PYTHONUNBUFFERED=1 dist/FT8-Hunter.app/Contents/MacOS/FT8-Hunter --http 8282 > window.log 2>&1 &
+          sleep 20; screencapture -x window.png
+          cat window.log ~/Library/"Application Support"/FT8-Hunter/hunter.log 2>/dev/null | tee all.log
+          if grep -q "without a window\|without one" all.log; then echo "the Mac app opened no window"; exit 1; fi
           kill %1
       - uses: actions/upload-artifact@v4
         if: runner.os != 'Windows'
@@ -104,7 +105,8 @@ jobs:
         shell: bash
         run: |
           curl -fsSL --retry 3 -o "${{ matrix.ws }}" "https://github.com/TheBengineer/ws-hunter/releases/download/$WS_TAG/${{ matrix.ws }}"
-          echo "${{ matrix.ws_sha256 }}  ${{ matrix.ws }}" | shasum -a 256 -c
+          sum=sha256sum; command -v $sum > /dev/null || sum="shasum -a 256"  # macOS has only shasum
+          echo "${{ matrix.ws_sha256 }}  ${{ matrix.ws }}" | $sum -c
           case "$RUNNER_OS" in
             Windows) 7z x -odist "${{ matrix.ws }}" > /dev/null; ls dist/ws-hunter/bin/ws.exe ;;  # dist/ws-hunter
             macOS) ditto -x -k "${{ matrix.ws }}" dist; ls dist/ws.app/Contents/MacOS/ws ;;
