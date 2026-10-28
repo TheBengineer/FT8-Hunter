@@ -120,11 +120,13 @@ jobs:
           foreach ($i in 1..30) { try { $s = Invoke-RestMethod http://localhost:8383/api/state; $ok = $true; break } catch { Start-Sleep 1 } }
           if (-not $ok) { throw "the installed hunter didn't serve its page" }
           "installed hunter: version $($s.update.version), can install updates: $($s.update.can_install)"
-          Stop-Process $h -Force; Start-Sleep 2
+          # the one-file exe runs as two processes (a loader and the hunter): stop both
+          Get-Process FT8-Hunter -ErrorAction SilentlyContinue | Where-Object Path -like "$dir\*" | Stop-Process -Force
+          Start-Sleep 2
           $p = Start-Process "$dir\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
           if ($p.ExitCode) { throw "uninstall exit code $($p.ExitCode)" }
           Start-Sleep 3  # the uninstaller finishes from a temporary copy
-          if (Test-Path "$dir\FT8-Hunter.exe") { throw "FT8-Hunter.exe still there after uninstall" }
+          if (Test-Path "$dir\FT8-Hunter.exe") { Get-ChildItem $dir; Get-Process FT8-Hunter -ErrorAction SilentlyContinue | Format-Table Id, Path; throw "FT8-Hunter.exe still there after uninstall" }
           "install and uninstall OK"
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Windows'
