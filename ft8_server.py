@@ -2982,9 +2982,14 @@ def ver_key(v):
     return tuple(int(x or 0) for x in m.groups()) if m else (-1,)
 
 def upd_get(url, timeout=30):
-    import urllib.request
+    import urllib.request, ssl
+    try:  # the packaged builds carry certifi's root certificates: python.org's macOS Python has none
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        ctx = None
     return urllib.request.urlopen(urllib.request.Request(url, headers={
-        "User-Agent": f"FT8-Hunter/{VERSION}", "Accept": "application/vnd.github+json"}), timeout=timeout)
+        "User-Agent": f"FT8-Hunter/{VERSION}", "Accept": "application/vnd.github+json"}), timeout=timeout, context=ctx)
 
 def update_check():
     """The newest release: its version, notes, page and Windows installer."""
