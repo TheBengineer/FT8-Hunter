@@ -120,8 +120,8 @@ jobs:
           foreach ($i in 1..30) { try { $s = Invoke-RestMethod http://localhost:8383/api/state; $ok = $true; break } catch { Start-Sleep 1 } }
           if (-not $ok) { throw "the installed hunter didn't serve its page" }
           "installed hunter: version $($s.update.version), can install updates: $($s.update.can_install)"
-          # the one-file exe runs as two processes (a loader and the hunter): stop both
-          Get-Process FT8-Hunter -ErrorAction SilentlyContinue | Where-Object Path -like "$dir\*" | Stop-Process -Force
+          # the one-file exe runs as two processes (a loader and the hunter): stop them all
+          Get-Process FT8-Hunter -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep 2
           $p = Start-Process "$dir\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
           if ($p.ExitCode) { throw "uninstall exit code $($p.ExitCode)" }
