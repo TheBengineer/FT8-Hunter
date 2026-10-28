@@ -1141,6 +1141,24 @@ ns["expect_check"](); st["udp"]["transmitting"] = True; ns["expect_check"](time.
 check("link test: WS transmitting refuses an offset change, so a miss then says nothing",
       dfs() == [1499] and not st["udp"]["ignored"] and not EXPECT)
 st["udp"]["transmitting"] = False
+
+# emulated split: WS keeps the rig's Tx frequency as its dial after transmitting
+dials = lambda: [struct.unpack(">Q", p[-8:])[0] for p in sent.pkts if struct.unpack(">I", p[8:12])[0] == ns["SET_DIAL"]]
+slip, t0 = ns["split_slip"], time.time()
+sent.pkts.clear(); st["udp"].update(dial=14080000, tx_df=2430)
+slip(14080000, True, t0)
+st["udp"]["dial"] = 14080500; slip(14080000, False, t0 + 3)
+check("split slip: 500 Hz up just after Tx at 2430 Hz goes back", dials() == [14080000])
+st["udp"]["dial"] = 14080000; slip(14080500, False, t0 + 4)
+check("...and the move back isn't a slip", dials() == [14080000])
+sent.pkts.clear(); slip(14080000, True, t0)
+st["udp"]["dial"] = 14081000; slip(14080000, False, t0 + 3)
+check("split slip: a move other than the Tx shift is left alone", dials() == [])
+st["udp"]["dial"] = 14080000; slip(14080000, True, t0)
+st["udp"]["dial"] = 14080500; slip(14080000, False, t0 + 30)
+check("split slip: long after Tx is left alone", dials() == [])
+st["udp"].update(tx_df=1500, dial=14074000)
+
 st["udp"].update(revision=rev, link_ok=True, ignored="")
 ns["CTX"]["tx"] = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 st["udp"]["udp_off"] = True

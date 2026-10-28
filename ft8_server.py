@@ -789,6 +789,7 @@ def udp_listener():
                     log_err("Logged ADIF", e)
             if mtype == 1:  # Status body: DialFreq u64, Mode, DXcall, Report,
                 try:           # TxMode, TxEnabled?, Transmitting?, ...
+                    prev_dial = state["udp"].get("dial")
                     state["udp"]["dial"] = struct.unpack(">Q", data[off:off+8])[0]
                     set_band(band_of(state["udp"]["dial"]))
                     p = off + 8  # dialfreq u64
@@ -828,6 +829,7 @@ def udp_listener():
                                 state["udp"]["watchdog"] = wd
                             except (struct.error, ValueError, IndexError):
                                 pass
+                        split_slip(prev_dial, txing)
                 except Exception as e:
                     log_err("Status", e)
             expect_check()
@@ -2633,6 +2635,24 @@ def ws_set_mode(m, wait=8.0):
 def ws_set_dial(hz):
     CTX["tx"].sendto(struct.pack(">III", 0xADBCCBDA, 2, SET_DIAL) + pack_str(state["ws_id"])
                      + struct.pack(">Q", int(hz)), ws_dest())
+
+# WS's emulated split ("Fake It") moves the rig up by the Tx offset's whole
+# 500s less 1500 Hz while transmitting; when the rig's next poll comes before
+# it is back, WS takes that for its dial and stays there. Put it back.
+SLIP_SECS = 10
+def split_slip(prev, txing, now=None):
+    """Each Status, once it's read: did WS just take its Tx frequency for its dial?"""
+    now, u = now or time.time(), state["udp"]
+    if txing:
+        u["tx_last"], u["tx_xit"] = now, (u.get("tx_df") or 0) // 500 * 500 - 1500
+        return
+    d, xit = u.get("dial"), u.get("tx_xit")
+    if (prev and d and xit and d - prev == xit and now - u.get("tx_last", 0) < SLIP_SECS
+            and not SCAN["on"] and not ENG.get("tuning") and CTX.get("tx") is not None):
+        u["tx_last"] = 0  # once
+        log(f"WS took its Tx frequency for the dial after transmitting ({d / 1e6:.4f} MHz,"
+            f" emulated split): back to {prev / 1e6:.4f} MHz")
+        ws_set_dial(prev)
 
 def mode_raw():
     return state["udp"].get("mode")
