@@ -197,6 +197,9 @@ jobs:
           $env:_PYI_PARENT_PROCESS_LEVEL = "1"
           # not -Wait: in PowerShell 7 it also waits for the hunter the installer starts
           $p = Start-Process .\FT8-Hunter-windows-x64-setup.exe -ArgumentList "/SILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER","/DIR=$dir","/UPDATE=1" -PassThru
+          # the hunter quits a second after starting the installer (update_launch)
+          Start-Sleep 1
+          Stop-Process -Id $old -Force -ErrorAction SilentlyContinue
           if (-not $p.WaitForExit(180000)) { throw "the update setup didn't finish in 3 minutes" }
           Remove-Item Env:_PYI_ARCHIVE_FILE, Env:_PYI_APPLICATION_HOME_DIR, Env:_PYI_PARENT_PROCESS_LEVEL
           if ($p.ExitCode) { throw "update setup exit code $($p.ExitCode)" }
