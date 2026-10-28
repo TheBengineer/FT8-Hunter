@@ -98,7 +98,7 @@ jobs:
           # the page is served only once the window exists
           curl -fs -m 5 http://localhost:8282/api/state > /dev/null && echo "serving: the window is up" || {
             echo "not serving: stuck before the window. Main thread:"
-            sample "$pid" 2 -file sample.txt > /dev/null 2>&1; grep -A40 "Thread_.*main\|DispatchQueue_1" sample.txt | head -60
+            sample "$pid" 2 2>&1 | grep -v "^\s*$" | head -150
             exit 1; }
           pkill -f FT8-Hunter || true
       - uses: actions/upload-artifact@v4
