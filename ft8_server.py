@@ -3033,7 +3033,11 @@ def update_launch(path):
     import subprocess
     local = os.path.normcase(os.environ.get("LOCALAPPDATA", "~")) + os.sep
     who = "/CURRENTUSER" if os.path.normcase(sys.executable).startswith(local) else "/ALLUSERS"  # as installed (all users: a UAC prompt)
-    subprocess.Popen([path, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", who, "/UPDATE=1"], close_fds=True,
+    # without this the installer, and the hunter it starts, inherit this one-file
+    # exe's PyInstaller variables: the new hunter then looks for Python in our
+    # unpacked folder, gone once we quit ("Failed to load Python DLL")
+    env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
+    subprocess.Popen([path, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", who, "/UPDATE=1"], close_fds=True, env=env,
                      creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     time.sleep(1)
     shutdown(None, None)
@@ -3104,7 +3108,11 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/api/globe":
             return self._json(globe())
         if self.path == "/api/lan":
-            return self._json(lan_urls())
+            # with each address's QR code ("0"/"1" rows), so the page needs no QR library from the internet
+            d = lan_urls()
+            d["qr"] = {u: ["".join("1" if on else "0" for on in row) for row in m]
+                       for u, m in ((u, qr_matrix(u)) for u in d["urls"]) if m}
+            return self._json(d)
         if self.path == "/api/timeline":
             # contacts of the last 24 h, oldest first, for the time bar: the
             # log's (minute) times, or the moment WS logged one this session
@@ -3503,12 +3511,29 @@ def run_window(httpd):
         shutdown(None, None)  # halts WS if it was ours to run
 
     from tkinter import messagebox
-    upd_box = tk.Frame(root)  # holds the update button while there's a new version
-    upd_box.pack()
-    upd_btn = tk.Button(upd_box, fg="#1f7a3d")
+    upd_box = tk.Frame(root)  # this version, and one button: check, up to date, or update
+    upd_box.pack(pady=(6, 0))
+    tk.Label(upd_box, text=f"Version {VERSION}", fg="#555").pack()
+    upd_btn = tk.Button(upd_box)
+    upd_btn.pack()
+    btn_fg = upd_btn.cget("fg")  # the theme's (dark mode on macOS), when there's no update
+    checking = threading.Event()
+
+    def check_now():
+        def run():
+            try:
+                update_check()
+            finally:
+                checking.clear()
+        checking.set()
+        upd_btn.config(text="Checking for updates…", state="disabled")
+        threading.Thread(target=run, daemon=True).start()
 
     def update_ask():
         u = update_view()
+        if not u["newer"]:
+            check_now()
+            return
         if not u["can_install"]:
             webbrowser.open(u["url"])
             return
@@ -3534,14 +3559,21 @@ def run_window(httpd):
                             (f"hunting · calling {t['call']}" if state["running"] and t else
                              "hunting" if state["running"] else "stopped (press Start in the page)")))
         u = update_view()
-        if u["newer"] and not u["skipped"]:
-            upd_btn.config(state="disabled" if u["busy"] else "normal",
-                           text=(f"Updating to {u['latest']}: {u['busy']} {u['pct']}%" if u["busy"] else
-                                 f"⬆ Update to {u['latest']}…" if u["can_install"] else f"⬆ {u['latest']} is out: get it…"))
-            upd_btn.pack(pady=(6, 0))
+        if u["busy"]:
+            text = f"Updating to {u['latest']}: {u['busy']} {u['pct']}%"
+        elif checking.is_set():
+            text = "Checking for updates…"
+        elif u["newer"]:  # offered even when skipped: here it's asked for
+            text = f"⬆ Update to {u['latest']}…" if u["can_install"] else f"⬆ {u['latest']} is out: get it…"
+        elif u["err"]:
+            text = "Couldn't check for updates: try again"
+        elif u["checked"]:
+            text = "✓ You're on the latest (check again)"
         else:
-            upd_btn.pack_forget()
-        root.after(2000, tick)
+            text = "Check for updates"
+        upd_btn.config(text=text, state="disabled" if u["busy"] or checking.is_set() else "normal",
+                       fg="#1f7a3d" if u["newer"] else btn_fg)
+        root.after(500 if checking.is_set() or u["busy"] else 2000, tick)
     tick()
     if FROZEN:
         root.after(800, lambda: webbrowser.open(local))  # a packaged app opens the page once at start

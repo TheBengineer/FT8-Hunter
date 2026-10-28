@@ -900,18 +900,21 @@ cv.addEventListener('dblclick',()=>{uz=1});
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
 <script>
 // QR code for this page's address on the local network (several networks:
-// tap an address to show its code). Without the internet (no QR library),
-// just the addresses.
+// tap an address to show its code). The hunter sends each code; a hunter run
+// from source without the qrcode package doesn't, and then the QR library
+// from the internet draws it (without either: just the addresses).
 (()=>{
-let urls=[],cur=0;
-function show(){const u=urls[cur],img=$('qrImg');
+let urls=[],qrs={},cur=0;
+function show(){const u=urls[cur],img=$('qrImg'),m=qrs[u];
  $('qrUrls').innerHTML=urls.length?urls.map((x,i)=>`<div><a href="${x}" data-i="${i}" style="${i===cur?'font-weight:bold':'opacity:.7'}">${x}</a></div>`).join(''):'No network address found: is this computer on Wi-Fi or Ethernet?';
  $('qrUrls').querySelectorAll('a').forEach(a=>a.onclick=e=>{if(urls.length>1){e.preventDefault();cur=+a.dataset.i;show()}});
- if(!u||typeof qrcode!=='function'){img.style.display='none';return}
- const q=qrcode(0,'M');q.addData(u);q.make();img.innerHTML=q.createSvgTag({cellSize:4,margin:0,scalable:true});
+ if(u&&m){let d='';m.forEach((row,y)=>{for(let x=0;x<row.length;x++)if(row[x]==='1')d+=`M${x} ${y}h1v1h-1z`});
+  img.innerHTML=`<svg viewBox="0 0 ${m.length} ${m.length}" shape-rendering="crispEdges"><path d="${d}" fill="#000"/></svg>`}
+ else if(u&&typeof qrcode==='function'){const q=qrcode(0,'M');q.addData(u);q.make();img.innerHTML=q.createSvgTag({cellSize:4,margin:0,scalable:true})}
+ else{img.style.display='none';return}
  const svg=img.querySelector('svg');svg.style.width=svg.style.height='160px';img.style.display='block'}
 async function load(){try{const r=await (await fetch('/api/lan')).json();
- if(JSON.stringify(r.urls)!==JSON.stringify(urls)){urls=r.urls;cur=0;show()}
+ if(JSON.stringify(r.urls)!==JSON.stringify(urls)||JSON.stringify(r.qr||{})!==JSON.stringify(qrs)){urls=r.urls;qrs=r.qr||{};cur=0;show()}
  $('qrsum').textContent=r.host?'· '+r.host:''}catch(e){}}
 load();setInterval(load,60000);
 })();

@@ -79,3 +79,15 @@ function IsUpdate: Boolean;
 begin
   Result := ExpandConstant('{param:UPDATE|0}') = '1';
 end;
+
+function SetEnvironmentVariable(Name: String; Value: String): BOOL;
+  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+
+function InitializeSetup: Boolean;
+begin
+  // A hunter that started this update passed on its PyInstaller variables (up
+  // to 1.1.3 it didn't clear them): the hunter started below would look for
+  // Python in the old one's unpacked folder ("Failed to load Python DLL").
+  SetEnvironmentVariable('PYINSTALLER_RESET_ENVIRONMENT', '1');
+  Result := True;
+end;

@@ -276,7 +276,9 @@ Advanced → **Check for updates**; **Check now** is there too). Nothing is
 installed until you say so. A new version shows in the status card with its
 notes and three choices: **Install and restart**, **Skip this version** (not
 offered again; the next one is) or **Later** (until you reload the page). The
-desktop window shows an **Update** button that asks the same.
+desktop window shows the hunter's version and one button: **Check for updates**,
+**✓ You're on the latest** (click to check again) or **⬆ Update to …**, which
+asks the same.
 
 Install works for a hunter installed with the Windows installer. It stops
 hunting, turns WS's TX off, downloads the new installer, checks its size and
