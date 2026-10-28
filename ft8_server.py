@@ -2965,13 +2965,12 @@ def lb_retry(svc):
         lb_save()
     LB["wake"].set()
 
-# Updates. This repo is private, so CI also publishes each release to a
-# public one, which the hunter asks twice a day (and on Check now). It only
-# tells the page and the window: nothing is installed until the operator
-# says so. Only an installed Windows hunter installs itself (the new
-# installer, its SHA-256 checked, run silently, the hunter restarted by it);
-# anywhere else the page links the release.
-UPDATE_REPO = "TheBengineer/FT8-Hunter-releases"
+# Updates. The hunter asks this repo's latest release twice a day (and on
+# Check now). It only tells the page and the window: nothing is installed
+# until the operator says so. Only an installed Windows hunter installs
+# itself (the new installer, its SHA-256 checked, run silently, the hunter
+# restarted by it); anywhere else the page links the release.
+UPDATE_REPO = "TheBengineer/FT8-Hunter"
 UPDATE_ASSET = "FT8-Hunter-windows-x64-setup.exe"
 UPDATE_EVERY = 12 * 3600
 UPD = {"latest": "", "notes": "", "url": "", "asset": None, "t": 0, "err": "", "busy": "", "pct": 0,

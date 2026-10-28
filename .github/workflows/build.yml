@@ -1,10 +1,8 @@
 # Packaged FT8 Hunter for Windows, macOS and Linux (PyInstaller): one file
 # that opens the hunter's window (link, QR code, Quit), and a Windows
 # installer (FT8-Hunter.iss). A tag v* (v + VERSION in ft8_server.py) also
-# makes a GitHub release with the downloads attached, here and in the public
-# FT8-Hunter-releases repo that installed hunters check for updates (this
-# one is private). That needs a RELEASES_TOKEN secret: a fine-grained token
-# with Contents read and write on FT8-Hunter-releases.
+# makes a GitHub release with the downloads attached, which is where
+# installed hunters look for updates.
 name: build
 
 on:
@@ -150,11 +148,3 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" assets/* -R "$GITHUB_REPOSITORY" \
             --title "FT8 Hunter $GITHUB_REF_NAME" --generate-notes
-          gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --json body -q .body > notes.md
-      - name: The same release in the public repo (where hunters look for updates)
-        env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
-        run: |
-          if [ -z "$GH_TOKEN" ]; then echo "::warning::no RELEASES_TOKEN secret: not published to FT8-Hunter-releases"; exit 0; fi
-          gh release create "$GITHUB_REF_NAME" assets/* -R "${{ github.repository_owner }}/FT8-Hunter-releases" \
-            --title "FT8 Hunter $GITHUB_REF_NAME" --notes-file notes.md

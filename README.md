@@ -284,10 +284,8 @@ SHA-256 against the release, runs it silently and starts the new hunter. It
 won't start in the middle of a QSO. Anywhere else (the zip, macOS, Linux,
 from source) **Get it** opens the release page.
 
-Releases are published to the public
-[FT8-Hunter-releases](https://github.com/TheBengineer/FT8-Hunter-releases)
-repo, which is where the hunter looks. The check sends GitHub nothing but the
-hunter's version in its User-Agent.
+The hunter looks at this repo's latest [release](../../releases). The check
+sends GitHub nothing but the hunter's version in its User-Agent.
 
 The ws-hunter build of WS for Windows is a separate download from the
 [ws-hunter releases](https://github.com/TheBengineer/ws-hunter/releases).
