@@ -3470,19 +3470,33 @@ def run_window(httpd):
     link.pack(**pad)
     link.bind("<Button-1>", lambda e: webbrowser.open(local))
     tk.Button(root, text="Open in browser", command=lambda: webbrowser.open(local)).pack(**pad)
-    lan = (lan_urls()["urls"] or [None])[0]
-    m = qr_matrix(lan) if lan else None
-    if m:
-        cell = max(3, 200 // len(m))
-        cv = tk.Canvas(root, width=len(m) * cell, height=len(m) * cell, bg="white", highlightthickness=0)
-        for y, row in enumerate(m):
-            for x, on in enumerate(row):
-                if on:
-                    cv.create_rectangle(x * cell, y * cell, (x + 1) * cell, (y + 1) * cell, fill="black", width=0)
-        cv.pack(pady=(10, 2))
-    tk.Label(root, text=(f"On your phone (same Wi-Fi): scan, or open\n{lan}" if m else
-                         f"On your phone (same Wi-Fi), open\n{lan}" if lan else "No network address found"),
-             justify="center", fg="#555").pack(**pad)
+    # the phone link and QR code, once the LAN address is known: looking it up
+    # can take a while (macOS resolves its .local name, and may first ask
+    # whether the app may use the local network), so the window doesn't wait
+    lan_box = tk.Frame(root)
+    lan_box.pack()
+    lan_msg = tk.Label(lan_box, text="Looking up this computer's network address…", justify="center", fg="#555")
+    lan_msg.pack(**pad)
+    found = {}
+    threading.Thread(target=lambda: found.update(urls=lan_urls()["urls"]), daemon=True).start()
+
+    def show_lan():
+        if "urls" not in found:
+            root.after(250, show_lan)
+            return
+        lan = (found["urls"] or [None])[0]
+        m = qr_matrix(lan) if lan else None
+        if m:
+            cell = max(3, 200 // len(m))
+            cv = tk.Canvas(lan_box, width=len(m) * cell, height=len(m) * cell, bg="white", highlightthickness=0)
+            for y, row in enumerate(m):
+                for x, on in enumerate(row):
+                    if on:
+                        cv.create_rectangle(x * cell, y * cell, (x + 1) * cell, (y + 1) * cell, fill="black", width=0)
+            cv.pack(pady=(10, 2), before=lan_msg)
+        lan_msg.config(text=(f"On your phone (same Wi-Fi): scan, or open\n{lan}" if m else
+                             f"On your phone (same Wi-Fi), open\n{lan}" if lan else "No network address found"))
+    show_lan()
 
     def quit_():
         root.destroy()
