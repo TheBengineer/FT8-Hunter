@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import deque
 from urllib.parse import urlparse
 
-VERSION = "1.1.7"  # a release's tag is v + this (the build refuses a tag that doesn't match)
+VERSION = "1.1.8"  # a release's tag is v + this (the build refuses a tag that doesn't match)
 
 # The page ships beside this script (or inside a packaged build); the hunter's
 # own files (settings, logs) live beside the script too, or for a packaged
@@ -2639,20 +2639,23 @@ def ws_set_dial(hz):
 # WS's emulated split ("Fake It") moves the rig up by the Tx offset's whole
 # 500s less 1500 Hz while transmitting; when the rig's next poll comes before
 # it is back, WS takes that for its dial and stays there. Put it back.
-SLIP_SECS = 10
+SLIP_SECS = 20  # after Tx ends: a slow FLRig can report the rig's frequency late
 def split_slip(prev, txing, now=None):
-    """Each Status, once it's read: did WS just take its Tx frequency for its dial?"""
+    """Each Status, once it's read: did WS just take its Tx frequency for its dial?
+    Also while transmitting: a Tx stopped and restarted (a new message) can bring it."""
     now, u = now or time.time(), state["udp"]
-    if txing:
-        u["tx_last"], u["tx_xit"] = now, (u.get("tx_df") or 0) // 500 * 500 - 1500
-        return
     d, xit = u.get("dial"), u.get("tx_xit")
-    if (prev and d and xit and d - prev == xit and now - u.get("tx_last", 0) < SLIP_SECS
+    if (prev and d and xit and d - prev == xit
+            and (txing or u.get("tx_on") or now - u.get("tx_end", 0) < SLIP_SECS)
             and not SCAN["on"] and not ENG.get("tuning") and CTX.get("tx") is not None):
-        u["tx_last"] = 0  # once
+        u["tx_end"] = 0  # once
         log(f"WS took its Tx frequency for the dial after transmitting ({d / 1e6:.4f} MHz,"
             f" emulated split): back to {prev / 1e6:.4f} MHz")
         ws_set_dial(prev)
+    if txing:
+        u["tx_on"], u["tx_xit"] = True, (u.get("tx_df") or 0) // 500 * 500 - 1500
+    elif u.pop("tx_on", False):
+        u["tx_end"] = now
 
 def mode_raw():
     return state["udp"].get("mode")
