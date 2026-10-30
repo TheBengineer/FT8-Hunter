@@ -1,10 +1,15 @@
 # FT8 Hunter
 
-Automated FT8 / FT4 / FT2 operating for WSJT-X / WS Digital Suite: **make as many
+Automated FT8 / FT4 / FT2 / Q65 operating for WSJT-X / WS Digital Suite: **make as many
 contacts as possible without being rude on the band.** It follows whatever mode WS
 is in; all timing rules scale with the mode's period.
 
-Each T/R period (15 s FT8, 7.5 s FT4, 3.75 s FT2) it does the first of these that applies:
+Q65 (handy on 160m and 80m) takes its period (15, 30, 60, 120 or 300 s) and
+sub-mode (A-E, for how wide a signal is) from WS's settings. A quiet Q65 band
+can go many minutes without a decode, so there it doesn't stop for silence. The
+band scan stays on FT8 / FT4 / FT2.
+
+Each T/R period (15 s FT8, 7.5 s FT4, 3.75 s FT2, Q65 as set) it does the first of these that applies:
 
 1. Answer stations calling you — when several answer your CQ it works them all,
    in the order they called, moving to the next as soon as you send RR73. A

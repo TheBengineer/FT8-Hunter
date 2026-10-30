@@ -781,6 +781,35 @@ check("FT2: a CQ 10 s old is still fresh", st["target"] and st["target"]["call"]
 status("FT8")
 check("back to FT8 releases the FT2 target", st["target"] is None and ns["period"]() == 15.0)
 
+# --- Q65: its period and sub-mode come from Status
+def status_q65(sub, tr):
+    body = struct.pack(">Q", 14074000) + ps("Q65") + ps("") + ps("-10") + ps("Q65")
+    body += bytes([0, 0, 0]) + struct.pack(">II", 1500, 1500) + ps("KR4MZM/AG") + ps("FM18") + ps("")
+    body += bytes([0]) + ps(sub) + bytes([0, 0]) + struct.pack(">II", 20, tr) + ps("Default") + ps("")
+    send(1, body)
+fresh(); status_q65("A", 30)
+check("Q65-30A: 30 s periods, 217 Hz wide", ns["period"]() == 30.0 and ns["bw"]() == 217
+      and ns["parity"](30000) == 1 and ns["parity"](60000) == 0)
+dec("CQ K9XYZ EN52", snr=-8); st["cq"]["K9XYZ"]["seen"] -= 50; ns["engine_tick"]()
+check("Q65-30: a CQ 50 s old is still fresh", st["target"] and st["target"]["call"] == "K9XYZ")
+status_q65("A", 60)
+check("Q65-60A: 60 s, 108 Hz; the new period drops the old one's target",
+      ns["period"]() == 60.0 and ns["bw"]() == 108 and st["target"] is None and not st["cq"])
+status_q65("B", 30)
+check("Q65-30B: twice as wide", ns["period"]() == 30.0 and ns["bw"]() == 433)
+check("decode markers (AP, Q65, low confidence) dropped from the words",
+      ns["addressing"]("KR4MZM K9XYZ RR73                    q3") == ("KR4MZM", "K9XYZ", ["RR73"])
+      and ns["addressing"]("K1ABC W9XYZ -15 ? a2") == ("K1ABC", "W9XYZ", ["-15"])
+      and ns["words"]("CQ K9XYZ EN52  q0") == ["CQ", "K9XYZ", "EN52"])
+now = time.time()
+st["running"] = True; st["config"]["silent_min"] = 5
+st["udp"].update(last_rx=now, last_decode=now - 600); ns["DESYNC"]["started"] = 0
+check("Q65: a quiet band isn't taken for missing audio", ns["desync_signs"](now) == "")
+status("FT8"); st["udp"].update(last_rx=now, last_decode=now - 600)
+check("...FT8 still is", "nothing decoded" in ns["desync_signs"](now))
+st["udp"]["last_decode"] = now
+check("back on FT8: 15 s, 50 Hz", ns["period"]() == 15.0 and ns["bw"]() == 50)
+
 # --- WRL Desktop bridge: WS packets forwarded to WRL, WRL's replies relayed to WS
 wrl = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); wrl.bind(("127.0.0.1", 22998)); wrl.settimeout(2)
 ws = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); ws.bind(("127.0.0.1", 0)); ws.settimeout(2)

@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import deque
 from urllib.parse import urlparse
 
-VERSION = "1.1.9"  # a release's tag is v + this (the build refuses a tag that doesn't match)
+VERSION = "1.1.10"  # a release's tag is v + this (the build refuses a tag that doesn't match)
 
 # The page ships beside this script (or inside a packaged build); the hunter's
 # own files (settings, logs) live beside the script too, or for a packaged
@@ -111,10 +111,19 @@ def same_call(a, b):
 def is_me(tok):
     return same_call(tok, state["mycall"])
 
+AP_RE = re.compile(r"^(?:\?|[AQ]\d\d?)$")
+def words(msg):
+    """A decode's words, without the markers WS puts after the message: an
+    AP decode's a1..a7, Q65's q0..q3, a low-confidence '?'."""
+    parts = msg.upper().split()
+    while len(parts) > 2 and AP_RE.match(parts[-1]):
+        parts.pop()
+    return parts
+
 def addressing(msg):
     """Standard FT8 message 'TO FROM ...' -> (to, from, rest); the station
     being called comes FIRST. Hash brackets are stripped."""
-    parts = msg.upper().split()
+    parts = words(msg)
     if len(parts) < 2 or parts[0] in ("CQ", "QRZ", "DE"):
         return "", "", parts
     return parts[0].strip("<>"), parts[1].strip("<>"), parts[2:]
@@ -250,7 +259,7 @@ def tx_light(now=None):
     can choose whom to call (Reply) and stop TX (Halt Tx) but not turn Enable
     Tx on. This light says what the operator should do in WSJT-X:
     'enable' (it wants to transmit and Enable Tx is off), 'reenable' (the TX
-    watchdog stopped it), 'mode' (not on FT8/FT4/FT2), 'ok' or 'idle'.
+    watchdog stopped it), 'mode' (not on FT8/FT4/FT2/Q65), 'ok' or 'idle'.
     With ws-hunter it is None: the hunter does it all itself."""
     if has_ws_hunter():
         return None
@@ -553,10 +562,13 @@ def watcher():
 
 def cycle_ticker():
     """Engine tick at each T/R period boundary of the current mode (drives
-    targeting even if ALL.TXT stalls)."""
+    targeting even if ALL.TXT stalls). On Q65 a second later: WS starts
+    decoding it only 2-4 s before the period ends, and a reply that starts
+    late still goes out in step (WS skips into the message)."""
     while True:
         per = period()
-        nxt = (time.time() // per + 1) * per
+        lag = 1.0 if mode() == "Q65" else 0.0
+        nxt = ((time.time() - lag) // per + 1) * per + lag
         time.sleep(max(0.2, nxt - time.time()))
         CTX["cycle"][0] += 1
         try:
@@ -654,7 +666,8 @@ def desync_signs(now):
     if dial and vfo and abs(vfo - dial) > 5000:
         return f"the radio is on {vfo / 1e6:.3f} MHz but WS's dial says {dial / 1e6:.3f}"
     last = max(u.get("last_decode", 0), max((m["seen"] for m in list(state["msgs"])[:1]), default=0))
-    if c.get("silent_min") and state["running"] and now - u.get("last_rx", 0) < 10 \
+    # (not on Q65: a quiet band there can go many minutes without a decode)
+    if c.get("silent_min") and state["running"] and mode() != "Q65" and now - u.get("last_rx", 0) < 10 \
             and now - max(last, DESYNC.get("started", 0)) > c["silent_min"] * 60:
         return f"nothing decoded for {c['silent_min']} min: no audio from the radio?"
     return ""
@@ -822,8 +835,15 @@ def udp_listener():
                                     state["udp"]["de_call"], state["udp"]["de_grid"] = de_call, de_grid
                                     set_identity()
                                 wd = bool(data[q]); q += 1
-                                _, q = read_qstr(data, q)
-                                q += 1 + 1 + 4 + 4
+                                sub, q = read_qstr(data, q)
+                                q += 1 + 1 + 4  # fast mode, special op, freq tolerance
+                                tr = struct.unpack(">I", data[q:q+4])[0]; q += 4
+                                if (sub, tr) != (state["udp"].get("submode"), state["udp"].get("tr_period")):
+                                    old = period()
+                                    state["udp"]["submode"], state["udp"]["tr_period"] = sub, tr
+                                    if period() != old:
+                                        new_slot()  # Q65's period changed: old timing no longer applies
+                                        log(f"{mode()}: {period():g} s periods, {bw()} Hz wide")
                                 _, q = read_qstr(data, q)
                                 state["udp"]["tx_msg"], _ = read_qstr(data, q)
                                 state["udp"]["watchdog"] = wd
@@ -918,7 +938,7 @@ def tail_alltxt():
                 continue
             # Decodes are a backup feed only: while UDP decodes flow, the same
             # decode would otherwise be handled twice.
-            if time.time() - state["udp"].get("last_decode", 0) < 30:
+            if time.time() - state["udp"].get("last_decode", 0) < max(30, cyc(2)):
                 continue
             tstr, snr, dt, audio, msg = m.group(1), int(m.group(2)), float(m.group(3)), int(m.group(4)), m.group(5).strip()
             set_decparams(msg, {"t_ms": alltxt_time_ms(tstr), "snr": snr, "dt": dt, "df": audio})
@@ -1030,22 +1050,34 @@ def prune(now):
     for c in [c for c, ts in list(ENG["active"].items()) if now - ts > 600]:
         ENG["active"].pop(c, None)
     for c, callers in list(ENG["calls_to"].items()):
-        if all(now - ts > 60 for ts in list(callers.values())):
+        if all(now - ts > max(60, cyc(4)) for ts in list(callers.values())):
             ENG["calls_to"].pop(c, None)
 
-# T/R period (s) and signal width above its DF (Hz) per mode
-MODES = {"FT8": (15.0, 50), "FT4": (7.5, 83), "FT2": (3.75, 167)}
+# T/R period (s) and signal width above its DF (Hz) per mode. Q65's period
+# and sub-mode are WS's settings (Status): these are Q65-30A's
+MODES = {"FT8": (15.0, 50), "FT4": (7.5, 83), "FT2": (3.75, 167), "Q65": (30.0, 217)}
+SCAN_MODES = ("FT8", "FT4", "FT2")  # the band scan's (it knows their dial frequencies)
 GUARD = 15  # clearance each side of a signal (Hz)
+# Q65: 65 tones, spaced its symbol rate (12000 Hz / samples per symbol) times
+# 1, 2, 4, 8 or 16 for sub-mode A..E
+Q65_NSPS = {15: 1800, 30: 3600, 60: 7200, 120: 16000, 300: 41472}
 
 def mode():
     m = state["udp"].get("mode", "FT8")
     return m if m in MODES else "FT8"
 
 def period():
-    """Current T/R period in seconds (15 FT8, 7.5 FT4, 3.75 FT2)."""
+    """Current T/R period in seconds (15 FT8, 7.5 FT4, 3.75 FT2, Q65 as set)."""
+    tr = state["udp"].get("tr_period")
+    if mode() == "Q65" and tr in Q65_NSPS:
+        return float(tr)
     return MODES[mode()][0]
 
 def bw():
+    if mode() == "Q65":
+        nsps = Q65_NSPS.get(int(period()), 3600)
+        sub = "ABCDE".find((state["udp"].get("submode") or "A")[:1].upper())
+        return round(65 * 12000 / nsps * 2 ** max(sub, 0))
     return MODES[mode()][1]
 
 def cyc(n):
@@ -1213,7 +1245,7 @@ def psk_parse(text, dial, md):
     time is its period's start or when it was decoded, at the end; the
     period is clear either way, and reports timed in between are dropped."""
     import xml.etree.ElementTree as ET
-    tr, out = MODES[md][0], []
+    tr, out = period() if md == mode() else MODES[md][0], []
     for e in ET.fromstring(text).iter("receptionReport"):
         a = e.attrib
         try:
@@ -1555,7 +1587,7 @@ def rr73_again(call, rest, now):
     here = (band(), mode())
     ts = max((t for (c, b, m), t in list(state["worked"].items()) if (b, m) == here and same_call(c, call)),
              default=0)
-    return now - (ts or 0) < 240 and ENG["rr73_again"].get(base_call(call), 0) < 3
+    return now - (ts or 0) < max(240, cyc(16)) and ENG["rr73_again"].get(base_call(call), 0) < 3
 
 def fresh_callers(now=None):
     """Queued callers still worth answering, oldest first. Drops anyone worked,
@@ -1617,7 +1649,7 @@ def note_origin(call, why):
     """At acquire: how this QSO is starting. 'cq' = they answered our CQ."""
     now = time.time()
     if why == "called us":
-        cq_on = now < ENG["cq_until"] or any(m["msg"].startswith("CQ ") and now - m["seen"] < 90
+        cq_on = now < ENG["cq_until"] or any(m["msg"].startswith("CQ ") and now - m["seen"] < max(90, cyc(6))
                                              for m in list(state["mytx"])[:4])
         how = "cq" if cq_on else "called us"
     else:
@@ -1632,7 +1664,7 @@ def record_origin(call, band_, mode_):
     r = ORIGIN["recent"].pop(base_call(call), None)
     if not r or now - r["t"] > 3600:
         r = {"how": "by hand", "why": "", "mode": hunt_mode() if state["running"] else "stopped"}
-    tx = any(now - m["seen"] < 120 for m in list(state["mytx"])[:2])
+    tx = any(now - m["seen"] < max(120, cyc(8)) for m in list(state["mytx"])[:2])
     ORIGIN["qsos"].append({"call": call, "t": round(now), "band": band_ or band(), "fmode": mode_ or mode(),
                            "how": r["how"], "why": r["why"], "mode": r["mode"],
                            "on": bool(state["running"]), "tx": tx})  # hunter on / we transmitted in the last 2 min
@@ -1823,7 +1855,7 @@ def engine_tick():
         c = waiting.pop(0)
         ENG["callers"].remove(c)
         if c.get("again"):
-            what = "73" if c["msg"].split()[-1] == "RRR" else "RR73"
+            what = "73" if words(c["msg"])[-1] == "RRR" else "RR73"
             if acquire(c["call"], "", c["msg"], tries=1, why=f"{what} again"):
                 state["target"]["again"] = True
                 k = base_call(c["call"])
@@ -1929,7 +1961,7 @@ def suggestions(now=None):
             out.append({"call": call, "msg": msg, "why": why, "snr": p["snr"], "tries": tries})
     for c in fresh_callers(now):
         if c.get("again"):
-            add(c["call"], c["msg"], ("73" if c["msg"].split()[-1] == "RRR" else "RR73") + " again", 1)
+            add(c["call"], c["msg"], ("73" if words(c["msg"])[-1] == "RRR" else "RR73") + " again", 1)
         else:
             add(c["call"], c["msg"], "called us", cfg.get("cq_tries", 3))
     for e in sorted([e for e in list(state["cq"].values()) if not cq_skip(e, now)], key=cq_rank):
@@ -1976,7 +2008,7 @@ def start_cq(secs):
     try:
         # CQ on whichever period has fewer stations heard recently
         now = time.time()
-        busy = [sum(1 for o in list(ENG["occ"]) if o["par"] == p and now - o["t"] < 120) for p in (0, 1)]
+        busy = [sum(1 for o in list(ENG["occ"]) if o["par"] == p and now - o["t"] < max(120, cyc(8))) for p in (0, 1)]
         par = 0 if busy[0] <= busy[1] else 1
         if has_ws_hunter():
             CTX["tx"].sendto(pack_set_bool(SET_TX_PERIOD, state["ws_id"], par == 0), ws_dest())
@@ -2361,10 +2393,10 @@ def manual_target(now):
     dx = (u.get("dxcall") or "").strip()
     iv = ENG["tx_iv"]
     last_tx = (iv[-1][1] or now) if iv else 0
-    if not dx or not (u.get("tx_enabled") or now - last_tx < 60):
+    if not dx or not (u.get("tx_enabled") or now - last_tx < max(60, cyc(4))):
         return None
     p = PAIRS.get(frozenset((base_call(dx), base_call(state["mycall"]))))
-    resp = bool(p) and same_call(p["a"], dx) and now - p["t"] < 120
+    resp = bool(p) and same_call(p["a"], dx) and now - p["t"] < max(120, cyc(8))
     return {"call": dx, "ll": locate(dx), "resp": resp}
 
 def lan_urls():
@@ -3453,7 +3485,7 @@ class H(BaseHTTPRequestHandler):
                 return self._json({"error": f"in a QSO with {state['target']['call']}: scan when it is done"}, 409)
             c = state["config"]
             c["scan_bands"] = [b for b in body.get("bands", c["scan_bands"]) if band_of_name(b)]
-            c["scan_modes"] = [m for m in body.get("modes", c["scan_modes"]) if m in MODES]
+            c["scan_modes"] = [m for m in body.get("modes", c["scan_modes"]) if m in SCAN_MODES]
             save_config()
             pts = scan_points(set(c["scan_bands"]), set(c["scan_modes"]))
             if not pts:
