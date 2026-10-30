@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import deque
 from urllib.parse import urlparse
 
-VERSION = "1.1.10"  # a release's tag is v + this (the build refuses a tag that doesn't match)
+VERSION = "1.1.11"  # a release's tag is v + this (the build refuses a tag that doesn't match)
 
 # The page ships beside this script (or inside a packaged build); the hunter's
 # own files (settings, logs) live beside the script too, or for a packaged
@@ -65,6 +65,7 @@ state = {
                "compat": False,  # plain WSJT-X/WS UDP only (no ws-hunter commands): a light asks you to Enable Tx  # contest mode: the hunter ranks, the operator taps to start each QSO
                "auto_df": True, "df_lock": False, "df_lo": 1300, "df_hi": 2700,  # df_lo: rig feeds back below 1300 Hz
                "qrm_detect": True, "qrm_backoff_min": 5, "min_snr": -20,
+               "wav_cleanup": True,  # delete the .wav files WS saves (Save all / decoded) once an hour old
                "check_every": 10,  # transmissions between one-cycle listens for interference (0 = never)
                "watts_call": 10, "watts_qso": 20,
                # our final 73, one per QSO at random ("73" = standard). FT8 free text
@@ -377,6 +378,41 @@ def ws_ini(wid=None):
         except OSError:
             pass
     return ""
+
+# WS's File > Save all / Save decoded keeps a .wav of each period (~1.4 MB for
+# FT8): delete them once an hour old. Only its own (yymmdd_hhmm[ss].wav), and
+# not in subfolders (the samples).
+WAV_RE = re.compile(r"^\d{6}_\d{4,6}\.wav$", re.I)
+WAV_KEEP, WAV_EVERY = 3600, 300
+WAV = {"t": 0}
+def wav_dirs():
+    """WS's save folders: its setting (one per configuration) and the default."""
+    found = [m.strip().strip('"') for m in re.findall(r"^(?:[^=\n]*\\)?SaveDir=(.+)$", ws_ini(), re.M)]
+    return list(dict.fromkeys(os.path.normpath(os.path.expanduser(d)) for d in found + ws_files("save") if d))
+
+def clean_wavs(now=None):
+    """Every WAV_EVERY s: delete WS's saved .wav files over WAV_KEEP s old."""
+    now = now or time.time()
+    if not state["config"].get("wav_cleanup", True) or now - WAV["t"] < WAV_EVERY:
+        return
+    WAV["t"] = now
+    n = size = 0
+    for d in wav_dirs():
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for f in names:
+            fp = os.path.join(d, f)
+            try:
+                if WAV_RE.match(f) and os.path.isfile(fp) and now - os.path.getmtime(fp) > WAV_KEEP:
+                    sz = os.path.getsize(fp)
+                    os.remove(fp)
+                    n, size = n + 1, size + sz
+            except OSError:
+                pass  # WS still writing it, or gone already
+    if n:
+        log(f"deleted {n} saved .wav file{'s' if n > 1 else ''} over an hour old ({size / 1e6:.0f} MB)")
 
 # WS ignores every command (Halt, Reply, Configure, the dial...) unless asked to accept them
 UDP_OFF = "WS ignores the hunter: in WS, open File > Settings > Reporting and tick Accept UDP requests"
@@ -1782,6 +1818,7 @@ def engine_tick():
     wrl_check(now)
     desync_check(now)
     psk_tick(now)
+    clean_wavs(now)
     # refresh today's worked if a log file changed
     try:
         for p, mt in list(state.get("adi_mtime", {}).items()):

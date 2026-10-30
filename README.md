@@ -302,6 +302,11 @@ build: an update of the hunter leaves an installed WS alone unless the WS build
 changes. It shares settings, logs and ALL.TXT with any other WS, so run only one
 at a time.
 
+With WS's **File → Save all** (or Save decoded) on, WS keeps a .wav of every
+period. The hunter deletes those from WS's save folder once they are an hour
+old: only WS's own, named by date and time, and not the samples folder. Turn it
+off in Settings (**Delete WS's saved .wav files after an hour**).
+
 On macOS (Apple silicon), unzip the download and double-click **Install FT8
 Hunter.command** (the first time: right-click → **Open**). It puts FT8 Hunter
 and WS (as `ws-hunter.app`, beside any stock WS) in Applications, so macOS

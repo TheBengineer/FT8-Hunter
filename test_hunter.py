@@ -810,6 +810,30 @@ check("...FT8 still is", "nothing decoded" in ns["desync_signs"](now))
 st["udp"]["last_decode"] = now
 check("back on FT8: 15 s, 50 Hz", ns["period"]() == 15.0 and ns["bw"]() == 50)
 
+# --- WS's saved .wav files: deleted once an hour old
+import tempfile
+wd = tempfile.mkdtemp(); own = os.path.join(wd, "save"); other = os.path.join(wd, "elsewhere")
+for d in (own, os.path.join(own, "samples"), other): os.makedirs(d)
+def wav(d, name, age):
+    fp = os.path.join(d, name); open(fp, "wb").write(b"RIFF" + bytes(100)); t = time.time() - age
+    os.utime(fp, (t, t)); return fp
+old, new_, mine, sample = (wav(own, "261030_140000.wav", 4000), wav(own, "261030_150000.wav", 600),
+                           wav(own, "mine.wav", 9000), wav(os.path.join(own, "samples"), "181201_180245.wav", 9000))
+moved = wav(other, "261030_1400.wav", 4000)
+saved_dir, saved_ini = st["config"]["ws_dir"], ns["ws_ini"]
+st["config"]["ws_dir"] = wd
+ns["ws_ini"] = lambda wid=None: "[Configuration]\nSaveDir=" + other.replace("\\", "/") + "\n"
+st["config"]["wav_cleanup"] = False; ns["WAV"]["t"] = 0; ns["clean_wavs"]()
+check("wav cleanup off: nothing deleted", os.path.exists(old))
+st["config"]["wav_cleanup"] = True; ns["WAV"]["t"] = 0; ns["clean_wavs"]()
+check("WS's .wav files over an hour old deleted, in its save folder and the one its settings name",
+      not os.path.exists(old) and not os.path.exists(moved))
+check("...newer ones, other names and the samples folder kept",
+      os.path.exists(new_) and os.path.exists(mine) and os.path.exists(sample))
+os.utime(new_, (time.time() - 4000,) * 2); ns["clean_wavs"]()
+check("...and it looks again only every 5 minutes", os.path.exists(new_))
+st["config"]["ws_dir"], ns["ws_ini"] = saved_dir, saved_ini
+
 # --- WRL Desktop bridge: WS packets forwarded to WRL, WRL's replies relayed to WS
 wrl = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); wrl.bind(("127.0.0.1", 22998)); wrl.settimeout(2)
 ws = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); ws.bind(("127.0.0.1", 0)); ws.settimeout(2)
