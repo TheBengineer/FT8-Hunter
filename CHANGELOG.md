@@ -29,7 +29,7 @@ What changed in each release of FT8 Hunter, newest first.
 - Bundles WS build v3.2.0-hunter.2. A rig control error now makes WS retry
   quietly, up to three times over 7 s. The **Rig Control Error** box only
   appears if the radio doesn't answer at all. Before, every second error asked
-  you to click Retry, which helps when RF in the shack garbles the CAT link now
+  you to click Retry. This helps when RF in the shack garbles the CAT link now
   and then.
 
 ## 1.1.8 (2026-10-29)
