@@ -18,7 +18,7 @@ permissions:
   contents: write
 
 env:
-  WS_TAG: v3.2.0-hunter.1
+  WS_TAG: v3.2.0-hunter.2
 
 jobs:
   build:
@@ -29,15 +29,15 @@ jobs:
           - os: windows-latest
             asset: FT8-Hunter-windows-x64.zip
             ws: ws-hunter-windows-x64.zip
-            ws_sha256: 80ba7412d4821bd55dac86a9b4bb7c93744e387765dd4006fe73ddd6f6b1b213
+            ws_sha256: 8b0653b85e5f2faa38dedef85129c40cab84f7c013fd4439a107aa5dc48ac5b3
           - os: macos-latest
             asset: FT8-Hunter-macos-arm64.zip
             ws: ws-hunter-macos-arm64.zip
-            ws_sha256: f34127eb6e9ac3b568802235eafc9034a66216a8d1415e4d4fc185cd2afb09e2
+            ws_sha256: 3d76e8927cb5cec91b9a19d6b1cfe5271a8a028985ba6d547150cea2029ae0e5
           - os: ubuntu-22.04
             asset: FT8-Hunter-linux-x64.tar.gz
             ws: ws-hunter-linux-x64.AppImage
-            ws_sha256: 8a7820ffa4aa14995316b097221b1155e789f434bfc310135247085bd876693e
+            ws_sha256: c94d535d1925a52b739289d66a6d5c935562ba6da56ed37321a4da93df645cf5
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
