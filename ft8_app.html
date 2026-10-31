@@ -116,7 +116,7 @@ details summary{font-weight:700;padding:4px}
 <span class="small" id="dx"></span><span class="small" id="txdf" style="margin-left:auto"></span></div>
 <div id="desyncW" class="small" style="display:none;margin-top:6px;padding:6px;border-radius:8px;background:var(--warn);color:#fff;font-weight:600"></div>
 <div id="wrlW" class="small" style="display:none;margin-top:6px;padding:6px;border-radius:8px;background:var(--warn);color:#fff"></div>
-<div id="qrm" class="small" style="display:none;margin-top:6px;padding:6px;border-radius:8px;background:var(--warn);color:#fff"></div>
+<div id="qrm" class="small" style="display:none;margin-top:6px;padding:6px;border-radius:8px;background:var(--warn);color:#fff"><div class="row" style="flex-wrap:wrap"><span id="qrmT" style="flex:1 1 12em"></span><button id="qrmIgn" class="mini quiet" style="flex:0 0 auto;white-space:nowrap" title="Calls again now, and doesn't check the frequency for anyone else for 30 minutes">It's just interference</button></div></div>
 <div style="background:var(--bg);border-radius:8px;height:14px;margin-top:8px;overflow:hidden">
 <div id="cbar" style="height:100%;width:0%;background:var(--accent)"></div></div>
 <div class="small" id="ctxt" style="text-align:center;margin-top:2px">cycle</div>
@@ -370,7 +370,7 @@ if(s.udp_off&&!d.why)$('desyncW').textContent=`⚠️ ${s.udp_off}. Until then t
 if(d.why)$('desyncW').textContent=`⚠️ Radio out of sync with WS: ${d.why}.`+(d.stopped?' The hunter stopped and WS’s TX is off.':' WS’s TX is off.')+' Check FLRig and the radio (and WS’s dial), then Start again.'}
 {const w=s.wrl||{},off=w.warn&&w.on===false;$('wrlW').style.display=off?'block':'none';
 if(off)$('wrlW').textContent=`⚠️ WRL Desktop isn't running: QSOs logged now won't reach it (nothing listening on port ${w.port}). Open WRL Desktop, or turn this warning off in Settings → Connections.`}
-const q=s.qrm||{};$('qrm').style.display=q.secs?'block':'none';if(q.secs)$('qrm').textContent='⚠️ Someone else is on frequency ('+q.why+') — no new calls for '+Math.ceil(q.secs/60)+'m';
+const q=s.qrm||{};$('qrm').style.display=q.secs?'block':'none';if(q.secs)$('qrmT').textContent='⚠️ Someone else is on frequency ('+q.why+') — no new calls for '+Math.ceil(q.secs/60)+'m';
 const ago=s.udp.heard_ago;
 if(ago!=null&&ago<45){$('udpdot').className='dot run';$('udp').textContent=`🔗 WS linked (${ago}s ago, id=${s.udp.ws_id}${s.udp.ws_hunter?' · ws-hunter':''})${s.udp.dxcall?' · DX='+s.udp.dxcall:''}`}
 else{$('udpdot').className='dot';$('udp').textContent=`⚪ no WS UDP yet · port: ${s.udp.holder}`}
@@ -458,6 +458,7 @@ $('updGo').onclick=async()=>{if(!U||!confirm(`Install FT8 Hunter ${U.latest} now
  const r=await api('/api/update/install',{});if(r.error)alert('Not now: '+r.error);tick()};
 $('updGet').onclick=()=>U&&U.url&&window.open(U.url,'_blank','noopener');
 $('updSkip').onclick=async()=>{await api('/api/update/skip',{});tick()};
+$('qrmIgn').onclick=async()=>{await api('/api/qrm/ignore',{});tick()};
 $('updLater').onclick=()=>{updLater=U?U.latest:'';$('updB').style.display='none'};
 $('bUpdCheck').onclick=async()=>{$('sVer').textContent='Checking…';updView(await api('/api/update/check',{}))};
 function signoffNote(){const me=(window._me||'').split('/').sort((a,b)=>(/\d/.test(b)-/\d/.test(a))||b.length-a.length)[0]||'',

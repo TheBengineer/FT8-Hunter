@@ -2,6 +2,18 @@
 
 What changed in each release of FT8 Hunter, newest first.
 
+## 1.1.13 (2026-10-31)
+
+- The "Someone else is on frequency — no new calls for 5m" warning has an
+  **It's just interference** button. It ends the pause so the hunter calls
+  again straight away, and turns the busy-frequency check off for 30 minutes,
+  so the same interference doesn't start another pause. After that the check
+  is back on its own.
+- The hunter's window now looks up the computer's network address every
+  minute, as the page does. Before, it kept the address it had at startup, so
+  after the network handed out a new one the window's link and QR code pointed
+  phones at the old address, and differed from the page's.
+
 ## 1.1.12 (2026-10-31)
 
 - The Linux download now updates itself, as the Windows installer already

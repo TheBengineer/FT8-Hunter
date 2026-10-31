@@ -41,7 +41,7 @@ def dec(msg, snr=-5, df=1500, t_ms=0):
 def fresh():
     st["target"] = None; st["cq"].clear(); st["msgs"].clear(); st["worked"] = {}; ENG["held"].clear()
     ENG["callers"].clear(); ENG["holds"].clear()
-    ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0, arrived=None, tx_n=0, check_until=0, fresh_check=0)
+    ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0, qrm_ignore_until=0, arrived=None, tx_n=0, check_until=0, fresh_check=0)
     ENG["occ"].clear(); ENG["spec"].clear(); ENG["noise_hist"].clear(); st["udp"].pop("tx_df", None)
     ENG["spec_pending"].clear(); ENG["qrm_first"] = None; ENG["tx_iv"].clear(); ENG["tune_iv"].clear()
     ENG["active"].clear(); ENG["calls_to"].clear(); ENG["spec_hist"].clear(); ENG["rr73_again"].clear()
@@ -926,6 +926,21 @@ def mpost(path, body):
     except urllib.error.HTTPError as e:
         return json.load(e)
 import urllib.error
+# --- "It's just interference" on the busy-frequency warning
+fresh()
+for i in range(8): handle(spectrum(quiet, t_ms=i * 15000))
+for i in range(8, 11): handle(spectrum(ssb, t_ms=i * 15000))
+settle(); check("wide signal: backing off before the button", ENG["qrm_until"] > time.time())
+r = mpost("/api/qrm/ignore", {})
+q = json.load(urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}/api/state"))["qrm"]
+check("'just interference' ends the backoff and says for how long", "error" not in r and q["secs"] == 0
+      and 1790 <= q["ignored"] <= 1800)
+for i in range(11, 15): handle(spectrum(ssb, t_ms=i * 15000))
+settle(); check("...and the same signal doesn't start another one meanwhile", ENG["qrm_until"] == 0)
+ENG["qrm_ignore_until"] = 0
+for i in range(15, 18): handle(spectrum(ssb, t_ms=i * 15000))
+settle(); check("...until the 30 minutes are up", ENG["qrm_until"] > time.time())
+fresh()
 fresh(); st["running"] = True; mpost("/api/config", {"manual": True})
 dec("CQ K9XYZ EN52", snr=5); dec("CQ POTA K4PRK EM85", snr=-8); dec("JA1AAA VK2BBB RR73", snr=0)
 dec(f"{st['mycall']} N5CAL EM15", snr=-12); ns["engine_tick"]()

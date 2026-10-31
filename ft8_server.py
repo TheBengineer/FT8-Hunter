@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import deque
 from urllib.parse import urlparse
 
-VERSION = "1.1.12"  # a release's tag is v + this (the build refuses a tag that doesn't match)
+VERSION = "1.1.13"  # a release's tag is v + this (the build refuses a tag that doesn't match)
 
 # The page ships beside this script (or inside a packaged build); the hunter's
 # own files (settings, logs) live beside the script too, or for a packaged
@@ -629,6 +629,7 @@ ENG = {"holds": {}, "held": {}, "callers": deque(maxlen=20), "parity": {0: 0, 1:
        "tx_iv": deque(maxlen=50),          # our transmissions [on, off] (epoch s)
        "tune_iv": deque(maxlen=5),         # antenna tunes [on, off]: off the dial, nothing heard
        "qrm_until": 0, "qrm_n": 0, "qrm_why": "",
+       "qrm_ignore_until": 0,  # the operator said it's just interference: no backoff until then
        "active": {},    # base call -> last time heard sending to someone (0 = signed off)
        "rr73_again": {},  # base call -> RR73s re-sent after the QSO was logged
        "calls_to": {}}  # base call -> {caller base call: last time}: their pileup
@@ -1575,6 +1576,8 @@ def waterfall(rows=40):
             "learned": len(by_t) >= 8, "ws_hunter": has_ws_hunter(),
             "df_lock": bool(state["config"].get("df_lock")), "remote": remote_view(now)}
 
+QRM_IGNORE_S = 30 * 60  # "It's just interference": how long the busy-frequency check stays off
+
 def check_qrm(now=None):
     """Busy-frequency check for spectra whose decodes are in by now (decoding
     finishes after the period ends): strong bins that no decode from that
@@ -1598,7 +1601,7 @@ def check_qrm(now=None):
                                 "db": [round(d, 1) for d in sp["db"]]})
         if not (state["config"].get("qrm_detect", True) and sp["warm"]):
             continue
-        if best < 400:
+        if best < 400 or now < ENG["qrm_ignore_until"]:
             ENG["qrm_n"], ENG["qrm_first"] = 0, None
             continue
         ENG["qrm_n"] += 1
@@ -3445,7 +3448,8 @@ class H(BaseHTTPRequestHandler):
                 "swr": swr_state(),
                 "light": tx_light(now), "caps": ws_caps(),
                 "step": ENG.get("step") or {"step": "stopped" if not state["running"] else "idle"},
-                "qrm": {"secs": max(0, round(ENG["qrm_until"] - time.time())), "why": ENG["qrm_why"]},
+                "qrm": {"secs": max(0, round(ENG["qrm_until"] - time.time())), "why": ENG["qrm_why"],
+                        "ignored": max(0, round(ENG["qrm_ignore_until"] - time.time()))},
                 "desync": {"why": DESYNC["why"], "t": DESYNC["t"], "stopped": DESYNC["stopped"]},
                 "udp_off": ws_link_problem(),
                 "wrl": {"on": WRL["on"], "port": state["config"]["wrl_port"], "warn": state["config"].get("wrl_warn", True)},
@@ -3478,6 +3482,9 @@ class H(BaseHTTPRequestHandler):
         elif p == "/api/update/check":
             update_check()
             return self._json(update_view())
+        elif p == "/api/qrm/ignore":
+            ENG.update(qrm_until=0, qrm_n=0, qrm_first=None, qrm_ignore_until=time.time() + QRM_IGNORE_S)
+            log(f"busy frequency: just interference, says the operator; calling again, not checking for {QRM_IGNORE_S // 60}m")
         elif p == "/api/update/skip":
             state["config"]["update_skip"] = UPD["latest"]; save_config()
             log(f"FT8 Hunter {UPD['latest']}: skipped, not offered again")
@@ -3759,19 +3766,31 @@ def run_window(httpd):
     tk.Button(root, text="Open in browser", command=lambda: webbrowser.open(local)).pack(**pad)
     # the phone link and QR code, once the LAN address is known: looking it up
     # can take a while (macOS resolves its .local name, and may first ask
-    # whether the app may use the local network), so the window doesn't wait
+    # whether the app may use the local network), so the window doesn't wait.
+    # Looked up again every minute, as the page does: the address can change
+    # (a new DHCP lease, another Wi-Fi) while the hunter runs
     lan_box = tk.Frame(root)
     lan_box.pack()
     lan_msg = tk.Label(lan_box, text="Looking up this computer's network address…", justify="center", fg="#555")
     lan_msg.pack(**pad)
-    found = {}
-    threading.Thread(target=lambda: found.update(urls=lan_urls()["urls"]), daemon=True).start()
+    found, shown = {}, {"lan": False, "qr": None}
+
+    def look_up():
+        threading.Thread(target=lambda: found.update(urls=lan_urls()["urls"]), daemon=True).start()
+        root.after(60000, look_up)
+    look_up()
 
     def show_lan():
+        root.after(1000, show_lan)
         if "urls" not in found:
-            root.after(250, show_lan)
             return
         lan = (found["urls"] or [None])[0]
+        if lan == shown["lan"]:
+            return
+        shown["lan"] = lan
+        if shown["qr"]:
+            shown["qr"].destroy()
+            shown["qr"] = None
         m = qr_matrix(lan) if lan else None
         if m:
             cell = max(3, 200 // len(m))
@@ -3781,6 +3800,7 @@ def run_window(httpd):
                     if on:
                         cv.create_rectangle(x * cell, y * cell, (x + 1) * cell, (y + 1) * cell, fill="black", width=0)
             cv.pack(pady=(10, 2), before=lan_msg)
+            shown["qr"] = cv
         lan_msg.config(text=(f"On your phone (same Wi-Fi): scan, or open\n{lan}" if m else
                              f"On your phone (same Wi-Fi), open\n{lan}" if lan else "No network address found"))
     show_lan()
