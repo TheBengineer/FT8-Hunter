@@ -285,11 +285,17 @@ desktop window shows the hunter's version and one button: **Check for updates**,
 **✓ You're on the latest** (click to check again) or **⬆ Update to …**, which
 asks the same.
 
-Install works for a hunter installed with the Windows installer. It stops
-hunting, turns WS's TX off, downloads the new installer, checks its size and
-SHA-256 against the release, runs it silently and starts the new hunter. It
-won't start in the middle of a QSO. Anywhere else (the zip, macOS, Linux,
-from source) **Get it** opens the release page.
+Install works for a hunter installed with the Windows installer, and for the
+Linux download. It stops hunting, turns WS's TX off, downloads the new release,
+and checks its size and SHA-256 against the release. On Windows it then runs
+the new installer silently, which starts the new hunter. On Linux it puts the
+new `FT8-Hunter` in place of the old one, and the new `ws-hunter.AppImage` in
+place of the one beside it (only when you keep one there and the WS build
+changed), then starts the new hunter with the same options. The hunter's
+folder must be one you can write to. Run as a systemd service, the hunter
+exits with code 75 instead and leaves the restart to systemd, so give the unit
+`Restart=on-failure`. Install won't start in the middle of a QSO. Anywhere else
+(the Windows zip, macOS, from source) **Get it** opens the release page.
 
 The hunter looks at this repo's latest [release](../../releases). The check
 sends GitHub nothing but the hunter's version in its User-Agent.

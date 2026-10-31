@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import deque
 from urllib.parse import urlparse
 
-VERSION = "1.1.11"  # a release's tag is v + this (the build refuses a tag that doesn't match)
+VERSION = "1.1.12"  # a release's tag is v + this (the build refuses a tag that doesn't match)
 
 # The page ships beside this script (or inside a packaged build); the hunter's
 # own files (settings, logs) live beside the script too, or for a packaged
@@ -3157,11 +3157,14 @@ def lb_retry(svc):
 
 # Updates. The hunter asks this repo's latest release twice a day (and on
 # Check now). It only tells the page and the window: nothing is installed
-# until the operator says so. Only an installed Windows hunter installs
-# itself (the new installer, its SHA-256 checked, run silently, the hunter
-# restarted by it); anywhere else the page links the release.
+# until the operator says so. An installed Windows hunter runs the new
+# installer (its SHA-256 checked, run silently, the hunter restarted by it);
+# the Linux download swaps its files for the new release's and starts again.
+# Anywhere else (the Windows zip, macOS, from source) the page links the release.
 UPDATE_REPO = "TheBengineer/FT8-Hunter"
-UPDATE_ASSET = "FT8-Hunter-windows-x64-setup.exe"
+UPDATE_ASSETS = {"win32": "FT8-Hunter-windows-x64-setup.exe", "linux": "FT8-Hunter-linux-x64.tar.gz"}
+UPDATE_OS = "linux" if sys.platform.startswith("linux") else sys.platform
+UPDATE_ASSET = UPDATE_ASSETS.get(UPDATE_OS, UPDATE_ASSETS["win32"])
 UPDATE_EVERY = 12 * 3600
 UPD = {"latest": "", "notes": "", "url": "", "asset": None, "t": 0, "err": "", "busy": "", "pct": 0,
        "told": "", "wake": threading.Event()}
@@ -3202,10 +3205,15 @@ def update_newer():
     return ver_key(UPD["latest"]) > ver_key(VERSION)
 
 def update_installable():
-    """Installed by our installer on Windows, and the release has one with its SHA-256."""
+    """Installed by our installer on Windows, or the Linux download in a folder
+    we may write to; and the release has its download with a SHA-256."""
     a = UPD["asset"]
-    return bool(FROZEN and sys.platform == "win32" and a and len(a["sha256"]) == 64
-                and os.path.exists(os.path.join(os.path.dirname(sys.executable), "unins000.exe")))
+    if not (FROZEN and a and len(a["sha256"]) == 64):
+        return False
+    here = os.path.dirname(sys.executable)
+    if UPDATE_OS == "win32":
+        return os.path.exists(os.path.join(here, "unins000.exe"))
+    return UPDATE_OS == "linux" and os.access(here, os.W_OK) and os.access(sys.executable, os.W_OK)
 
 def update_view():
     c = state["config"]
@@ -3237,11 +3245,70 @@ def update_launch(path):
     time.sleep(1)
     shutdown(None, None)
 
+def file_sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def update_apply_tar(path, exe):
+    """Linux: put the release's FT8-Hunter in place of `exe`, and its
+    ws-hunter.AppImage in place of the one beside it (when there is one and
+    it differs). Each goes in by a rename, which Linux allows while the old
+    file runs. Only those two names are read from the tarball. Returns what
+    it replaced."""
+    import tarfile, hashlib
+    ws = os.path.join(os.path.dirname(exe), "ws-hunter.AppImage")
+    done = []
+    with tarfile.open(path, "r:gz") as tf:
+        members = {m.name[2:] if m.name.startswith("./") else m.name: m for m in tf.getmembers()}
+        for name, dest in (("FT8-Hunter", exe), ("ws-hunter.AppImage", ws)):
+            m = members.get(name)
+            if not (m and m.isfile()):
+                if dest == exe:
+                    raise ValueError("the download has no FT8-Hunter in it")
+                continue
+            if dest != exe and not os.path.exists(dest):
+                continue  # no WS kept beside us: don't add one
+            new, h = dest + ".new", hashlib.sha256()
+            with tf.extractfile(m) as src, open(new, "wb") as f:
+                for chunk in iter(lambda: src.read(1 << 16), b""):
+                    f.write(chunk); h.update(chunk)
+            if dest != exe and file_sha256(dest) == h.hexdigest():
+                os.remove(new)  # the same WS build: leave it be
+                continue
+            os.chmod(new, 0o755)
+            os.replace(new, dest)
+            done.append(name)
+    return done
+
+def update_relaunch():
+    """Linux: start the new FT8-Hunter and quit; it waits for us to let go of
+    the ports (FT8_HUNTER_AFTER). Run by systemd, quit with EX_TEMPFAIL (75)
+    instead and let the unit start it again (Restart=on-failure), so two
+    never run at once."""
+    import subprocess
+    if os.environ.get("INVOCATION_ID"):
+        log("restarting: systemd starts the new version")
+        shutdown(None, None, 75)
+    out = open(os.path.join(DATA_DIR, "hunter.log"), "a")
+    # PYINSTALLER_RESET_ENVIRONMENT: the new one-file exe unpacks itself afresh
+    # rather than looking for Python in our folder, gone once we quit
+    env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1", FT8_HUNTER_AFTER=str(os.getpid()))
+    subprocess.Popen([sys.executable] + sys.argv[1:], env=env, close_fds=True, start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=out, stderr=out)
+    time.sleep(1)
+    shutdown(None, None)
+
 def update_install():
-    """Download the new installer, check it against the release, run it."""
+    """Download the new release, check it against the release, install it:
+    run the Windows installer, or on Linux swap the files and restart."""
     import hashlib
     a, ver = UPD["asset"], UPD["latest"]
-    path = os.path.join(DATA_DIR, "updates", f"FT8-Hunter-{ver}-setup.exe")
+    path = os.path.join(DATA_DIR, "updates", f"FT8-Hunter-{ver}-setup.exe" if UPDATE_OS == "win32"
+                        else f"FT8-Hunter-{ver}-linux-x64.tar.gz")
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         h, n = hashlib.sha256(), 0
@@ -3258,7 +3325,13 @@ def update_install():
         os.replace(path + ".part", path)
         UPD["busy"] = "installing"
         log(f"installing FT8 Hunter {ver}: the hunter closes and starts again when it's done")
-        update_launch(path)
+        if UPDATE_OS == "win32":
+            update_launch(path)
+            return
+        done = update_apply_tar(path, sys.executable)
+        os.remove(path)
+        log(f"FT8 Hunter {ver} in place ({', '.join(done)}): starting it")
+        update_relaunch()
     except Exception as e:
         UPD.update(busy="", err=f"update failed: {e}"[:160])
         log(UPD["err"])
@@ -3266,7 +3339,8 @@ def update_install():
 def update_start():
     """The operator said yes: stop hunting, halt WS's TX, then download and
     install in the background. Why not, if it can't now."""
-    why = ("this hunter can't install updates itself (only an installed Windows one can): use the release page"
+    why = ("this hunter can't install updates itself (only the Windows installer's and the Linux download can): "
+           "use the release page"
            if not update_installable() else "no newer version" if not update_newer()
            else "already updating" if UPD["busy"]
            else "a QSO is in progress: finish or skip it first" if state["target"] else "")
@@ -3626,6 +3700,15 @@ ap.add_argument("--window", action="store_true",
 ap.add_argument("--no-window", action="store_true",
                 help="Windows and packaged builds: run as a service, no window")
 a = ap.parse_args()
+after = os.environ.pop("FT8_HUNTER_AFTER", "")
+if after.isdigit():  # started by an update: wait (up to 30 s) for the old hunter to let go of its ports
+    end = time.time() + 30
+    while time.time() < end:
+        try:
+            os.kill(int(after), 0)
+        except OSError:
+            break
+        time.sleep(0.2)
 load_config()
 flags = {k: v for k, v in (("mycall", a.mycall and a.mycall.upper()), ("mygrid", a.mygrid), ("udp_port", a.port),
                            ("http_port", a.http), ("flrig_url", a.flrig)) if v}
@@ -3776,12 +3859,12 @@ def run_window(httpd):
     root.mainloop()
     return True
 
-def shutdown(signum, frame):
+def shutdown(signum, frame, code=0):
     """Service stop/restart: halt WS so it isn't left transmitting unattended."""
     if CTX["tx"] is not None and state.get("ws_addr"):
         halt_ws()
         print("halted WS on shutdown", flush=True)
-    os._exit(0)
+    os._exit(code)
 import signal
 signal.signal(signal.SIGTERM, shutdown)
 signal.signal(signal.SIGINT, shutdown)

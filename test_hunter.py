@@ -1425,6 +1425,8 @@ st["config"].clear(); st["config"].update(saved[0]); st["mycall"], st["mygrid"] 
 # updates: GitHub and the installer are stand-ins; nothing installs until asked
 import hashlib, io
 U, vk = ns["UPD"], ns["ver_key"]
+ns["UPDATE_OS"], ns["UPDATE_ASSET"] = "win32", "FT8-Hunter-windows-x64-setup.exe"  # the Windows installer first
+real_installable = ns["update_installable"]
 check("versions compare as numbers", vk("v1.10.0") > vk("1.9.3") and vk("v1.0") == vk("1.0.0") > vk("junk"))
 setup = b"pretend installer"
 def fake_release(tag, digest="sha256:" + hashlib.sha256(setup).hexdigest()):
@@ -1475,6 +1477,66 @@ check("...but the next one is", not ns["update_view"]()["skipped"])
 def offline(url, timeout=30): raise OSError("network down")
 ns["upd_get"] = offline; ns["update_check"]()
 check("offline: an error to show, the last release still known", "network down" in U["err"] and U["latest"] == "99.0.2")
+# the Linux download updates itself: new files swapped in by a rename, then a restart
+import tarfile
+def make_tar(files):
+    b = io.BytesIO()
+    with tarfile.open(fileobj=b, mode="w:gz") as tf:
+        for name, data in files.items():
+            ti = tarfile.TarInfo(name); ti.size = len(data); ti.mode = 0o644
+            tf.addfile(ti, io.BytesIO(data))
+    return b.getvalue()
+lin = tempfile.mkdtemp(); exe = os.path.join(lin, "FT8-Hunter"); wsa = os.path.join(lin, "ws-hunter.AppImage")
+def put(path, data):
+    with open(path, "wb") as f:
+        f.write(data)
+tgz = os.path.join(lin, "rel.tar.gz")
+put(tgz, make_tar({"FT8-Hunter": b"new hunter", "ws-hunter.AppImage": b"new ws", "README.md": b"notes",
+                   "../escape": b"never"}))
+put(exe, b"old hunter"); put(wsa, b"old ws")
+done = ns["update_apply_tar"](tgz, exe)
+check("Linux: the hunter and the WS beside it are swapped for the release's, executable",
+      done == ["FT8-Hunter", "ws-hunter.AppImage"] and open(exe, "rb").read() == b"new hunter"
+      and open(wsa, "rb").read() == b"new ws" and os.access(exe, os.X_OK) and os.access(wsa, os.X_OK))
+check("...and nothing else in the tarball is written",
+      not os.path.exists(os.path.join(os.path.dirname(lin), "escape")) and not os.path.exists(os.path.join(lin, "README.md")))
+put(exe, b"old hunter")
+check("the same WS build is left alone", ns["update_apply_tar"](tgz, exe) == ["FT8-Hunter"])
+os.remove(wsa); put(exe, b"old hunter")
+check("no WS kept beside the hunter: none added", ns["update_apply_tar"](tgz, exe) == ["FT8-Hunter"] and not os.path.exists(wsa))
+put(tgz, make_tar({"README.md": b"notes"}))
+try:
+    ns["update_apply_tar"](tgz, exe); bad = False
+except ValueError:
+    bad = True
+check("a tarball without the hunter changes nothing", bad and open(exe, "rb").read() == b"new hunter")
+real_exe, real_frozen = sys.executable, ns["FROZEN"]
+ns["UPDATE_OS"], ns["UPDATE_ASSET"], ns["FROZEN"], sys.executable = "linux", "FT8-Hunter-linux-x64.tar.gz", True, exe
+rel_tgz = make_tar({"FT8-Hunter": b"hunter 99.1"})
+def fake_linux_release(tag):
+    rel = {"tag_name": tag, "body": "", "html_url": "https://github.com/x/releases/" + tag,
+           "assets": [{"name": "FT8-Hunter-linux-x64.tar.gz", "size": len(rel_tgz),
+                       "browser_download_url": "https://example.invalid/FT8-Hunter-linux-x64.tar.gz",
+                       "digest": "sha256:" + hashlib.sha256(rel_tgz).hexdigest()}]}
+    ns["upd_get"] = lambda url, timeout=30: io.BytesIO(rel_tgz if url.endswith(".tar.gz") else json.dumps(rel).encode())
+fake_linux_release("v99.1.0"); ns["update_check"]()
+ns["update_installable"] = real_installable  # stubbed above
+check("the Linux download can install updates where it may write", ns["update_view"]()["can_install"])
+os.chmod(lin, 0o555)
+check("...but not from a folder it can't write to", not ns["update_installable"]())
+os.chmod(lin, 0o755)
+relaunched = []
+ns["update_relaunch"] = lambda: relaunched.append(open(exe, "rb").read())
+U["busy"] = ""; st["running"] = True
+code = post_code("/api/update/install", {})
+for _ in range(100):
+    if relaunched or U["err"]:
+        break
+    time.sleep(0.02)
+check("Linux, yes: hunter stopped, download checked, the new hunter in place, restarted, download removed",
+      code == 200 and not st["running"] and relaunched == [b"hunter 99.1"]
+      and not os.path.exists(os.path.join(_tmp, "updates", "FT8-Hunter-99.1.0-linux-x64.tar.gz")))
+sys.executable, ns["FROZEN"] = real_exe, real_frozen
 fl.shutdown(); srv.shutdown()
 
 print("ALL PASS" if ok else "SOME FAILED")

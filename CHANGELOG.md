@@ -2,6 +2,20 @@
 
 What changed in each release of FT8 Hunter, newest first.
 
+## 1.1.12 (2026-10-31)
+
+- The Linux download now updates itself, as the Windows installer already
+  does. When a new version is out, **Install and restart** in the page (or
+  **⬆ Update to …** in the window) stops hunting, turns WS's TX off, downloads
+  the new release and checks it against the release's SHA-256. It then puts the new
+  FT8-Hunter in place of the old one, and starts it again with the same
+  options. A `ws-hunter.AppImage` kept beside the hunter is replaced too, but
+  only when the release carries a different WS build. Before this, Linux only
+  offered a link to the release page. The hunter's folder must be one you can
+  write to.
+- Run as a systemd service, the Linux hunter exits with code 75 after an update
+  and lets systemd start the new version, so give the unit `Restart=on-failure`.
+
 ## 1.1.11 (2026-10-30)
 
 - The hunter deletes the .wav files WS keeps when **File → Save all** or **Save
