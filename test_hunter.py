@@ -41,7 +41,7 @@ def dec(msg, snr=-5, df=1500, t_ms=0):
 def fresh():
     st["target"] = None; st["cq"].clear(); st["msgs"].clear(); st["worked"] = {}; ENG["held"].clear()
     ENG["callers"].clear(); ENG["holds"].clear()
-    ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0, qrm_ignore_until=0, arrived=None, tx_n=0, check_until=0, fresh_check=0)
+    ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0, qrm_ignore_until=0, target_t=0, arrived=None, tx_n=0, check_until=0, fresh_check=0)
     ENG["occ"].clear(); ENG["spec"].clear(); ENG["noise_hist"].clear(); st["udp"].pop("tx_df", None)
     ENG["spec_pending"].clear(); ENG["qrm_first"] = None; ENG["tx_iv"].clear(); ENG["tune_iv"].clear()
     ENG["active"].clear(); ENG["calls_to"].clear(); ENG["spec_hist"].clear(); ENG["rr73_again"].clear()
@@ -166,9 +166,107 @@ ns["on_my_tx"]("W1AA KR4MZM/AG RR73")
 CTX["tx"].sent.clear(); ns["engine_tick"](); ns["engine_tick"]()
 check("done -> next caller answered without a Halt",
       st["target"]["call"] == "W2BB" and HALT not in CTX["tx"].sent and ns["is_worked"]("W1AA"))
-ENG["callers"][0]["t"] -= 200                     # W3CC gave up long ago
-st["target"]["left"] = 1; ns["engine_tick"]()     # W2BB times out
-check("caller not heard for 6 periods is dropped", not ENG["callers"] and st["target"] is None)
+st["target"] = None; ENG["target_t"] = 0; ENG["callers"][0]["t"] -= 200  # W3CC gave up long ago, and we were free
+ns["engine_tick"]()
+check("caller not heard for 6 free periods is dropped", not ENG["callers"] and st["target"] is None)
+# regression: two answered our CQ, the first took a few repeats, and the second
+# (who called once and waited) had aged out of the queue by the time it ended
+fresh(); st["running"] = True
+dec("KR4MZM F8AEJ IN88"); dec("KR4MZM EA5TT IM99"); ns["engine_tick"]()
+check("two answer our CQ: the first is worked, the second waits", st["target"]["call"] == "F8AEJ" and [c["call"] for c in ENG["callers"]] == ["EA5TT"])
+tq = st["target"]; dec("KR4MZM F8AEJ R-15")
+for i in range(12):                                # 3 minutes of repeats
+    ns["engine_tick"](); ENG["callers"][0]["t"] -= 15; ENG["target_t"] -= 15
+check("...still in the queue during a long QSO", [c["call"] for c in ENG["callers"]] == ["EA5TT"] and st["target"] is tq)
+dec("KR4MZM F8AEJ RR73"); tq["left"] = 1; ns["engine_tick"]()
+check("...and answered when that QSO ends, 3 minutes after calling", st["target"] and st["target"]["call"] == "EA5TT" and st["target"]["why"] == "called us")
+fresh(); st["running"] = True
+dec("KR4MZM F8AEJ IN88"); dec("KR4MZM EA5TT IM99"); ns["engine_tick"]()
+ENG["callers"][0]["t"] -= 15 * 41; dec("KR4MZM F8AEJ R-15"); st["target"]["left"] = 1; st["target"]["done"] = True; ns["engine_tick"]()
+check("...but not after waiting 40 periods", not ENG["callers"] and st["target"] is None)
+# a waiting caller who moves on stays queued, behind everyone else
+def queued(): return [c["call"] for c in ns["fresh_callers"]()]
+fresh(); st["running"] = True
+dec("KR4MZM F8AEJ IN88"); dec("KR4MZM EA5TT IM99"); dec("KR4MZM W9GY EN57"); ns["engine_tick"]()
+dec("W1XX EA5TT -05")
+check("a waiting caller working someone else stays in the queue", [c["call"] for c in ENG["callers"]] == ["EA5TT", "W9GY"] and st["target"]["call"] == "F8AEJ")
+check("...but isn't due while they're at it, and others go first", queued() == ["W9GY"])
+dec("W1XX EA5TT RR73")
+check("...once they sign off they're due, still after the others", queued() == ["W9GY", "EA5TT"])
+st["target"]["left"] = 1; st["target"]["done"] = True; ns["engine_tick"]()
+check("...so the one who kept waiting is answered first", st["target"]["call"] == "W9GY" and [c["call"] for c in ENG["callers"]] == ["EA5TT"])
+st["target"]["left"] = 1; st["target"]["done"] = True; ns["engine_tick"]()
+check("...and then the one who moved on", st["target"]["call"] == "EA5TT" and st["target"]["why"] == "called us")
+fresh(); st["running"] = True
+dec("KR4MZM F8AEJ IN88"); dec("KR4MZM EA5TT IM99"); dec("KR4MZM W9GY EN57"); ns["engine_tick"]()
+dec("CQ EA5TT IM99")
+check("a waiting caller calling CQ is free, and goes after the others", queued() == ["W9GY", "EA5TT"])
+dec("KR4MZM EA5TT IM99")
+check("calling us again puts them back in their place", queued() == ["EA5TT", "W9GY"])
+fresh(); st["running"] = True
+dec("KR4MZM F8AEJ IN88"); dec("KR4MZM EA5TT IM99"); ns["engine_tick"]()
+dec("W1XX EA5TT -05"); st["target"]["left"] = 1; st["target"]["done"] = True; ns["engine_tick"]()
+check("nobody else waiting and they're still busy: not called, kept for later", st["target"] is None and [c["call"] for c in ENG["callers"]] == ["EA5TT"])
+ENG["active"]["EA5TT"] = time.time() - 15 * 5
+ns["engine_tick"]()
+check("...and called once they've gone quiet", st["target"] and st["target"]["call"] == "EA5TT")
+# juggling: a station that misses 2 of our transmissions in a row waits while we work another
+def sent_to(t, msg):
+    ns["on_my_tx"](msg); t["tx_t"] -= 30           # we sent it, and the period for their answer is over
+def two_waiting():
+    fresh(); st["running"] = True
+    dec("KR4MZM F8AEJ IN88"); dec("KR4MZM EA5TT IM99"); ns["engine_tick"]()
+    a = st["target"]; dec("KR4MZM F8AEJ -02"); return a
+a = two_waiting()
+sent_to(a, "F8AEJ KR4MZM R-15"); dec("KR4MZM F8AEJ -02"); ns["engine_tick"]()
+check("juggle: one transmission missed, staying with them", st["target"] is a)
+ns["on_my_tx"]("F8AEJ KR4MZM R-15"); ns["engine_tick"]()
+check("...the second just sent: their answer isn't due yet", st["target"] is a)
+a["tx_t"] -= 30; CTX["tx"].sent.clear(); dec("KR4MZM F8AEJ -02"); ns["engine_tick"]()
+check("...and missed: on to the next caller, without a Halt", st["target"]["call"] == "EA5TT" and HALT not in CTX["tx"].sent and REPLY in CTX["tx"].sent)
+check("...the first stays queued, to come back to", [c["call"] for c in ENG["callers"]] == ["F8AEJ"] and "didn't copy" in "".join(x["msg"] for x in list(st["log"])[:3]))
+b = st["target"]; b["left"] = 1; b["done"] = True; CTX["tx"].sent.clear(); ns["engine_tick"]()
+t = st["target"]
+check("...next, back to them, in the middle of the QSO", t["call"] == "F8AEJ" and t["resp"] and t["last"] == "KR4MZM F8AEJ -02" and not t["done"] and REPLY in CTX["tx"].sent)
+check("...with only the tries they have left", t["left"] == (st["config"].get("qso_tries", 7) - 2) * 2 + 1 and t["sends"] == 2 and not t.get("unheard"))
+a = two_waiting()
+sent_to(a, "F8AEJ KR4MZM R-15"); dec("KR4MZM F8AEJ RR73"); sent_to(a, "F8AEJ KR4MZM R-15"); ns["engine_tick"]()
+check("juggle: a new message starts the count again", st["target"] is a and a["unheard"] == 1)
+fresh(); st["running"] = True; dec("KR4MZM F8AEJ IN88"); ns["engine_tick"](); a = st["target"]; dec("KR4MZM F8AEJ -02")
+sent_to(a, "F8AEJ KR4MZM R-15"); sent_to(a, "F8AEJ KR4MZM R-15"); ns["engine_tick"]()
+check("juggle: no one else waiting, staying with them", st["target"] is a)
+a = two_waiting(); dec("KR4MZM F8AEJ R-02")
+ns["on_my_tx"]("F8AEJ KR4MZM RR73"); a["tx_t"] -= 30; a["unheard"] = 2; a["left"] = 9; ns["engine_tick"]()
+check("juggle: not once we're signing off", st["target"] is a)
+a = two_waiting(); st["config"]["manual"] = True
+sent_to(a, "F8AEJ KR4MZM R-15"); sent_to(a, "F8AEJ KR4MZM R-15"); ns["engine_tick"]()
+check("juggle: not in manual (contest) mode", st["target"] is a); st["config"]["manual"] = False
+for later, done in (("KR4MZM F8AEJ RR73", True), ("KR4MZM F8AEJ R-07", False)):
+    a = two_waiting(); dec("KR4MZM W9GY EN57")
+    sent_to(a, "F8AEJ KR4MZM R-15"); sent_to(a, "F8AEJ KR4MZM R-15"); ns["engine_tick"]()
+    b = st["target"]; dec(later)
+    check(f"set aside, then heard sending {later.split()[-1]}: next in line, count cleared", ENG["callers"][0]["call"] == "F8AEJ" and ENG["callers"][0]["aside"]["sends"] == 0)
+    b["left"] = 1; b["done"] = True; ns["engine_tick"]()
+    check("...and picked up from there", st["target"]["call"] == "F8AEJ" and st["target"]["last"] == later and bool(st["target"]["done"]) == done)
+a = two_waiting()
+sent_to(a, "F8AEJ KR4MZM R-15"); sent_to(a, "F8AEJ KR4MZM R-15"); a["sends"] = st["config"].get("qso_tries", 7) - 1; ns["engine_tick"]()
+b = st["target"]; b["left"] = 1; b["done"] = True; ns["engine_tick"]()
+t = st["target"]; t["left"] = 3
+for i in range(3): ns["engine_tick"]()
+check("juggling doesn't go on for ever: out of tries, they go on hold", st["target"] is None and ns["on_hold"]("F8AEJ"))
+# regression: AG5PC called us and we'd answered; KW4ZD's call took their QSO over
+fresh(); st["running"] = True
+dec("KR4MZM AG5PC -13"); ns["engine_tick"](); a = st["target"]; dec("KR4MZM KW4ZD EM56")
+check("a new caller doesn't take over from someone who called us", st["target"] is a and [c["call"] for c in ENG["callers"]] == ["KW4ZD"])
+fresh(); st["running"] = True
+dec("KR4MZM AG5PC -13"); ns["engine_tick"](); a = st["target"]; dec("W1XX AG5PC -05")
+check("someone who called us, working another before we connect: queued for later", st["target"] is None and ENG["callers"][0]["call"] == "AG5PC" and ENG["callers"][0]["moved"])
+fresh(); st["running"] = True
+dec("KR4MZM F8AEJ IN88"); dec("KR4MZM EA5TT IM99"); ns["engine_tick"]()
+for i in range(600):                               # a busy band meanwhile: the store of decodes gets trimmed
+    ns["set_decparams"](f"K{i}AA W{i}BB FN42", {"t_ms": 0, "snr": 0, "dt": 0, "df": 1000})
+check("a waiting caller's decode survives the trim of old decodes", "KR4MZM EA5TT IM99" in st["decparams"])
+fresh()
 
 # --- regression: YS1CH answered in the period we timed out, and was ignored
 fresh(); st["config"]["call_cq"] = False

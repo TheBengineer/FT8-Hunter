@@ -2,6 +2,26 @@
 
 What changed in each release of FT8 Hunter, newest first.
 
+## 1.1.15 (2026-11-05)
+
+- With several stations answering your CQ, the hunter now juggles them. If the
+  station you're working misses 2 of your transmissions in a row and someone else
+  is waiting, it works the next caller and comes back to pick the QSO up where it
+  was. A station set aside that sends something new goes to the front of the
+  queue. All the visits to one station share the usual `qso_tries`. There's no
+  juggling once a QSO is signing off, or in manual (contest) mode.
+- Fixed: stations waiting their turn were forgotten when another QSO took repeats.
+  Anyone not heard for 90 s on FT8 was dropped, even while the hunter was busy, so
+  a caller who called once and waited was never answered. Now that time doesn't
+  count against them, up to 40 periods (10 minutes on FT8).
+- A waiting caller heard working someone else or calling CQ now stays queued, behind
+  everyone else, and isn't called until they've finished.
+- Fixed: a new caller could take over from someone who had called you, when they
+  hadn't replied yet to your first answer. That QSO was interrupted, and only came
+  back if they called again. Now only a CQ you're answering can be replaced this way.
+- On a busy band, a waiting caller's decode could be trimmed from memory, and the
+  hunter would then skip them. It's now kept while they wait.
+
 ## 1.1.14 (2026-11-04)
 
 - When FLRig goes away, the hunter comes back on its own. Once FLRig has been

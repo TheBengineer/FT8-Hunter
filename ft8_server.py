@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import deque
 from urllib.parse import urlparse
 
-VERSION = "1.1.14"  # a release's tag is v + this (the build refuses a tag that doesn't match)
+VERSION = "1.1.15"  # a release's tag is v + this (the build refuses a tag that doesn't match)
 
 # The page ships beside this script (or inside a packaged build); the hunter's
 # own files (settings, logs) live beside the script too, or for a packaged
@@ -617,6 +617,7 @@ CTX = {"tx": None, "myll": None, "seen": {}, "cycle": [0]}
 # idle_until ts (listen-only rest), busy_cycles (consecutive cycles with a target)
 ENG = {"holds": {}, "held": {}, "callers": deque(maxlen=20), "parity": {0: 0, 1: 0},
        "idle_until": 0, "busy": 0, "idle_n": 0,
+       "target_t": 0,  # last tick we had a target: callers wait their turn until then
        "tx_n": 0, "check_until": 0,  # transmissions since the last interference check; pause ends
        "cq_until": 0,  # calling our own CQ until this time (0 = not calling)
        "occ": deque(maxlen=800),  # recent decodes {t, par, df}: who is where
@@ -961,7 +962,9 @@ def set_decparams(msg, params):
     ENG["occ"].append({"t": time.time(), "tm": params["t_ms"], "par": parity(params["t_ms"]),
                        "df": params["df"], "snr": params.get("snr"), "msg": msg})
     if len(d) > 500:
-        state["decparams"] = dict(list(d.items())[-300:])
+        waiting = {c["msg"] for c in list(ENG["callers"])}  # however long the turn takes, we need these to answer
+        items = list(d.items())
+        state["decparams"] = {k: v for i, (k, v) in enumerate(items) if i >= len(items) - 300 or k in waiting}
 
 ALL_RE = re.compile(r"^(\d{6}_\d{6})\s+[\d.]+\s+Rx\s+\S+\s+([+-]?\d+)\s+([\d.]+)\s+(\d+)\s+(.*\S)\s*$")
 TX_RE = re.compile(r"^(\d{6}_\d{6})\s+[\d.]+\s+Tx\s+\S+\s+([+-]?\d+)\s+([\d.]+)\s+(\d+)\s+(.*\S)\s*$")
@@ -1655,14 +1658,31 @@ def rr73_again(call, rest, now):
              default=0)
     return now - (ts or 0) < max(240, cyc(16)) and ENG["rr73_again"].get(base_call(call), 0) < 3
 
+def caller_gone(c, now):
+    """Not heard for 6 periods we could have answered in: they have given up.
+    Time spent on someone else doesn't count (they're waiting their turn, and
+    need not keep calling), up to 40 periods in all."""
+    return now - max(c["t"], ENG["target_t"]) > cyc(6) or now - c["t"] > cyc(40)
+
 def fresh_callers(now=None):
-    """Queued callers still worth answering, oldest first. Drops anyone worked,
-    held, or not heard for 6 periods (they have given up)."""
+    """Queued callers to answer now, oldest first, those who moved on after
+    everyone else. Drops anyone worked, held, or gone; someone who moved on
+    and is still working another station stays queued but isn't due yet."""
     now = now or time.time()
     for c in list(ENG["callers"]):
-        if (is_worked(c["call"]) and not c.get("again")) or on_hold(c["call"]) or now - c["t"] > cyc(6):
+        if (is_worked(c["call"]) and not c.get("again")) or on_hold(c["call"]) or caller_gone(c, now):
             ENG["callers"].remove(c)
-    return list(ENG["callers"])
+    free = [c for c in list(ENG["callers"]) if not (c.get("moved") and now - ENG["active"].get(base_call(c["call"]), 0) < cyc(4))]
+    return sorted(free, key=lambda c: bool(c.get("moved")))
+
+def caller_moved_on(call, doing, now):
+    """A queued caller heard calling CQ or working someone else: still queued
+    (they may well come back to us), behind everyone else. Hearing them shows
+    they're still around, so it counts as being heard."""
+    for c in [c for c in list(ENG["callers"]) if same_call(c["call"], call)]:
+        if not c.get("moved"):
+            log(f"{c['call']} is {doing}: still queued, after anyone else")
+        c.update(moved=True, t=now)
 
 def on_my_tx(msg):
     """Our own transmission (from ALL.TXT). Once we send RR73/73 to the target
@@ -1674,6 +1694,41 @@ def on_my_tx(msg):
     if t and rest and rest[-1] in ("RR73", "73") and same_call(to, t["call"]):
         t["done"] = True
         t["left"] = min(t["left"], 2)
+    now = time.time()
+    if t and same_call(to, t["call"]) and now - t.get("tx_t", 0) >= cyc(1):  # (a line written twice is one transmission)
+        t.update(tx_t=now, unheard=t.get("unheard", 0) + 1, sends=t.get("sends", 0) + 1)
+
+def set_aside(t, now, **extra):
+    """Back in the queue, to pick the QSO up where it was. `sends` carries over
+    so that juggling doesn't give them more tries than staying with them would."""
+    ENG["callers"].append({"call": t["call"], "grid": t.get("grid", ""), "msg": t.get("last") or t["msg"],
+                           "t": t.get("heard", now), "again": False, "why": t["why"],
+                           "aside": {"resp": bool(t.get("resp")), "sends": t.get("sends", 0)}, **extra})
+
+def juggle(t, now):
+    """Others are waiting and this station missed our last 2 transmissions (no
+    new message since, and the period for their answer to the last one is
+    over): work someone else meanwhile and come back. Not with a QSO that's
+    signing off, nor in manual (contest) mode, where the operator starts each QSO."""
+    if manual_on() or t.get("done") or t.get("again") or t.get("unheard", 0) < 2 \
+            or now - t.get("tx_t", now) < cyc(1.5):
+        return False
+    waiting = [c for c in fresh_callers(now) if not same_call(c["call"], t["call"])]
+    if not waiting:
+        return False
+    log(f"{t['call']} didn't copy our last 2: on to {waiting[0]['call']}, back to them after")
+    set_aside(t, now)
+    state["target"] = None
+    return True
+
+def resume_aside(c):
+    """The QSO `c` was set aside from, now the target again."""
+    t, a = state["target"], c["aside"]
+    tries = state["config"].get("qso_tries", 7) if a["resp"] else state["config"].get("cq_tries", 3)
+    done = words(c["msg"])[-1] in SIGNOFF
+    t.update(resp=a["resp"], sends=a["sends"], last=c["msg"] if a["resp"] else None, done=done,
+             left=2 if done else max(1, tries - a["sends"]) * 2 + 1)
+    log(f"back to {c['call']}: {c['msg']}")
 
 def at(step, detail=""):
     """Record where the engine stopped this period (shown live in the UI's
@@ -1879,6 +1934,10 @@ def engine_tick():
         log(f"{t['call']} is in the log, releasing target")
         state["target"] = t = None
     if t:
+        ENG["target_t"] = now
+        if juggle(t, now):
+            t = None
+    if t:
         t["left"] -= 1
         if t["left"] <= 0:
             waiting = [] if manual_on() else fresh_callers(now)  # manual: no one is next until picked
@@ -1929,7 +1988,10 @@ def engine_tick():
                 ENG["rr73_again"][k] = ENG["rr73_again"].get(k, 0) + 1
                 return at("caller", f"{c['call']} ({what} again)")
             continue
-        if acquire(c["call"], "", c["msg"], tries=cfg.get("cq_tries", 3), why="called us"):
+        if acquire(c["call"], c.get("grid", ""), c["msg"], tries=cfg.get("cq_tries", 3), why=c.get("why", "called us")):
+            state["target"]["heard"] = c["t"]
+            if c.get("aside"):
+                resume_aside(c)
             ENG["busy"] += 1
             more = f" ({len(waiting)} more waiting)" if waiting else ""
             return at("caller", c["call"] + more)
@@ -2183,6 +2245,7 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                 "hold": on_hold(call),
                 "mode": state["decparams"].get(msg, {}).get("mode", "?")}
             ENG["active"][base_call(call)] = 0  # calling CQ again: free
+            caller_moved_on(call, "calling CQ", now)
             state["stats"]["cq_heard"] += 1
             return  # selection happens in engine_tick (priority order)
         signoff = bool(rest) and rest[-1] in SIGNOFF
@@ -2195,11 +2258,15 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
             ENG["active"][fb] = 0 if signoff else now
             if to and not signoff:
                 ENG["calls_to"].setdefault(base_call(to), {})[fb] = now
+                if not to_me:
+                    caller_moved_on(frm, f"working {to}", now)
             if t and same_call(frm, tgt) and not to_me and not t.get("resp"):
                 # they picked someone else: stop calling now (no hold; we will
                 # see their next CQ or sign-off)
                 halt_ws()
                 log(f"{tgt} is working {to}; standing by")
+                if t.get("why") == "called us":  # they answered us: still queued, as any caller who moves on
+                    set_aside(t, now, moved=True)
                 state["target"] = None
         if to_me and frm and "." not in frm:
             if t and same_call(frm, tgt):
@@ -2207,6 +2274,9 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                 # sign-off we only owe a 73, so release the target soon after.
                 if not t.get("resp"):
                     RIG_WAKE.set()  # QSO power before our next transmission
+                if msg != (t.get("last") or t.get("msg")):  # they copied us: a new message
+                    t.update(unheard=0, sends=0)
+                t["heard"] = now
                 if rest and rest[-1] == "RRR" and t.get("done") and t.get("rrr_n", 0) < 3:
                     # RRR again: they never copied our 73. WS stops TX after
                     # sending a 73, so answer it again ourselves.
@@ -2221,7 +2291,8 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                 # to decode their answer to the last); silence after that: give up
                 t["left"] = 2 if signoff else state["config"].get("qso_tries", 7) * 2 + 1
                 log(f"reply: {msg}")
-            elif state["running"] and ((not signoff and not is_worked(frm)) or (again := rr73_again(frm, rest, now))):
+            elif state["running"] and ((aside := next((c for c in list(ENG["callers"]) if c.get("aside") and same_call(c["call"], frm)), None))
+                                       or (not signoff and not is_worked(frm)) or (again := rr73_again(frm, rest, now))):
                 # A hold stops us calling them, not them answering us: a reply
                 # from a held station is a late answer to our call. Lift the
                 # hold and work them next.
@@ -2231,8 +2302,11 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                 # someone calling us: queue first-come-first-serve; a repeat call
                 # keeps their place but refreshes the message we will answer
                 q = next((c for c in list(ENG["callers"]) if same_call(c["call"], frm)), None)
+                if aside and msg != aside["msg"]:  # set aside, and they've copied us after all: finish them first
+                    aside["aside"].update(resp=True, sends=0)
+                    ENG["callers"].remove(aside); ENG["callers"].appendleft(aside)
                 if q:
-                    q.update(msg=msg, t=now)
+                    q.update(msg=msg, t=now, moved=False)
                 else:
                     entry = {"call": frm, "msg": msg, "t": now, "again": again}
                     if again:
@@ -2246,7 +2320,8 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
                     else:
                         ENG["callers"].append(entry)
                         log(f"caller queued: {msg}")
-                    if t and not t.get("resp") and not manual_on():  # never abandon a QSO in progress
+                    # never abandon a QSO in progress, or someone who called us: they're next to none
+                    if t and not t.get("resp") and t.get("why") != "called us" and not manual_on():
                         halt_ws()
                         log(f"dropping {tgt} for caller {frm}")
                         state["target"] = None
@@ -2527,7 +2602,7 @@ def globe():
     # Others answering us while we work someone: the caller queue, without
     # pruning it (that is the engine's job), shown only when more than one
     # station is answering us at once.
-    waiting = [c for c in list(ENG["callers"]) if now - c["t"] <= cyc(6)
+    waiting = [c for c in list(ENG["callers"]) if not caller_gone(c, now)
                and not (t and same_call(c["call"], t["call"])) and not is_worked(c["call"])]
     answering = len(waiting) + (1 if tgt and tgt["resp"] else 0)
     callers = [{"call": c["call"], "ll": ll, "age": round(now - c["t"])}

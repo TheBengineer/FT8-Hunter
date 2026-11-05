@@ -84,9 +84,21 @@ hold on this band and mode (a station worked on 20m FT8 can still be worked on 2
 FT4 or 40m FT8, and a hold on one doesn't apply to the others), not in a QSO with someone since that CQ, at or above the minimum SNR, not a
 CQ aimed at a region, and for `CQ DX` on another continent. Between cycles, each
 decode can also end a target early: if it answers someone else the hunter stops
-calling, and a new caller replaces a target that hasn't answered yet. A station
-calling you is always answered: holds, listen pauses and the busy-frequency backoff
-only stop the hunter starting something new.
+calling, and a new caller replaces a CQ we're answering that hasn't answered yet
+(not someone who called us). A station calling you is always answered: holds,
+listen pauses and the busy-frequency backoff only stop the hunter starting
+something new.
+
+With several stations calling, the hunter juggles them. Callers queue in the order
+they called, and the time spent working someone else doesn't count against them
+(up to 40 periods, 10 minutes on FT8). If the station being worked misses 2 of our
+transmissions in a row, it goes to the back of the queue and the next caller is
+worked; the hunter then comes back and picks up the QSO where it was. A set-aside
+station that turns out to have copied us (a new message) is next in line. All the
+visits together use the same number of tries as one (`qso_tries`). A caller heard
+working someone else, or calling CQ, stays queued behind everyone else, and isn't
+called until they've finished. There's no juggling once a QSO is signing off, or in
+manual (contest) mode.
 
 \* needs the [ws-hunter](#ws-build-with-hunter-controls) build of WS.
 
