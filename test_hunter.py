@@ -1149,6 +1149,19 @@ except urllib.error.HTTPError as e:
     refused = e.code == 409
 check("no band change from the scan in the middle of a QSO", refused)
 st["target"] = None
+# one band's own scan button: scans that band, and the chips stay as they were
+scanned, real_run = [], ns["scan_run"]
+def fake_run(points):
+    scanned.append(points); SCAN["on"] = False
+ns["scan_run"] = fake_run
+st["config"].update(scan_bands=["20m", "40m"], scan_modes=["FT8"])
+post("/api/scan/start", {"bands": ["60m"], "modes": ["FT4"], "once": True}); time.sleep(0.2)
+check("a band's scan button scans only that band", scanned and {p["band"] for p in scanned[-1]} == {"60m"})
+check("...and leaves the picked bands and modes alone",
+      st["config"]["scan_bands"] == ["20m", "40m"] and st["config"]["scan_modes"] == ["FT8"])
+post("/api/scan/start", {"bands": ["60m"], "modes": ["FT4"]}); time.sleep(0.2)
+check("Scan bands still remembers what's picked", st["config"]["scan_bands"] == ["60m"] and st["config"]["scan_modes"] == ["FT4"])
+ns["scan_run"] = real_run
 st["udp"]["revision"] = ""
 
 # WS with Accept UDP requests off ignores every command: the hunter says so
@@ -1295,6 +1308,37 @@ check("the period spent tuning is left out of the offset picker", t not in ns["h
 check("...and a tune doesn't start the listen over", not ENG.get("arrived"))
 ENG["tune_iv"].clear()
 ns["flrig"], ns["ws_set_dial"] = real_fl, real_dial
+# FLRig gone: a short stall is polled as usual, then a growing wait between tries
+def rig_view():
+    return json.load(urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}/api/state"))["rig"]
+R.update(fail_since=time.time() - 5, retry_s=0, retry_t=0); ns["rig_backoff"](time.time())
+check("FLRig silent for 5 s: still polled as usual", not R["retry_t"])
+R.update(fail_since=0)
+tries = []
+def dead_fl():
+    tries.append(time.time()); raise ConnectionRefusedError("refused")
+keep = {k: ns[k] for k in ("RIG_RETRY_S", "RIG_RETRY_MAX", "DESYNC_SECS")}
+ns.update(RIG_RETRY_S=0.2, RIG_RETRY_MAX=0.4, DESYNC_SECS=0, flrig=dead_fl)
+R.update(xcvr="Xiegu-G90", ok=True, err="")
+end = time.time() + 8
+while len(tries) < 5 and time.time() < end:
+    ns["RIG_WAKE"].set(); time.sleep(0.03)  # power changes and the like mustn't shorten the wait
+gaps = [b - a for a, b in zip(tries[1:], tries[2:])]
+check("FLRig gone: the wait doubles up to the most, whatever wakes the poller",
+      len(gaps) >= 3 and 0.15 < gaps[0] < 0.6 and all(0.35 < g < 0.8 for g in gaps[1:3]))
+ns.update(RIG_RETRY_S=100, RIG_RETRY_MAX=100); R.update(retry_s=0)
+end = time.time() + 3
+while not R.get("retry_s") and time.time() < end:
+    time.sleep(0.05)
+v = rig_view()
+check("the page is told FLRig is down and when the next try is", not v["ok"] and 90 <= v["retry"] <= 100)
+n = len(tries); post("/api/rig/retry", {}); time.sleep(0.5)
+check("Try now asks at once", len(tries) == n + 1)
+ns["flrig"] = real_fl; post("/api/rig/retry", {}); time.sleep(1.5)
+v = rig_view()
+check("FLRig back: connected, no more backoff, and the log says so",
+      v["ok"] and not v["retry"] and not R["retry_s"] and not R["fail_since"] and any("answering again" in x["msg"] for x in st["log"]))
+ns.update(keep)
 # a new band: two full cycles (two even, two odd periods) heard before any transmission
 fresh(); st["running"] = True; ENG["tuned_band"] = "20m"
 st["udp"].update(band="17m", mode="FT8"); ns["set_band"]("20m")
@@ -1317,7 +1361,7 @@ check("nothing on the port: WRL is off, and the log says so", ns["WRL"]["on"] is
 # radio out of sync with WS: warn, stop the hunter, halt WS's TX
 D, RIGd = ns["DESYNC"], ns["RIG"]
 def desync_reset():
-    D.update(why="", t=0, since={}, stopped=False); RIGd.update(fail_since=0, vfo=None, ok=False)
+    D.update(why="", t=0, since={}, stopped=False, hunting=False, auto=False, calm=0); RIGd.update(fail_since=0, vfo=None, ok=False)
 desync_reset(); st["running"] = True; st["udp"]["dial"] = 30000000; CTX["tx"].sent.clear()
 ns["desync_check"](time.time())
 check("WS's dial off the ham bands (30.000 MHz): hunter stopped, TX halted",
@@ -1340,6 +1384,64 @@ check("FLRig not answering for 15 s: stopped", not st["running"] and "FLRig" in 
 desync_reset(); st["running"] = True; st["udp"].update(last_rx=time.time(), last_decode=time.time() - 400); st["msgs"].clear()
 D["started"] = time.time() - 400; ns["desync_check"](time.time())
 check("nothing decoded for 5 min while hunting: stopped", not st["running"] and "nothing decoded" in D["why"])
+# ...and a hunt that FLRig's disconnect stopped starts again when it's back
+def rig_is_back(t, vfo=14074000):
+    RIGd.update(ok=True, fail_since=0, t=t, vfo=vfo, err=""); st["udp"].update(last_rx=t, last_decode=t)
+def rig_is_gone(t):
+    RIGd.update(ok=False, fail_since=t, err="refused", xcvr="Xiegu-G90")
+RIGd["retry_t"] = time.time() + 1000  # the poller keeps out of this
+t = time.time()
+desync_reset(); st["udp"]["dial"] = 14074000; st["running"] = True; rig_is_gone(t - 20); ns["desync_check"](t)
+check("FLRig gone while hunting: stopped, and due to start again", not st["running"] and D["auto"])
+ns["desync_check"](t + 60)
+check("...not while it's still gone", not st["running"] and D["auto"])
+rig_is_back(t + 75); ns["desync_check"](t + 75)
+check("...not the moment it's back: the warning clears, the restart is still due", not st["running"] and not D["why"] and D["auto"])
+rig_is_back(t + 85); ns["desync_check"](t + 85)
+check("...nor before it has held for 15 s", not st["running"] and D["auto"])
+rig_is_back(t + 91); ns["desync_check"](t + 91)
+check("...then hunting again", st["running"] and not D["auto"] and not D["stopped"] and "started again" in st["log"][0]["msg"])
+# WS's dial going first
+desync_reset(); st["running"] = True; st["udp"]["dial"] = 30000000; RIGd.update(xcvr="Xiegu-G90"); ns["desync_check"](t)
+check("WS's dial lost, FLRig fine: stopped, no restart due", not st["running"] and D["hunting"] and not D["auto"])
+rig_is_gone(t); ns["desync_check"](t + 1)
+check("...FLRig gone too: restart due", D["auto"])
+rig_is_back(t + 30); ns["desync_check"](t + 30); rig_is_back(t + 50); ns["desync_check"](t + 50)
+check("...FLRig back but WS's dial still lost: no restart", not st["running"] and D["auto"] and D["why"])
+st["udp"]["dial"] = 14074000; rig_is_back(t + 60, vfo=21074000); ns["desync_check"](t + 60); rig_is_back(t + 80, vfo=21074000); ns["desync_check"](t + 80)
+check("...dial on a band but not the radio's: no restart", not st["running"] and D["auto"])
+rig_is_back(t + 100); ns["desync_check"](t + 100); SCAN_on = ns["SCAN"]["on"]; ns["SCAN"]["on"] = True
+rig_is_back(t + 120); ns["desync_check"](t + 120); ns["SCAN"]["on"] = SCAN_on
+check("...not during a band scan", not st["running"] and D["auto"])
+# what must not start again
+desync_reset(); st["running"] = True; st["udp"]["dial"] = 30000000; ns["desync_check"](t)
+st["udp"]["dial"] = 14074000; rig_is_back(t + 30); ns["desync_check"](t + 30); rig_is_back(t + 50); ns["desync_check"](t + 50)
+check("WS lost the radio with FLRig fine: stays stopped, Start to resume", not st["running"] and not D["auto"] and "press Start" in "".join(x["msg"] for x in list(st["log"])[:3]))
+desync_reset(); st["running"] = False; rig_is_gone(t - 20); ns["desync_check"](t)
+rig_is_back(t + 30); ns["desync_check"](t + 30); rig_is_back(t + 50); ns["desync_check"](t + 50)
+check("not hunting when FLRig went: not started by its return", not st["running"] and not D["auto"])
+desync_reset(); st["running"] = True; st["udp"].update(last_rx=t, last_decode=t - 400); st["msgs"].clear(); D["started"] = t - 400
+ns["desync_check"](t); rig_is_gone(t); ns["desync_check"](t + 1); rig_is_back(t + 30); st["udp"]["last_decode"] = t + 30
+ns["desync_check"](t + 30); rig_is_back(t + 50); ns["desync_check"](t + 50)
+check("stopped for no decodes, FLRig blips later: no restart", not st["running"] and not D["auto"])
+desync_reset(); st["running"] = True; rig_is_gone(t - 20); ns["desync_check"](t)
+post("/api/stop", {}); rig_is_back(t + 30); ns["desync_check"](t + 30); rig_is_back(t + 50); ns["desync_check"](t + 50)
+check("Don't restart (Stop) cancels it", not st["running"] and not D["auto"])
+desync_reset(); RIGd["retry_t"] = 0
+# the whole way: the real poller, FLRig going and coming back
+keep = {k: ns[k] for k in ("RIG_RETRY_S", "RIG_RETRY_MAX", "DESYNC_SECS", "flrig")}
+def dead(): raise ConnectionRefusedError("refused")
+ns.update(RIG_RETRY_S=0.2, RIG_RETRY_MAX=0.4, DESYNC_SECS=0.3, flrig=dead)
+def until(f, secs=8):
+    end = time.time() + secs
+    while not f() and time.time() < end:
+        st["udp"].update(last_rx=time.time(), last_decode=time.time()); ns["desync_check"](time.time()); time.sleep(0.05)
+    return f()
+st["running"] = True; RIGd.update(ok=True, fail_since=0, xcvr="Xiegu-G90", err="", retry_s=0)
+check("real poller, FLRig gone: hunter stops, restart due", until(lambda: not st["running"] and D["auto"]))
+ns["flrig"] = keep["flrig"]; RIGd["retry_t"] = 0
+check("...FLRig back: hunting again by itself", until(lambda: st["running"]) and not D["auto"])
+ns.update(keep)
 desync_reset(); st["udp"]["last_decode"] = time.time(); st["running"] = False; RIGd.pop("xcvr", None)
 # each logged QSO records how it started and the hunter's mode
 O = ns["ORIGIN"]; O["qsos"].clear(); O["secs"].clear(); O["recent"].clear(); st["config"]["cq_first"] = True

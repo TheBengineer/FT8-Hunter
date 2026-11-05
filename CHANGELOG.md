@@ -2,6 +2,20 @@
 
 What changed in each release of FT8 Hunter, newest first.
 
+## 1.1.14 (2026-11-04)
+
+- When FLRig goes away, the hunter comes back on its own. Once FLRig has been
+  silent for 15 s the hunter stops and turns WS's TX off, as before. It then asks
+  FLRig again after 30 s, 1, 2 and 4 minutes, and every 5 minutes after that. The
+  radio panel shows when the next try is, and **Try now** asks at once.
+- A hunt that FLRig's disconnect stopped now starts again by itself, however long
+  FLRig was gone, once FLRig answers and WS's dial has been on a band and matched
+  the radio for 15 s. **Don't restart** in the warning cancels it. Before, you had
+  to press Start. After any other stop (WS losing the radio with FLRig fine, no
+  decodes, the radio and WS on different frequencies), you still press Start.
+- Each band in the Band scan card has a **▶** button that scans just that band,
+  in the modes you've picked, without changing the bands picked for **Scan bands**.
+
 ## 1.1.13 (2026-10-31)
 
 - The "Someone else is on frequency — no new calls for 5m" warning has an

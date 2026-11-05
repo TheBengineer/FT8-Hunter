@@ -198,7 +198,9 @@ FT8 are in Settings.
 ### Band scan
 
 The 📶 Band scan card (ws-hunter build) checks which bands have traffic. Choose
-the bands and modes and press **Scan bands**. The hunter visits each published
+the bands and modes and press **Scan bands**, or press a band's **▶** to scan just
+that band in the picked modes (the picked bands stay as they are). The hunter
+visits each published
 FT8 / FT4 / FT2 dial frequency (60m's 5357 kHz once, for all three modes). It
 takes one clean spectrum at each and then puts WS back on the mode and frequency
 it started on. WS runs FT2 during the scan, which gives a spectrum every 3.75 s.
@@ -476,7 +478,12 @@ git clone https://github.com/TheBengineer/ws-hunter ~/ws-hunter
   15 s, or nothing is decoded for 5 minutes while hunting, the hunter stops, turns
   WS's TX off and shows a warning in the status card. Start is refused until it's
   back in sync. Settings → Advanced turns it off or changes the 5 minutes (0 = no
-  decode check).
+  decode check). Once FLRig has been silent for those 15 s, the hunter asks it
+  again after 30 s, then 1, 2 and 4 minutes, then every 5. The radio panel shows
+  when the next try is, and **Try now** asks at once. A hunt that FLRig's
+  disconnect stopped starts again by itself once FLRig answers and WS's dial has
+  been on a band and matched the radio for 15 s, however long that takes;
+  **Don't restart** in the warning cancels it. After any other stop, press Start.
 - **Where QSOs come from**: each logged QSO is recorded in `qso_origins.json`
   with how it started (we answered a CQ, they answered our CQ, they called us,
   tail-end, a 73 again, a manual call, or worked by hand in WS) and the hunter's

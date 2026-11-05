@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import deque
 from urllib.parse import urlparse
 
-VERSION = "1.1.13"  # a release's tag is v + this (the build refuses a tag that doesn't match)
+VERSION = "1.1.14"  # a release's tag is v + this (the build refuses a tag that doesn't match)
 
 # The page ships beside this script (or inside a packaged build); the hunter's
 # own files (settings, logs) live beside the script too, or for a packaged
@@ -687,7 +687,10 @@ def wrl_check(now):
 # stalls), WS's dial goes to a frequency off the ham bands (30.000 MHz when
 # it loses the rig) or away from the radio's VFO, or nothing is decoded. WS
 # would go on transmitting blind, so the hunter stops and WS's TX is halted.
-DESYNC = {"why": "", "t": 0, "since": {}, "stopped": False}
+DESYNC = {"why": "", "t": 0, "since": {}, "stopped": False,
+          "hunting": False,  # hunting when this sign of a lost radio stopped it
+          "auto": False,     # ...and FLRig was gone: hunt again when it's back
+          "calm": 0}         # when all looked well again
 DESYNC_SECS = 15  # a sign must last this long (a band change moves the dial and the VFO a moment apart)
 def desync_signs(now):
     """What is out of step right now, or ''."""
@@ -709,6 +712,25 @@ def desync_signs(now):
         return f"nothing decoded for {c['silent_min']} min: no audio from the radio?"
     return ""
 
+def desync_resume(now, why):
+    """A hunt that FLRig's disconnect stopped starts again, as if Start was
+    pressed, once FLRig answers and WS's dial is on a band and matches the
+    radio, and that has lasted DESYNC_SECS."""
+    u = state["udp"]
+    ready = (not why and not DESYNC["why"] and RIG.get("ok") and not RIG.get("fail_since")
+             and now - RIG.get("t", 0) < 10 and now - u.get("last_rx", 0) < 10
+             and u.get("dial") and band_of(u["dial"]) and RIG.get("vfo")
+             and not (SCAN["on"] or ENG.get("tuning") or UPD["busy"]))
+    if not ready:
+        DESYNC["calm"] = 0
+    elif not DESYNC["calm"]:
+        DESYNC["calm"] = now
+    elif now - DESYNC["calm"] >= DESYNC_SECS:
+        DESYNC.update(stopped=False, hunting=False, auto=False, calm=0, started=now)
+        state["running"] = True
+        log("FLRig is back and in step with WS: hunter started again")
+        at("idle", "starting at next period")
+
 def desync_check(now):
     """Each period: a sign that lasts DESYNC_SECS stops the hunter and halts WS's TX."""
     why = desync_signs(now)
@@ -723,6 +745,7 @@ def desync_check(now):
                 was = state["running"]
                 state["running"] = False; state["target"] = None; ENG["cq_until"] = 0; ENG["callers"].clear()
                 DESYNC["stopped"] = was or DESYNC["stopped"]
+                DESYNC["hunting"] = was and why.startswith(("FLRig", "WS's dial"))
                 if CTX["tx"] is not None:
                     halt_ws()
                     CTX["tx"].sendto(pack_set_bool(SET_TX_ENABLED, state["ws_id"], False), ws_dest())
@@ -730,8 +753,12 @@ def desync_check(now):
         else:
             DESYNC["why"] = why  # keep the count of seconds current
     elif not why and DESYNC["why"]:
-        log("radio back in sync with WS" + (": press Start to resume" if DESYNC["stopped"] else ""))
+        log("radio back in sync with WS" + ("" if DESYNC["auto"] else ": press Start to resume" if DESYNC["stopped"] else ""))
         DESYNC.update(why="", t=0)
+    if DESYNC["hunting"] and DESYNC["why"] and RIG.get("fail_since"):
+        DESYNC["auto"] = True  # WS's dial can go first: it's FLRig's doing if FLRig is gone too
+    if DESYNC["auto"]:
+        desync_resume(now, why)
 
 def udp_listener():
     """Passive REUSEPORT listener: learns WS id, tracks Status/TX state."""
@@ -2387,6 +2414,18 @@ def swr_state():
             "last": last and {k: v for k, v in last.items() if k not in ("raws", "radio_swr")}
             | {"vs": swr_judge(last["raw"], last["band"], last["watts"], skip=last["id"])}}
 
+RIG_RETRY_S, RIG_RETRY_MAX = 30, 300  # FLRig gone: first try again after this long, doubling up to the most
+
+def rig_backoff(now):
+    """FLRig gone for DESYNC_SECS (a shorter gap is a stall, still polled as
+    usual): when to ask it next, each wait twice the last."""
+    fs = RIG.get("fail_since")
+    if not fs or now - fs < DESYNC_SECS:
+        return
+    wait = min(RIG_RETRY_MAX, RIG.get("retry_s", 0) * 2 or RIG_RETRY_S)
+    RIG.update(retry_s=wait, retry_t=now + wait)
+    log(f"FLRig still not answering: trying again in {wait} s")
+
 def rig_poll():
     import xmlrpc.client
     while True:
@@ -2401,7 +2440,9 @@ def rig_poll():
             ptt, power, sm, out, swr, vfo = list(m())
             # (the G90's power meter is coarse, full or nothing, but shows we put out power)
             ptt = bool(int(ptt))
-            RIG.update(ok=True, err="", t=time.time(), ptt=ptt, s=float(sm), vfo=int(float(vfo or 0)), fail_since=0,
+            if RIG.get("retry_s"):
+                log("FLRig is answering again")
+            RIG.update(ok=True, err="", t=time.time(), retry_s=0, retry_t=0, ptt=ptt, s=float(sm), vfo=int(float(vfo or 0)), fail_since=0,
                        out=max(0.0, float(out or 0)) if ptt else 0.0)
             if RIG.get("xcvr") not in CIV:
                 RIG["power"] = int(float(power))
@@ -2416,8 +2457,13 @@ def rig_poll():
             # it was answering before, or it's there but stuck (a timeout, not a refused connection)
             if (RIG.get("xcvr") or "timed out" in str(e)) and not RIG.get("fail_since"):
                 RIG["fail_since"] = time.time()
-        RIG_WAKE.wait(1 if RIG.get("ptt") else 2)
-        RIG_WAKE.clear()
+            rig_backoff(time.time())
+        if not RIG.get("retry_t"):
+            RIG_WAKE.wait(1 if RIG.get("ptt") else 2)
+            RIG_WAKE.clear()
+        while time.time() < RIG.get("retry_t", 0):  # other wake-ups don't cut this short; "Try now" clears retry_t
+            RIG_WAKE.wait(min(1, max(0.01, RIG.get("retry_t", 0) - time.time())))
+            RIG_WAKE.clear()
 
 def rx_level(now):
     """Incoming signal, from WS: the strongest decode of the last period."""
@@ -3444,13 +3490,14 @@ class H(BaseHTTPRequestHandler):
                 "idle": max(0, round(ENG["idle_until"] - time.time())),
                 "cq_calling": max(0, round(ENG["cq_until"] - time.time())),
                 "mode": mode(), "period": period(),
-                "rig": {**{k: v for k, v in RIG.items() if k != "url"}, "qso": answered()}, "rx": rx_level(now),
+                "rig": {**{k: v for k, v in RIG.items() if k != "url"}, "qso": answered(),
+                        "retry": max(0, round(RIG.get("retry_t", 0) - time.time()))}, "rx": rx_level(now),
                 "swr": swr_state(),
                 "light": tx_light(now), "caps": ws_caps(),
                 "step": ENG.get("step") or {"step": "stopped" if not state["running"] else "idle"},
                 "qrm": {"secs": max(0, round(ENG["qrm_until"] - time.time())), "why": ENG["qrm_why"],
                         "ignored": max(0, round(ENG["qrm_ignore_until"] - time.time()))},
-                "desync": {"why": DESYNC["why"], "t": DESYNC["t"], "stopped": DESYNC["stopped"]},
+                "desync": {"why": DESYNC["why"], "t": DESYNC["t"], "stopped": DESYNC["stopped"], "auto": DESYNC["auto"]},
                 "udp_off": ws_link_problem(),
                 "wrl": {"on": WRL["on"], "port": state["config"]["wrl_port"], "warn": state["config"].get("wrl_warn", True)},
                 "txdf": {"current": u.get("tx_df"), **ENG.get("suggest", {})},
@@ -3477,7 +3524,7 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/start" and DESYNC["why"] and state["config"].get("desync_stop", True):
             return self._json({"error": f"radio out of sync: {DESYNC['why']}. Fix it first (FLRig, the radio, WS's dial)"}, 409)
         if p == "/api/start":
-            state["running"] = True; DESYNC.update(stopped=False, started=time.time())
+            state["running"] = True; DESYNC.update(stopped=False, hunting=False, auto=False, calm=0, started=time.time())
             log("hunter started"); at("idle", "starting at next period")
         elif p == "/api/update/check":
             update_check()
@@ -3494,6 +3541,7 @@ class H(BaseHTTPRequestHandler):
                 return self._json({"error": why}, 409)
         elif p == "/api/stop":
             state["running"] = False; state["target"] = None; ENG["cq_until"] = 0
+            DESYNC.update(hunting=False, auto=False, calm=0)
             ENG["callers"].clear(); halt_ws(); log("stopped, TX halted"); at("stopped")
         elif p == "/api/skip":
             t = state["target"]
@@ -3564,6 +3612,8 @@ class H(BaseHTTPRequestHandler):
             self._json({"ok": True, "holder": holder, "ws_id": state["ws_id"],
                         "ws_addr": state["ws_addr"], "heard": heard,
                         "connected": heard > 0}); return
+        elif p == "/api/rig/retry":
+            RIG["retry_t"] = 0; RIG_WAKE.set()
         elif p == "/api/rig/power":
             try:
                 # the slider sets the power for the stage we are in now
@@ -3602,10 +3652,12 @@ class H(BaseHTTPRequestHandler):
             if answered():  # calling someone may be dropped; a QSO under way is not
                 return self._json({"error": f"in a QSO with {state['target']['call']}: scan when it is done"}, 409)
             c = state["config"]
-            c["scan_bands"] = [b for b in body.get("bands", c["scan_bands"]) if band_of_name(b)]
-            c["scan_modes"] = [m for m in body.get("modes", c["scan_modes"]) if m in SCAN_MODES]
-            save_config()
-            pts = scan_points(set(c["scan_bands"]), set(c["scan_modes"]))
+            bands = [b for b in body.get("bands", c["scan_bands"]) if band_of_name(b)]
+            modes = [m for m in body.get("modes", c["scan_modes"]) if m in SCAN_MODES]
+            if not body.get("once"):  # one band's own button leaves the chips as they are
+                c["scan_bands"], c["scan_modes"] = bands, modes
+                save_config()
+            pts = scan_points(set(bands), set(modes))
             if not pts:
                 return self._json({"error": "pick at least one band and mode"}, 400)
             SCAN["on"] = True  # before the thread starts: a second click is refused
@@ -3680,6 +3732,8 @@ class H(BaseHTTPRequestHandler):
                 log(f"sign-off not usable (needs a 73 for WS to log the QSO; FT8 free text is 13 characters "
                     f"with our call, so 6 for the text; A-Z 0-9 +-./?): {', '.join(bad)}")
             save_config()
+            if "flrig_url" in body:
+                RIG["retry_t"] = 0  # a new address: no waiting out the old one's backoff
             RIG_WAKE.set()  # new power applies now
             if "compat" in body:
                 log("compatibility mode " + ("on: plain WSJT-X UDP only; the TX light shows when to Enable Tx"
