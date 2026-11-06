@@ -4,6 +4,8 @@ Automated FT8 / FT4 / FT2 / Q65 operating for WSJT-X / WS Digital Suite: **make 
 contacts as possible without being rude on the band.** It follows whatever mode WS
 is in; all timing rules scale with the mode's period.
 
+![The FT8 Hunter page during a QSO on 80m: status and radio controls, waterfall, globe of the band's traffic, CQ list and decoded messages](docs/screenshot.webp)
+
 Q65 (handy on 160m and 80m) takes its period (15, 30, 60, 120 or 300 s) and
 sub-mode (A-E, for how wide a signal is) from WS's settings. A quiet Q65 band
 can go many minutes without a decode, so there it doesn't stop for silence. The
@@ -59,7 +61,9 @@ flowchart TD
     tgt -- yes --> fin{Logged, signed off,<br/>or out of tries?}
     fin -- no --> keep[Keep going: re-send the Reply<br/>until they answer] --> wait([next cycle])
     fin -- yes --> rel[Release target<br/>hold it if it never answered] --> wait
-    tgt -- no --> caller{Station<br/>calling me?}
+    tgt -- no --> friend{Friend calling me,<br/>or free to call?}
+    friend -- yes --> fr[Friends first]
+    friend -- no --> caller{Station<br/>calling me?}
     caller -- yes --> ans[Answer it]
     caller -- no --> qrm{Someone else on<br/>frequency? *}
     qrm -- yes --> wait
@@ -88,6 +92,16 @@ calling, and a new caller replaces a CQ we're answering that hasn't answered yet
 (not someone who called us). A station calling you is always answered: holds,
 listen pauses and the busy-frequency backoff only stop the hunter starting
 something new.
+
+**Friends** come before everyone. Star a call in the CQ or Answering lists, or add
+it in the ⭐ Friends card, which also shows when each was last heard on this band.
+A friend calling you is answered first, then a friend calling CQ or signing off is
+called, ahead of other callers, listen pauses, the busy-frequency backoff, CQ first
+and the minimum SNR. A friend also takes over from a station you're only calling
+(one who called you goes back in the queue), but never from a QSO under way. A
+friend already worked on this band and mode, or on hold after not answering, isn't
+called, nor is a CQ aimed elsewhere. In manual (contest) mode they head the list,
+and you still start the QSO. The hunter doesn't change band for a friend.
 
 With several stations calling, the hunter juggles them. Callers queue in the order
 they called, and the time spent working someone else doesn't count against them

@@ -79,6 +79,7 @@ details summary{font-weight:700;padding:4px}
 .mv span:hover{color:var(--hi);background:var(--line)}.one .mv .lr{display:none}
 .card>h2,.card>details>summary,.card>.row:first-child{padding-right:110px}.one .card>h2,.one .card>details>summary,.one .card>.row:first-child{padding-right:70px}
 /* band scan: band chips in their band colour, mode chips in their line style */
+button.star{flex:0;background:none;border:0;padding:0 4px;font-size:1rem;line-height:1;color:var(--muted)}button.star.on{color:var(--held)}
 .chips{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0}.chips label{font-size:.75rem;padding:3px 7px;border-radius:12px;border:2px solid transparent;background:var(--line);color:var(--muted);cursor:pointer;user-select:none}
 .chips label.on{background:var(--accent);color:#fff}.chips input{display:none}
 .bsc{display:inline-flex;align-items:center;gap:2px}.bsc button.mini{padding:3px 8px;font-size:.7rem;border-radius:12px}
@@ -164,6 +165,10 @@ Chart: dB over the floor, 200–3000 Hz · <span style="color:var(--good)">▬ F
 <div class="card" data-id="dx"><h2>🎯 DX focus <span class="small" id="dxn"></span></h2><ul id="dxf"></ul>
 <div class="small" style="margin-top:6px">my TX</div><ul id="mytx"></ul>
 <div class="small" id="holds" style="margin-top:6px"></div></div>
+<div class="card" data-id="friends"><h2>⭐ Friends <span class="small" id="frSum"></span></h2>
+<div class="small">Worked before anyone else while they're on this band: one calling you, then one calling CQ or signing off. Star a call in the lists, or add one here.</div>
+<form id="frAdd" class="row" style="margin-top:6px"><input id="frCall" placeholder="add a call sign" autocapitalize="characters" autocomplete="off" style="flex:1;margin-top:0"><button class="mini" type="submit">Add</button></form>
+<ul id="frList"></ul></div>
 <div class="card" data-id="cq"><h2>📢 CQ calls (activations first, then best chance)</h2><ul id="cq"></ul></div>
 <div class="card" data-id="seq"><div class="row"><span class="small">seq hot: <b id="par">…</b></span><span class="small" id="idle"></span></div>
 <div class="small" id="callers"></div></div>
@@ -266,13 +271,17 @@ const LOOK=(()=>{
 let WHO={target:'',qso:false,waiting:new Set(),worked:new Set()};
 function roleOf(call){const b=baseCall(call||'');
  return !b?'traffic':b===WHO.target?(WHO.qso?'qso':'target'):WHO.waiting.has(b)?'waiting':WHO.worked.has(b)?'worked':'traffic'}
-const callH=c=>{const r=roleOf(c);return r==='traffic'?c:`<span class="r-${r}">${c}</span>`};
+let FRIENDS=new Set();
+const callH=c=>{const r=roleOf(c),f=FRIENDS.has(baseCall(c))?'★':'';return r==='traffic'?f+c:`<span class="r-${r}">${f}${c}</span>`};
+const starB=c=>/^[A-Z0-9/]*\d[A-Z0-9/]*$/.test(c)?`<button class="star${FRIENDS.has(baseCall(c))?' on':''}" onclick="star('${c}')" title="${FRIENDS.has(baseCall(c))?'Take off friends':'Add to friends: worked before anyone else'}">${FRIENDS.has(baseCall(c))?'★':'☆'}</button>`:'';
+async function star(c,on){const r=await api('/api/friends',{call:c,on:on??!FRIENDS.has(baseCall(c))});if(r.error)alert(r.error);tick()}
 // engine steps in the order engine_tick checks them: [id, question, yes-action]
 const STEPS=[['stopped','Hunter running?','Stopped'],
  ['newband','Just arrived on this band?','Listen 2 cycles for a clear offset'],
  ['tuning','New band, antenna not tuned yet?','Tune the antenna under FT8'],
  ['target','Calling or working a target?','Work the target'],
  ['manual','Contest mode?','Wait for the operator to press'],
+ ['friend','Friend calling me, or free to call?','Friends first'],
  ['caller','Station calling me?','Answer the caller'],
  ['check','Time to check for interference?','Pause a cycle and listen'],
  ['qrm','Someone else on frequency?','Back off: no new calls'],
@@ -323,8 +332,8 @@ function flow(st,cfg){const id=(st||{}).step||'stopped',det=(st||{}).detail||'';
 function baseCall(t){t=t.replace(/[<>]/g,'').toUpperCase();const p=t.split('/').filter(Boolean);
  return p.sort((a,b)=>((/\d/.test(b))-(/\d/.test(a)))||b.length-a.length)[0]||t}
 let HELD={};  // base call -> seconds left on hold
-function mark(msg){return msg.split(' ').map(w=>{const h=HELD[baseCall(w)],r=roleOf(w),cls=(r==='traffic'?'':'r-'+r)+(h?' held':'');
- return cls?`<span class="${cls.trim()}"${h?` title="on hold ${Math.ceil(h/60)}m"`:''}>${w}</span>`:w}).join(' ')}
+function mark(msg){return msg.split(' ').map(w=>{const h=HELD[baseCall(w)],r=roleOf(w),cls=(r==='traffic'?'':'r-'+r)+(h?' held':''),t=(FRIENDS.has(baseCall(w))?'★':'')+w;
+ return cls?`<span class="${cls.trim()}"${h?` title="on hold ${Math.ceil(h/60)}m"`:''}>${t}</span>`:t}).join(' ')}
 const SKIP={'on hold':'hold','in QSO':'busy'};
 function cqBadges(e){let b='';
  if(e.skip==='on hold')b+=`<span class="badge hold">hold ${Math.ceil(e.hold_s/60)}m</span>`;
@@ -337,16 +346,20 @@ const srvNow=()=>Date.now()/1000-(window._skew||0);
 function renderAns(){const all=window._ans||[],q=$('aQ').value.trim().toUpperCase(),max=+$('aAge').value,me=$('aMe').checked,now=srvNow();
  const rows=all.filter(e=>(!q||e.msg.toUpperCase().includes(q))&&(!max||now-e.seen<=max)&&(!me||e.tome));
  $('ansn').textContent=rows.length===all.length?`(${all.length})`:`(${rows.length} of ${all.length})`;
- $('ans').innerHTML=rows.map(e=>`<li>${e.tome?'<span class="badge me">TO ME</span>':''}${snrH(e.snr)}<span class="mono">${mark(e.msg)}</span><span class="small ago" data-seen="${e.seen}" title="heard at ${e.t}">${ago(Math.max(0,Math.round(now-e.seen)))}</span></li>`).join('')||'<li>—</li>'}
+ $('ans').innerHTML=rows.map(e=>`<li>${e.tome?'<span class="badge me">TO ME</span>':''}${snrH(e.snr)}${starB(e.from)}<span class="mono">${mark(e.msg)}</span><span class="small ago" data-seen="${e.seen}" title="heard at ${e.t}">${ago(Math.max(0,Math.round(now-e.seen)))}</span></li>`).join('')||'<li>—</li>'}
 function ansPrefs(save){const f={q:$('aQ'),age:$('aAge'),me:$('aMe')};
  try{if(save)localStorage.setItem('ansFilter',JSON.stringify({q:f.q.value,age:f.age.value,me:f.me.checked}));
   else{const p=JSON.parse(localStorage.getItem('ansFilter')||'null');if(p){f.q.value=p.q||'';f.age.value=p.age||'300';f.me.checked=!!p.me}}}catch(e){}}
 ansPrefs(false);['aQ','aAge','aMe'].forEach(id=>$(id).addEventListener('input',()=>{ansPrefs(true);renderAns()}));
 setInterval(()=>{const now=srvNow();document.querySelectorAll('#ans .ago').forEach(el=>el.textContent=ago(Math.max(0,Math.round(now-el.dataset.seen))))},1000);
+function friendsView(fs){const on=fs.filter(f=>f.ago!=null&&f.ago<600);$('frSum').textContent=fs.length?`· ${on.length} of ${fs.length} on the band`:'';
+ $('frList').innerHTML=fs.map(f=>`<li><button class="star on" onclick="star('${f.call}',false)" title="Take off friends">★</button><b class="mono">${f.call}</b> ${f.worked?'<span class="badge wkd">wkd</span>':''}<span class="small mono" style="margin-left:auto">${f.ago==null?'not heard on this band':`${ago(f.ago)} ago · ${f.snr>0?'+':''}${f.snr} dB · ${f.msg}`}</span></li>`).join('')||'<li class="small">No friends yet</li>'}
+$('frAdd').onsubmit=async e=>{e.preventDefault();const c=$('frCall').value.trim().toUpperCase();if(c){await star(c,true);$('frCall').value=''}};
 async function tick(){const s=await api('/api/state');
 const T=s.target;WHO={target:T?baseCall(T.call):'',qso:!!T&&(!!T.resp||T.why==='called us'),
  waiting:new Set((s.callers||[]).map(baseCall)),worked:new Set((s.worked||[]).map(baseCall))};
 document.documentElement.style.setProperty('--band',LOOK.band(s.band));
+FRIENDS=new Set((s.friends||[]).map(f=>f.call));friendsView(s.friends||[]);
 window._cfg=s.config;window._me=s.mycall;fillSettings(s.config,s.udp||{});updView(s.update);setupView(s);cqFirstView(!!s.config.cq_first);manualView(!!s.manual,!!s.manual_forced);pickView(s);if(s.rig)rigView(s.rig,s.rx);swrView(s.swr);HELD=s.holds||{};flow(s.step,{...s.config,manual:!!s.manual});
 $('dot').className='dot'+(s.running?' run':'');lightView(s.light,s.caps);
 $('st').innerHTML=(s.running?'RUNNING':'STOPPED')+' · '+s.mycall+' '+s.mygrid+(s.band?' · '+LOOK.tag(s.band,s.mode):'');
@@ -354,7 +367,7 @@ $('target').innerHTML=T?('🎯 '+callH(T.call)+' '+(T.grid||'')+' · '+(T.why||'
 $('bS').textContent=s.running?'Stop':'Start';$('bS').className=s.running?'warn':'on';
 const tgtCall=s.target?baseCall(s.target.call):'';
 $('cq').innerHTML=s.cq.map(e=>`<li class="${baseCall(e.call)===tgtCall?'tgt':e.skip?'skip':''}">${snrH(e.snr)}
-${e.tag?`<span class="badge${e.special?' act':''}">${e.tag}</span>`:''}<span class="mono"><b class="${e.skip==='on hold'?'held':''}">${callH(e.call)}</b> ${e.grid||''}</span>
+${starB(e.call)}${e.tag?`<span class="badge${e.special?' act':''}">${e.tag}</span>`:''}<span class="mono"><b class="${e.skip==='on hold'?'held':''}">${callH(e.call)}</b> ${e.grid||''}</span>
 ${cqBadges(e)}<span class="small">${e.km!=null?e.km+'km':'?km'} ${e.t}</span>
 ${e.worked?'<span class="badge wkd">wkd</span>':`<button class="mini" onclick="call('${e.call}','${e.grid||''}')">call</button>`}</li>`).join('')||'<li>— quiet —</li>';
 window._skew=Date.now()/1000-(s.now||Date.now()/1000);window._ans=s.answering;renderAns();
@@ -742,8 +755,8 @@ load();setInterval(load,15000);
 const box=document.querySelector('.cards'),KEY='cardCols';
 const all=[...box.querySelectorAll(':scope>.card')],by=Object.fromEntries(all.map(c=>[c.dataset.id,c]));
 const DEF={1:[all.map(c=>c.dataset.id)],
- 2:[['tl','status','wf','scan','globe','flow','dx','manual'],['cq','seq','ans','msgs','log','worked','settings','logbooks','qr']],
- 3:[['tl','status','wf','scan','globe','flow','dx'],['cq','seq','ans','msgs'],['manual','log','worked','settings','logbooks','qr']]};
+ 2:[['tl','status','wf','scan','globe','flow','dx','manual'],['friends','cq','seq','ans','msgs','log','worked','settings','logbooks','qr']],
+ 3:[['tl','status','wf','scan','globe','flow','dx'],['friends','cq','seq','ans','msgs'],['manual','log','worked','settings','logbooks','qr']]};
 let saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||'{}')||{}}catch(e){}
 const ncols=()=>innerWidth>=1350?3:innerWidth>=900?2:1;
 let n=0;

@@ -40,7 +40,7 @@ def dec(msg, snr=-5, df=1500, t_ms=0):
 
 def fresh():
     st["target"] = None; st["cq"].clear(); st["msgs"].clear(); st["worked"] = {}; ENG["held"].clear()
-    ENG["callers"].clear(); ENG["holds"].clear()
+    ENG["callers"].clear(); ENG["holds"].clear(); st["config"]["friends"] = []; ENG["friend_heard"].clear()
     ENG.update(idle_until=0, cq_until=0, idle_n=0, qrm_until=0, qrm_n=0, qrm_ignore_until=0, target_t=0, arrived=None, tx_n=0, check_until=0, fresh_check=0)
     ENG["occ"].clear(); ENG["spec"].clear(); ENG["noise_hist"].clear(); st["udp"].pop("tx_df", None)
     ENG["spec_pending"].clear(); ENG["qrm_first"] = None; ENG["tx_iv"].clear(); ENG["tune_iv"].clear()
@@ -254,6 +254,42 @@ b = st["target"]; b["left"] = 1; b["done"] = True; ns["engine_tick"]()
 t = st["target"]; t["left"] = 3
 for i in range(3): ns["engine_tick"]()
 check("juggling doesn't go on for ever: out of tries, they go on hold", st["target"] is None and ns["on_hold"]("F8AEJ"))
+# friends: worked before anyone else
+def frs(*calls):
+    fresh(); st["running"] = True; st["config"]["friends"] = list(calls)
+frs("W1AW")
+dec("KR4MZM K9XX EN52"); dec("CQ W1AW FN31", snr=-25); dec("CQ VK2AA QF56", snr=5); ns["engine_tick"]()
+check("a friend's CQ goes before a caller and a better CQ, even too weak for the others", st["target"]["call"] == "W1AW" and ENG["step"]["step"] == "friend")
+check("...the caller keeps their place", [c["call"] for c in ENG["callers"]] == ["K9XX"])
+frs("W1AW")
+dec("KR4MZM K9XX EN52"); dec("KR4MZM K7YY DM42"); dec("KR4MZM W1AW FN31"); dec("CQ VK2AA QF56"); ns["engine_tick"]()
+check("a friend calling us goes to the head of the queue", st["target"]["call"] == "W1AW" and st["target"]["why"] == "called us" and [c["call"] for c in ENG["callers"]] == ["K9XX", "K7YY"])
+frs("W1AW", "N0FR")
+dec("CQ N0FR EN34"); dec("KR4MZM W1AW FN31"); ns["engine_tick"]()
+check("one friend calling us goes before another calling CQ", st["target"]["call"] == "W1AW")
+frs("W1AW")
+dec("K1ZZ W1AW RR73", t_ms=recent_tm(0)); dec("KR4MZM K9XX EN52"); ns["engine_tick"]()
+check("a friend signing off is tail-ended before any caller", st["target"]["call"] == "W1AW" and st["target"]["why"] == "tail-end")
+frs("W1AW"); ENG["qrm_until"] = time.time() + 300; ENG["idle_until"] = time.time() + 60; ENG["check_until"] = time.time() + 30; st["config"]["cq_first"] = True
+dec("CQ W1AW FN31"); ns["engine_tick"]()
+check("friends go ahead of pauses, the busy-frequency backoff and CQ first", st["target"] and st["target"]["call"] == "W1AW")
+st["config"]["cq_first"] = False
+frs("W1AW"); dec("CQ K1ZZ FN42"); ns["engine_tick"](); a = st["target"]; dec("CQ W1AW FN31"); CTX["tx"].sent.clear(); ns["engine_tick"]()
+check("a friend's CQ takes over from a CQ we're only calling, dropped without a Halt", st["target"]["call"] == "W1AW" and HALT not in CTX["tx"].sent and not ENG["callers"])
+frs("W1AW"); dec("KR4MZM K9XX EN52"); ns["engine_tick"](); dec("KR4MZM W1AW FN31"); ns["engine_tick"]()
+check("...and from a caller we haven't connected with, who goes back in the queue", st["target"]["call"] == "W1AW" and [c["call"] for c in ENG["callers"]] == ["K9XX"])
+frs("W1AW"); dec("KR4MZM K9XX EN52"); ns["engine_tick"](); a = st["target"]; dec("KR4MZM K9XX R-05"); dec("CQ W1AW FN31"); ns["engine_tick"]()
+check("never a QSO under way", st["target"] is a)
+a["left"] = 1; a["done"] = True; dec("CQ W1AW FN31"); ns["engine_tick"]()
+check("...the friend is next", st["target"]["call"] == "W1AW")
+frs("W1AW"); ns["add_worked"]("W1AW"); dec("CQ W1AW FN31"); ns["engine_tick"]()
+check("not once worked on this band and mode", not (st["target"] and st["target"]["call"] == "W1AW"))
+frs("W1AW"); ns["hold"]("W1AW"); dec("CQ W1AW FN31"); ns["engine_tick"]()
+check("not while on hold, after they didn't answer", not (st["target"] and st["target"]["call"] == "W1AW"))
+frs("W1AW"); st["config"]["manual"] = True
+dec("CQ K1ZZ FN42"); dec("KR4MZM K9XX EN52"); dec("CQ W1AW FN31"); ns["engine_tick"]()
+check("manual mode: nothing starts by itself, the friend is first on the list", st["target"] is None and ns["suggestions"]()[0]["call"] == "W1AW")
+st["config"]["manual"] = False
 # regression: AG5PC called us and we'd answered; KW4ZD's call took their QSO over
 fresh(); st["running"] = True
 dec("KR4MZM AG5PC -13"); ns["engine_tick"](); a = st["target"]; dec("KR4MZM KW4ZD EM56")
@@ -1024,6 +1060,17 @@ def mpost(path, body):
     except urllib.error.HTTPError as e:
         return json.load(e)
 import urllib.error
+# the friends list over HTTP
+fresh(); mpost("/api/friends", {"call": "w1aw/p"})
+check("starring saves the base call", st["config"]["friends"] == ["W1AW"] and json.load(open(ns["CONFIG_FILE"]))["friends"] == ["W1AW"])
+check("...and a portable call counts as them", ns["is_friend"]("W1AW/P") and not ns["is_friend"]("W1AX"))
+st["running"] = False; dec("CQ W1AW FN31", snr=-7)
+f = json.load(urllib.request.urlopen(f"http://127.0.0.1:{srv.server_address[1]}/api/state"))["friends"][0]
+check("the watch list shows when and how they were last heard", f["call"] == "W1AW" and f["ago"] <= 2 and f["snr"] == -7 and "friend on the band" in "".join(x["msg"] for x in list(st["log"])[:2]))
+mpost("/api/friends", {"call": "W1AW", "on": False}); check("unstarring takes them off", st["config"]["friends"] == [])
+r = mpost("/api/friends", {"call": "HELLO"})
+check("not a call sign: refused", "error" in r and st["config"]["friends"] == [])
+fresh()
 # --- "It's just interference" on the busy-frequency warning
 fresh()
 for i in range(8): handle(spectrum(quiet, t_ms=i * 15000))

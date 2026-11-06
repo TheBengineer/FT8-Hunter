@@ -60,6 +60,7 @@ state = {
                "max_cycles": 3, "cooldown": 2, "cq_only": True,
                "cq_tries": 3, "tail_tries": 2, "qso_tries": 7, "hold_min": 10,
                "idle_every": 4, "idle_secs": 60, "special_first": True,
+               "friends": [],  # base calls we know: worked before anyone else (the ⭐ in the page)
                "call_cq": True, "cq_secs": 120, "cq_first": False,
                "manual": False,
                "compat": False,  # plain WSJT-X/WS UDP only (no ws-hunter commands): a light asks you to Enable Tx  # contest mode: the hunter ranks, the operator taps to start each QSO
@@ -617,6 +618,7 @@ CTX = {"tx": None, "myll": None, "seen": {}, "cycle": [0]}
 # idle_until ts (listen-only rest), busy_cycles (consecutive cycles with a target)
 ENG = {"holds": {}, "held": {}, "callers": deque(maxlen=20), "parity": {0: 0, 1: 0},
        "idle_until": 0, "busy": 0, "idle_n": 0,
+       "friend_heard": {},  # friend's base call -> {t, snr, msg}: last heard on this band
        "target_t": 0,  # last tick we had a target: callers wait their turn until then
        "tx_n": 0, "check_until": 0,  # transmissions since the last interference check; pause ends
        "cq_until": 0,  # calling our own CQ until this time (0 = not calling)
@@ -1190,7 +1192,7 @@ def new_slot():
     state["msgs"].clear()
     for k in ("callers", "occ", "noise_hist", "spec_pending", "spec_hist"):
         ENG[k].clear()
-    for k in ("spec", "active", "calls_to"):
+    for k in ("spec", "active", "calls_to", "friend_heard"):
         ENG[k].clear()
     ENG["cq_until"] = 0
 
@@ -1673,7 +1675,7 @@ def fresh_callers(now=None):
         if (is_worked(c["call"]) and not c.get("again")) or on_hold(c["call"]) or caller_gone(c, now):
             ENG["callers"].remove(c)
     free = [c for c in list(ENG["callers"]) if not (c.get("moved") and now - ENG["active"].get(base_call(c["call"]), 0) < cyc(4))]
-    return sorted(free, key=lambda c: bool(c.get("moved")))
+    return sorted(free, key=lambda c: (not is_friend(c["call"]), bool(c.get("moved"))))
 
 def caller_moved_on(call, doing, now):
     """A queued caller heard calling CQ or working someone else: still queued
@@ -1735,6 +1737,33 @@ def at(step, detail=""):
     decision flow). Steps follow engine_tick's order; see STEPS in the UI."""
     ENG["step"] = {"step": step, "detail": detail, "t": time.time()}
 
+def is_friend(call):
+    return base_call(call) in state["config"].get("friends", ())
+
+def friend_calls(now):
+    """Friends we can call ourselves right now, CQs before sign-offs: (call, grid, msg, why, tries)."""
+    cfg = state["config"]
+    return [(e["call"], e["grid"], e["msg"], e["tag"] if e.get("special") else "CQ", cfg.get("cq_tries", 3))
+            for e in sorted([e for e in list(state["cq"].values()) if is_friend(e["call"]) and not cq_skip(e, now)],
+                            key=cq_rank)] \
+        + [(frm, "", m["msg"], "tail-end", cfg.get("tail_tries", 2)) for m, frm in tail_cands(now) if is_friend(frm)]
+
+def friend_first(t, now):
+    """A friend is free while we're still only calling someone else: stop
+    calling (someone who called us goes back in the queue). Never a QSO under
+    way, and not in manual (contest) mode, where the operator starts each QSO."""
+    if manual_on() or t.get("resp") or t.get("again") or t.get("done") or is_friend(t["call"]):
+        return False
+    who = next((c["call"] for c in fresh_callers(now) if is_friend(c["call"])), None) \
+        or next((f[0] for f in friend_calls(now)), None)
+    if not who:
+        return False
+    log(f"friend {who} first: {t['call']} can wait")
+    if t.get("why") == "called us":
+        set_aside(t, now)
+    state["target"] = None
+    return True
+
 def cq_skip(e, now=None):
     """Why a CQ won't be answered right now; '' means it is worth answering.
     The engine and the UI share this, so the badges match what it does."""
@@ -1751,7 +1780,7 @@ def cq_skip(e, now=None):
         return "stale"
     if in_qso(e):
         return "in QSO"
-    if e["snr"] < state["config"].get("min_snr", -20):
+    if e["snr"] < state["config"].get("min_snr", -20) and not is_friend(e["call"]):
         return "weak"
     if not e.get("msg"):
         return "no decode"
@@ -1935,7 +1964,7 @@ def engine_tick():
         state["target"] = t = None
     if t:
         ENG["target_t"] = now
-        if juggle(t, now):
+        if friend_first(t, now) or juggle(t, now):
             t = None
     if t:
         t["left"] -= 1
@@ -1975,8 +2004,14 @@ def engine_tick():
         ENG["busy"] = 0
         n = len(suggestions(now))
         return at("manual", f"{n} to pick from" if n else "nothing to pick yet")
-    # stations calling us, first-come-first-serve, working through all of them
+    # stations calling us, first-come-first-serve, working through all of them;
+    # friends before anyone: one calling us, then one we can call
     waiting = fresh_callers(now)
+    if not (waiting and is_friend(waiting[0]["call"])):
+        for call, grid, msg, why, tries in friend_calls(now):
+            if acquire(call, grid, msg, tries=tries, why=why):
+                ENG["busy"] += 1
+                return at("friend", f"{call} ({why})")
     while waiting:
         c = waiting.pop(0)
         ENG["callers"].remove(c)
@@ -1994,7 +2029,7 @@ def engine_tick():
                 resume_aside(c)
             ENG["busy"] += 1
             more = f" ({len(waiting)} more waiting)" if waiting else ""
-            return at("caller", c["call"] + more)
+            return at("friend" if is_friend(c["call"]) else "caller", c["call"] + more)
     # Every check_every transmissions, between QSOs: one cycle without
     # transmitting, to hear whether anyone else has come up on frequency
     every = cfg.get("check_every", 10)
@@ -2070,7 +2105,7 @@ def tail_cands(now):
             continue
         if not rest or rest[-1] not in SIGNOFF:
             continue
-        if is_worked(frm) or on_hold(frm) or m["snr"] < state["config"].get("min_snr", -20):
+        if is_worked(frm) or on_hold(frm) or (m["snr"] < state["config"].get("min_snr", -20) and not is_friend(frm)):
             continue
         out.append(((rest[-1] == "73", -m["snr"]), m, frm))
     out.sort(key=lambda x: x[0])
@@ -2097,6 +2132,7 @@ def suggestions(now=None):
         add(e["call"], e["msg"], e["tag"] if e.get("special") else "CQ", cfg.get("cq_tries", 3))
     for m, frm in tail_cands(now):
         add(frm, m["msg"], "tail-end", cfg.get("tail_tries", 2))
+    out.sort(key=lambda x: not is_friend(x["call"]))
     return out[:12]
 
 def start_check(now, why):
@@ -2171,7 +2207,7 @@ def cq_score(e, now=None):
 
 def cq_rank(e):
     special = state["config"].get("special_first", True) and e.get("special", False)
-    return (not special, -cq_score(e), e["km"] is None, e["km"] or 0)
+    return (not is_friend(e["call"]), not special, -cq_score(e), e["km"] is None, e["km"] or 0)
 
 def acquire(call, grid, msg, tries, why, can_wait=False):
     """Call them. can_wait: if our offset needs to move and we haven't heard
@@ -2233,6 +2269,12 @@ def handle_decode(msg, snr, tx, myll, seen, cycle, t_ms=None):
             "seen": now, "tome": to_me,
             "dx": bool(tgt) and (same_call(to, tgt) or same_call(frm, tgt))})
         m = CQ_RE.match(msg)
+        who = m.group(2).upper() if m else frm
+        if who and "." not in who and is_friend(who):
+            fh = ENG["friend_heard"]
+            if now - fh.get(base_call(who), {}).get("t", 0) > 600:
+                log(f"⭐ friend on the band: {msg}")
+            fh[base_call(who)] = {"t": now, "snr": snr, "msg": msg}
         if m:
             tag = (m.group(1) or "").upper()
             call, grid = m.group(2).upper(), (m.group(3) or "").upper()
@@ -3560,6 +3602,9 @@ class H(BaseHTTPRequestHandler):
                 "answering": ans[:80], "now": now, "worked": worked, "book": book[:200], "band": band(),
                 "msgs": msgs, "mytx": list(state["mytx"])[:15], "origins": origin_stats(), "dxfocus": dxf,
                 "holds": holds, "callers": [c["call"] for c in list(ENG["callers"])],
+                "friends": [{"call": f, "worked": is_worked(f), "ago": round(now - h["t"]) if h else None,
+                             "snr": h and h["snr"], "msg": h and h["msg"]}
+                            for f in state["config"].get("friends", []) for h in [ENG["friend_heard"].get(f)]],
                 "parity": {"even": par[0], "odd": par[1],
                            "hot": ("even" if par[0] >= par[1] else "odd")},
                 "idle": max(0, round(ENG["idle_until"] - time.time())),
@@ -3687,6 +3732,14 @@ class H(BaseHTTPRequestHandler):
             self._json({"ok": True, "holder": holder, "ws_id": state["ws_id"],
                         "ws_addr": state["ws_addr"], "heard": heard,
                         "connected": heard > 0}); return
+        elif p == "/api/friends":
+            call = base_call(str(body.get("call", "")).strip().upper())
+            if not MYCALL_RE.fullmatch(call):
+                return self._json({"error": f"{call or 'that'} doesn't look like a call sign"}, 400)
+            f = [x for x in state["config"].get("friends", []) if x != call]
+            state["config"]["friends"] = sorted(f + [call]) if body.get("on", True) else f
+            save_config()
+            log(f"⭐ {call} added to friends" if body.get("on", True) else f"{call} taken off friends")
         elif p == "/api/rig/retry":
             RIG["retry_t"] = 0; RIG_WAKE.set()
         elif p == "/api/rig/power":
