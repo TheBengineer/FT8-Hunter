@@ -2,6 +2,25 @@
 
 What changed in each release of FT8 Hunter, newest first.
 
+## 1.1.16 (2026-11-07)
+
+- New: a watch list of friends. Click the ☆ beside a call in the CQ or Answering
+  lists to star it (★ once starred), or type a call into the ⭐ Friends card. The
+  card shows when each friend was last heard on this band, with its signal and
+  message, and whether you've already worked them. The list is saved in the hunter
+  config, and `W1AW/P` counts as `W1AW`.
+- Friends come first. A friend calling you is answered first, then a friend calling
+  CQ or signing off is called, ahead of other callers, listen pauses, the
+  busy-frequency backoff, CQ first and the minimum SNR. A friend takes over from a
+  station you're only calling (one who called you goes back in the queue), but never
+  from a QSO under way.
+- A friend isn't called if you've already worked them on this band and mode, if
+  they're on hold after not answering, or if their CQ is aimed elsewhere. In manual
+  (contest) mode friends head the list, and you still start the QSO. The hunter
+  doesn't change band for a friend.
+- When a friend appears on the band, the log says `⭐ friend on the band`. It says
+  this again if they were last heard more than 10 minutes ago.
+
 ## 1.1.15 (2026-11-05)
 
 - With several stations answering your CQ, the hunter now juggles them. If the
