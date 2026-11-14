@@ -309,7 +309,7 @@ fresh(); st["config"]["call_cq"] = False
 now_par = ns["parity"](ns["tod_ms"](time.time()))
 dec("CQ YS1CH EK54", snr=-5, t_ms=now_par * 15000)     # their CQ is in the current period's parity
 ns["engine_tick"]()
-check("starting in their period allows an extra period", st["target"]["left"] == 7)
+check("starting in their period allows an extra period", st["target"]["left"] == 5)
 st["target"] = None; ns["hold"]("YS1CH")                # tries ran out, held
 dec("CQ EA8UP IL18", snr=-3); ns["engine_tick"]()        # moved on to the next CQ
 check("moved on to EA8UP", st["target"]["call"] == "EA8UP")
@@ -510,8 +510,8 @@ st["udp"]["revision"] = ""
 ns["load_cty"]()
 fresh(); dec("CQ K9XYZ EN52", snr=5); ns["engine_tick"]()
 their_period_now = ns["parity"](ns["tod_ms"](time.time())) == 0   # CQ above was decoded in period 0
-check("tries count transmissions (3 tries = 6 periods, +1 if starting in their period)",
-      st["target"]["left"] == (7 if their_period_now else 6))
+check("tries count transmissions (2 tries = 4 periods, +1 if starting in their period)",
+      st["target"]["left"] == (5 if their_period_now else 4))
 CTX["tx"].sent.clear(); dec("N0OTH K9XYZ -12")
 check("target answers someone else -> stop calling, no hold",
       st["target"] is None and HALT in CTX["tx"].sent and not ns["on_hold"]("K9XYZ"))
@@ -1800,6 +1800,46 @@ check("Linux, yes: hunter stopped, download checked, the new hunter in place, re
       and not os.path.exists(os.path.join(_tmp, "updates", "FT8-Hunter-99.1.0-linux-x64.tar.gz")))
 sys.executable, ns["FROZEN"] = real_exe, real_frozen
 fl.shutdown(); srv.shutdown()
+
+# --- Linux: the systemd user service from the window's button (no real systemctl)
+cfg_home = tempfile.mkdtemp(); real_xdg = os.environ.get("XDG_CONFIG_HOME")
+os.environ["XDG_CONFIG_HOME"] = cfg_home
+calls = []
+def fake_systemctl(*args):
+    calls.append(args)
+    return {"show-environment": (0, "PATH=/usr/bin"), "is-enabled": (0, "enabled"),
+            "is-active": (3, "inactive")}.get(args[0], (0, ""))
+real_systemctl, ns["systemctl"] = ns["systemctl"], fake_systemctl
+unit = ns["service_unit_path"]()
+os.makedirs(os.path.join(cfg_home, "autostart"))
+mine = os.path.join(cfg_home, "autostart", "ft8-hunter.desktop")
+open(mine, "w").write("[Desktop Entry]\nExec=/opt/FT8-Hunter --window\nX-FT8-Hunter-Installer=1\n")
+check("service unit goes in XDG_CONFIG_HOME/systemd/user", unit == os.path.join(cfg_home, "systemd", "user", "ft8-hunter.service"))
+txt = ns["service_unit_text"]("/home/x y/.local/opt/FT8-Hunter/FT8-Hunter")
+check("service unit: quoted ExecStart, no window, restarts after an update (exit 75)",
+      'ExecStart="/home/x y/.local/opt/FT8-Hunter/FT8-Hunter" --no-window' in txt and "Restart=on-failure" in txt
+      and ns["SERVICE_MARK"] in txt and "WantedBy=default.target" in txt)
+st0 = ns["service_status"]()
+check("service: not installed yet", not st0["installed"] and st0["systemd"]
+      and ns["service_label"](st0) == "Service: not installed")
+check("service installs: written, reloaded, enabled (not started: the window holds the ports)",
+      ns["service_install"]("/opt/FT8-Hunter") == "" and os.path.exists(unit)
+      and ("daemon-reload",) in calls and ("enable", "ft8-hunter.service") in calls
+      and not any(c[0] == "start" for c in calls))
+check("service replaces install.sh's start-up with the window", not os.path.exists(mine))
+st1 = ns["service_status"]()
+check("service: installed, ours, label says so",
+      st1["installed"] and st1["ours"] and ns["service_label"](st1) == "Service: installed, not running, starts when you log in")
+open(unit, "w").write("[Service]\nExecStart=/usr/bin/python3 /home/me/FT8-Hunter/ft8_server.py\n")
+check("service: a unit you wrote yourself is left alone",
+      "left alone" in ns["service_install"]("/opt/FT8-Hunter") and "ft8_server.py" in open(unit).read()
+      and ns["service_label"](ns["service_status"]()).endswith("(your own unit)"))
+ns["systemctl"] = lambda *a: (None, "no systemctl")
+check("service: no systemd user session -> said so", ns["service_label"](ns["service_status"]()) == "Service: no systemd user session here")
+ns["systemctl"] = real_systemctl
+if real_xdg is None: os.environ.pop("XDG_CONFIG_HOME", None)
+else: os.environ["XDG_CONFIG_HOME"] = real_xdg
+check("another hunter on a port: none here answers on a free one", not ns["hunter_answers"](1))
 
 print("ALL PASS" if ok else "SOME FAILED")
 sys.exit(0 if ok else 1)

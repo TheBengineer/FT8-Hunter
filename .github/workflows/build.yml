@@ -136,9 +136,31 @@ jobs:
             macOS) mkdir "FT8 Hunter"; mv FT8-Hunter.app ws.app README.md "FT8 Hunter/"
                    cp "../macos/Install FT8 Hunter.command" "FT8 Hunter/"; chmod +x "FT8 Hunter/Install FT8 Hunter.command"
                    ditto -c -k --keepParent "FT8 Hunter" "../${{ matrix.asset }}" ;;
-            *) tar czf "../${{ matrix.asset }}" FT8-Hunter ws-hunter.AppImage README.md ;;
+            *) cp ../linux/install.sh .; chmod +x install.sh  # flat: older hunters' updates look for these names at the top
+               tar czf "../${{ matrix.asset }}" FT8-Hunter ws-hunter.AppImage README.md install.sh ;;
           esac
           ls -l "../${{ matrix.asset }}"
+      - name: "Linux installer test: install, serves the page, update in place, uninstall"
+        if: runner.os == 'Linux'
+        run: |
+          t=$(mktemp -d); mkdir "$t/pkg" "$t/home"; tar xzf "${{ matrix.asset }}" -C "$t/pkg"
+          # a home of its own; no systemd session in it (a service is tested offline in test_hunter.py)
+          run() { env -i HOME="$t/home" PATH=/usr/bin:/bin USER=runner "$@" < /dev/null; }
+          run bash "$t/pkg/install.sh" --autostart
+          app="$t/home/.local/opt/FT8-Hunter"
+          for f in "$app/FT8-Hunter" "$app/ws-hunter.AppImage" "$app/install.sh" \
+                   "$t/home/.local/bin/ft8-hunter" "$t/home/.local/share/applications/ft8-hunter.desktop" \
+                   "$t/home/.local/share/applications/ft8-hunter-ws.desktop" "$t/home/.config/autostart/ft8-hunter.desktop"; do
+            [ -e "$f" ] || { echo "missing after install: $f"; exit 1; }
+          done
+          cmp "$app/ws-hunter.AppImage" dist/ws-hunter.AppImage
+          run "$app/FT8-Hunter" --no-window --http 8383 > inst.log 2>&1 &
+          for i in $(seq 1 30); do curl -fs http://localhost:8383/ -o inst.html && break; sleep 1; done
+          grep -q "FT8 Hunter" inst.html; pkill -f "$app/FT8-Hunter" || true; cat inst.log
+          run bash "$t/pkg/install.sh" | grep -q "starts with its window"   # again: an update keeps the choice
+          run bash "$app/install.sh" --uninstall
+          [ ! -e "$app" ] && [ ! -e "$t/home/.local/bin/ft8-hunter" ] && [ ! -e "$t/home/.config/autostart/ft8-hunter.desktop" ] \
+            || { echo "left behind after uninstall"; find "$t/home"; exit 1; }
       - name: "Mac install script, run from the unzipped download"
         if: runner.os == 'macOS'
         run: |

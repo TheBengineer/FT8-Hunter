@@ -2,6 +2,28 @@
 
 What changed in each release of FT8 Hunter, newest first.
 
+## 1.1.17 (2026-11-14)
+
+- Fewer calls to a station that doesn't answer: the hunter now calls a CQ 2
+  times by default, not 3. In a month of this hunter's own transmissions, the
+  third call drew a reply only 8% of the time, and cost about 12% of all calling
+  time for 7% of replies. An existing install keeps the number it has saved:
+  change it in Settings → **CQ tries**.
+- New on Linux: an installer. Unpack the download and run `./install.sh`. It
+  installs FT8 Hunter and WS (ws-hunter) for you alone, with no root, in
+  `~/.local/opt/FT8-Hunter`, where the hunter can still update itself. It adds
+  menu entries for both and the commands `ft8-hunter` and `ws-hunter`, and asks
+  whether to start the hunter with its window when you log in, as a systemd
+  user service, or not at all. Run it again to update; `--uninstall` removes it
+  and keeps your settings and logs. It says when WS's AppImage needs `libfuse2`
+  or the radio's serial port needs the `dialout` group.
+- New on Linux: the hunter's window shows whether the systemd user service is
+  installed and running. **Run as a background service…** installs it, closes
+  the window (WS's TX off) and starts the service in its place, at the same
+  address.
+- Starting FT8 Hunter while another one is already running (the service, or a
+  window left open) now opens that one's page. Before, it quit without a word.
+
 ## 1.1.16 (2026-11-07)
 
 - New: a watch list of friends. Click the ☆ beside a call in the CQ or Answering

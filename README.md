@@ -294,6 +294,22 @@ user (no admin prompt) or for all users, with a Start menu entry, an optional
 desktop icon, an optional start at sign-in, and an uninstaller. An installed
 hunter can update itself (below).
 
+On Linux, unpack the tarball and run `./install.sh`. It installs for you alone
+(no root) into `~/.local/opt/FT8-Hunter`: FT8 Hunter and WS (the ws-hunter
+AppImage), menu entries for both, and the commands `ft8-hunter` and `ws-hunter`
+in `~/.local/bin`. In a terminal it asks how to start: with its window when you
+log in (the default), as a systemd user service (no window), or not at all
+(`--autostart`, `--service` and `--no-start` choose without asking). Running it
+again updates both and keeps that choice. `--uninstall` removes it all but your
+settings and logs. It leaves a `ft8-hunter.service` or `ws-hunter.desktop` you
+wrote yourself alone. It tells you when you need `libfuse2` for the AppImage (WS
+runs without it, more slowly) or the `dialout` group for the radio's serial port.
+
+On Linux the window shows whether the systemd user service is installed and
+running. **Run as a background service…** installs it, closes the window (WS's TX
+off) and starts the service in its place, at the same address. Starting FT8
+Hunter from the menu while the service runs opens its page.
+
 The builds aren't signed. On Windows, SmartScreen asks first: **More info → Run
 anyway**. On macOS, install with **Install FT8 Hunter.command** (see below). A packaged
 hunter keeps its settings and logs in `%APPDATA%\FT8-Hunter` (Windows),
@@ -331,7 +347,8 @@ sends GitHub nothing but the hunter's version in its User-Agent.
 Every download comes with the [ws-hunter](https://github.com/TheBengineer/ws-hunter/releases)
 build of WS. On Windows the installer adds a **WS (ws-hunter)** Start menu entry
 (the zip has a `ws-hunter` folder: run `bin\ws.exe`). On Linux the tarball
-has `ws-hunter.AppImage`; running it may need `libfuse2`. That WS is a fixed
+has `ws-hunter.AppImage`, which `install.sh` puts in the menu as **WS
+(ws-hunter)**; running it directly needs `libfuse2`. That WS is a fixed
 build: an update of the hunter leaves an installed WS alone unless the WS build
 changes. It shares settings, logs and ALL.TXT with any other WS, so run only one
 at a time.

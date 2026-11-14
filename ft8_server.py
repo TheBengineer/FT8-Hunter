@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections import deque
 from urllib.parse import urlparse
 
-VERSION = "1.1.16"  # a release's tag is v + this (the build refuses a tag that doesn't match)
+VERSION = "1.1.17"  # a release's tag is v + this (the build refuses a tag that doesn't match)
 
 # The page ships beside this script (or inside a packaged build); the hunter's
 # own files (settings, logs) live beside the script too, or for a packaged
@@ -58,7 +58,7 @@ state = {
                "new_band_cycles": 2,  # full cycles heard on a new band before transmitting
                "swr_high": 1.2, "swr_bad": 1.5,  # SWR reading this many times the usual: higher / much higher
                "max_cycles": 3, "cooldown": 2, "cq_only": True,
-               "cq_tries": 3, "tail_tries": 2, "qso_tries": 7, "hold_min": 10,
+               "cq_tries": 2, "tail_tries": 2, "qso_tries": 7, "hold_min": 10,
                "idle_every": 4, "idle_secs": 60, "special_first": True,
                "friends": [],  # base calls we know: worked before anyone else (the ⭐ in the page)
                "call_cq": True, "cq_secs": 120, "cq_first": False,
@@ -1726,7 +1726,7 @@ def juggle(t, now):
 def resume_aside(c):
     """The QSO `c` was set aside from, now the target again."""
     t, a = state["target"], c["aside"]
-    tries = state["config"].get("qso_tries", 7) if a["resp"] else state["config"].get("cq_tries", 3)
+    tries = state["config"].get("qso_tries", 7) if a["resp"] else state["config"].get("cq_tries", 2)
     done = words(c["msg"])[-1] in SIGNOFF
     t.update(resp=a["resp"], sends=a["sends"], last=c["msg"] if a["resp"] else None, done=done,
              left=2 if done else max(1, tries - a["sends"]) * 2 + 1)
@@ -1743,7 +1743,7 @@ def is_friend(call):
 def friend_calls(now):
     """Friends we can call ourselves right now, CQs before sign-offs: (call, grid, msg, why, tries)."""
     cfg = state["config"]
-    return [(e["call"], e["grid"], e["msg"], e["tag"] if e.get("special") else "CQ", cfg.get("cq_tries", 3))
+    return [(e["call"], e["grid"], e["msg"], e["tag"] if e.get("special") else "CQ", cfg.get("cq_tries", 2))
             for e in sorted([e for e in list(state["cq"].values()) if is_friend(e["call"]) and not cq_skip(e, now)],
                             key=cq_rank)] \
         + [(frm, "", m["msg"], "tail-end", cfg.get("tail_tries", 2)) for m, frm in tail_cands(now) if is_friend(frm)]
@@ -2023,7 +2023,7 @@ def engine_tick():
                 ENG["rr73_again"][k] = ENG["rr73_again"].get(k, 0) + 1
                 return at("caller", f"{c['call']} ({what} again)")
             continue
-        if acquire(c["call"], c.get("grid", ""), c["msg"], tries=cfg.get("cq_tries", 3), why=c.get("why", "called us")):
+        if acquire(c["call"], c.get("grid", ""), c["msg"], tries=cfg.get("cq_tries", 2), why=c.get("why", "called us")):
             state["target"]["heard"] = c["t"]
             if c.get("aside"):
                 resume_aside(c)
@@ -2054,7 +2054,7 @@ def engine_tick():
              and not (cq_first and not (e.get("special") and cfg.get("special_first", True)))]
     cands.sort(key=cq_rank)
     for e in cands:
-        if acquire(e["call"], e["grid"], e["msg"], tries=cfg.get("cq_tries", 3),
+        if acquire(e["call"], e["grid"], e["msg"], tries=cfg.get("cq_tries", 2),
                    why=e["tag"] if e.get("special") else "CQ", can_wait=True):
             ENG["busy"] += 1
             special = e.get("special") and cfg.get("special_first", True)
@@ -2127,9 +2127,9 @@ def suggestions(now=None):
         if c.get("again"):
             add(c["call"], c["msg"], ("73" if words(c["msg"])[-1] == "RRR" else "RR73") + " again", 1)
         else:
-            add(c["call"], c["msg"], "called us", cfg.get("cq_tries", 3))
+            add(c["call"], c["msg"], "called us", cfg.get("cq_tries", 2))
     for e in sorted([e for e in list(state["cq"].values()) if not cq_skip(e, now)], key=cq_rank):
-        add(e["call"], e["msg"], e["tag"] if e.get("special") else "CQ", cfg.get("cq_tries", 3))
+        add(e["call"], e["msg"], e["tag"] if e.get("special") else "CQ", cfg.get("cq_tries", 2))
     for m, frm in tail_cands(now):
         add(frm, m["msg"], "tail-end", cfg.get("tail_tries", 2))
     out.sort(key=lambda x: not is_friend(x["call"]))
@@ -3468,6 +3468,104 @@ def update_relaunch():
     time.sleep(1)
     shutdown(None, None)
 
+# Linux: the hunter as a systemd user service (no window), set up from the
+# window's button or by install.sh. Both mark the unit they write, and leave a
+# unit someone wrote themselves alone. Restart=on-failure: an update exits with
+# 75 and systemd starts the new version.
+SERVICE = "ft8-hunter.service"
+SERVICE_MARK = "X-FT8-Hunter-Installer=1"
+
+def service_unit_path():
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "systemd", "user", SERVICE)
+
+def service_unit_text(exe):
+    return (f"# {SERVICE_MARK}\n[Unit]\nDescription=FT8 Hunter (call, grid and ports: Settings in its web UI)\n"
+            "After=network-online.target\n\n[Service]\n"
+            f'ExecStart="{exe}" --no-window\nRestart=on-failure\nRestartSec=5\n\n'
+            "[Install]\nWantedBy=default.target\n")
+
+def systemctl(*args):
+    """systemctl --user ARGS: (exit code, output), or (None, why) without systemd."""
+    import subprocess
+    try:
+        r = subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True, timeout=10)
+        return r.returncode, (r.stdout or r.stderr).strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, str(e)
+
+def service_status():
+    """The service as the window shows it: {systemd, installed, ours, enabled, active}."""
+    path = service_unit_path()
+    st = {"systemd": systemctl("show-environment")[0] == 0, "installed": os.path.exists(path),
+          "ours": False, "enabled": "", "active": ""}
+    if st["installed"]:
+        try:
+            st["ours"] = SERVICE_MARK in open(path, encoding="utf-8").read()
+        except OSError:
+            pass
+    if st["systemd"]:
+        st["enabled"] = (systemctl("is-enabled", SERVICE)[1].splitlines() or [""])[0]
+        st["active"] = (systemctl("is-active", SERVICE)[1].splitlines() or [""])[0]
+    return st
+
+def service_label(st):
+    if not st["systemd"]:
+        return "Service: no systemd user session here"
+    if not st["installed"]:
+        return "Service: not installed"
+    on = "starts when you log in" if st["enabled"] == "enabled" else "doesn't start by itself"
+    run = "running" if st["active"] == "active" else "not running"
+    return f"Service: installed, {run}, {on}" + ("" if st["ours"] else " (your own unit)")
+
+def service_install(exe):
+    """Write and enable the unit (not start it: the window holds the ports
+    until it quits). Returns '' or why not."""
+    path = service_unit_path()
+    if os.path.exists(path):
+        try:
+            if SERVICE_MARK not in open(path, encoding="utf-8").read():
+                return f"{path} is your own: left alone"
+        except OSError as e:
+            return str(e)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".new", "w", encoding="utf-8") as f:
+        f.write(service_unit_text(exe))
+    os.replace(path + ".new", path)
+    for args in (("daemon-reload",), ("enable", SERVICE)):
+        code, out = systemctl(*args)
+        if code != 0:
+            return f"systemctl --user {' '.join(args)}: {out or 'failed'}"
+    # the service replaces a start-up with the window that install.sh added
+    auto = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(path))), "autostart", "ft8-hunter.desktop")
+    try:
+        if "FT8-Hunter-Installer" in open(auto, encoding="utf-8").read():
+            os.remove(auto)
+    except OSError:
+        pass
+    log(f"installed the systemd user service {SERVICE} ({exe} --no-window)")
+    return ""
+
+def service_handover():
+    """Start the service once this process has let go of its ports, then quit."""
+    import subprocess
+    pid = os.getpid()
+    subprocess.Popen(["sh", "-c", f"while kill -0 {pid} 2>/dev/null; do sleep 0.3; done; "
+                                  f"exec systemctl --user start {SERVICE}"],
+                     start_new_session=True, close_fds=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log("handing over to the service: this window closes, the hunter runs on in the background")
+    shutdown(None, None)
+
+def hunter_answers(port):
+    """Is a hunter already serving on this port (the service, or another window)?"""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=3) as r:
+            return "running" in json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return False
+
 def update_install():
     """Download the new release, check it against the release, install it:
     run the Windows installer, or on Linux swap the files and restart."""
@@ -3689,7 +3787,7 @@ class H(BaseHTTPRequestHandler):
             if not e or not e.get("msg"):
                 self._json({"error": f"no recent CQ decode for {c}"}, 404); return
             if acquire(e["call"], g or e["grid"], e["msg"],
-                       tries=state["config"].get("cq_tries", 3), why="manual"):
+                       tries=state["config"].get("cq_tries", 2), why="manual"):
                 log(f"manual call {e['msg']}")
         elif p == "/api/work":
             # manual (contest) mode: the operator picked one of the suggestions
@@ -4031,6 +4129,37 @@ def run_window(httpd):
             log(f"FT8 Hunter {u['latest']}: skipped, not offered again")
     upd_btn.config(command=update_ask)
 
+    svc = {}  # Linux: the systemd user service, looked up off the Tk thread
+    if sys.platform.startswith("linux"):
+        svc_box = tk.Frame(root)
+        svc_box.pack(pady=(6, 0))
+        svc_lbl = tk.Label(svc_box, text="Service: checking…", fg="#555")
+        svc_lbl.pack()
+        svc_btn = tk.Button(svc_box)
+
+        def svc_look():
+            threading.Thread(target=lambda: svc.update(service_status()), daemon=True).start()
+            root.after(10000, svc_look)
+        svc_look()
+
+        def svc_go():
+            s = dict(svc)
+            first = not s.get("installed")
+            if not messagebox.askokcancel("FT8 Hunter as a service",
+                    ("Run FT8 Hunter as a systemd user service: no window, it starts when you log in "
+                     "and updates itself as before.\n\n" if first else "Start the installed service.\n\n") +
+                    "This window closes now (WS's TX is turned off) and the service carries on in its place. "
+                    f"The page stays at {local}\n\nTo keep it running while you're logged out:\n"
+                    "    loginctl enable-linger", parent=root):
+                return
+            why = service_install(sys.executable) if first else ""
+            if why:
+                messagebox.showerror("FT8 Hunter as a service", f"Not installed: {why}.", parent=root)
+                return
+            root.destroy()
+            service_handover()
+        svc_btn.config(command=svc_go)
+
     tk.Button(root, text="Quit", command=quit_, width=12).pack(pady=(8, 14))
     root.protocol("WM_DELETE_WINDOW", quit_)
 
@@ -4054,6 +4183,15 @@ def run_window(httpd):
             text = "Check for updates"
         upd_btn.config(text=text, state="disabled" if u["busy"] or checking.is_set() else "normal",
                        fg="#1f7a3d" if u["newer"] else btn_fg)
+        if svc:
+            svc_lbl.config(text=service_label(svc))
+            # the button: packaged hunters only (a unit for a source checkout is yours to write)
+            can = FROZEN and svc["systemd"] and svc["active"] != "active"
+            if can:
+                svc_btn.config(text="Run as a background service…" if not svc["installed"] else "Hand over to the service…")
+                svc_btn.pack()
+            else:
+                svc_btn.pack_forget()
         root.after(500 if checking.is_set() or u["busy"] else 2000, tick)
     tick()
     if FROZEN:
@@ -4088,6 +4226,13 @@ try:
     httpd = ThreadingHTTPServer(("0.0.0.0", state["config"]["http_port"]), H)
 except OSError as e:
     print(f"can't serve on port {state['config']['http_port']}: {e} (is the hunter already running?)", flush=True)
+    # started from a menu while the service (or another window) runs: show that one's page
+    if not os.environ.get("INVOCATION_ID") and (a.window or (FROZEN and not a.no_window)) \
+            and hunter_answers(state["config"]["http_port"]):
+        import webbrowser
+        print("another hunter is serving: opening its page", flush=True)
+        webbrowser.open(f"http://localhost:{state['config']['http_port']}/")
+        sys.exit(0)
     sys.exit(1)
 # a desktop app on Windows (from source too) and in packaged builds; a service elsewhere
 if not ((a.window or ((FROZEN or sys.platform == "win32") and not a.no_window)) and run_window(httpd)):
